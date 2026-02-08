@@ -401,6 +401,7 @@ pub struct TableFunctionRef {
     pub args: Vec<Expr>,
     pub alias: Option<String>,
     pub column_aliases: Vec<String>,
+    pub column_alias_types: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

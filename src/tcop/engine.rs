@@ -5496,16 +5496,21 @@ fn eval_json_record_table_function(
         for (key, value) in object {
             merged.insert(key, value);
         }
-        let row = function
-            .column_aliases
-            .iter()
-            .map(|column| {
-                merged
-                    .get(column)
-                    .map(json_value_to_scalar)
-                    .unwrap_or(ScalarValue::Null)
-            })
-            .collect::<Vec<_>>();
+        let mut row = Vec::with_capacity(function.column_aliases.len());
+        for (idx, column) in function.column_aliases.iter().enumerate() {
+            let mut value = merged
+                .get(column)
+                .map(json_value_to_scalar)
+                .unwrap_or(ScalarValue::Null);
+            if let Some(type_name) = function
+                .column_alias_types
+                .get(idx)
+                .and_then(|entry| entry.as_deref())
+            {
+                value = eval_cast_scalar(value, type_name)?;
+            }
+            row.push(value);
+        }
         rows.push(row);
     }
 
@@ -7270,9 +7275,20 @@ fn eval_function(
 fn eval_scalar_function(fn_name: &str, args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     match fn_name {
         "http_get" if args.len() == 1 => eval_http_get_builtin(&args[0]),
+        "row" => Ok(ScalarValue::Text(
+            JsonValue::Array(
+                args.iter()
+                    .map(scalar_to_json_value)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+            .to_string(),
+        )),
         "to_json" | "to_jsonb" if args.len() == 1 => Ok(ScalarValue::Text(
             scalar_to_json_value(&args[0])?.to_string(),
         )),
+        "row_to_json" if args.len() == 1 || args.len() == 2 => eval_row_to_json(args, fn_name),
+        "array_to_json" if args.len() == 1 || args.len() == 2 => eval_array_to_json(args, fn_name),
+        "json_object" if args.len() == 1 || args.len() == 2 => eval_json_object(args, fn_name),
         "json_build_object" | "jsonb_build_object" if args.len() % 2 == 0 => Ok(ScalarValue::Text(
             json_build_object_value(args)?.to_string(),
         )),
@@ -7301,6 +7317,7 @@ fn eval_scalar_function(fn_name: &str, args: &[ScalarValue]) -> Result<ScalarVal
             eval_jsonb_exists_any_all(&args[0], &args[1], false, fn_name)
         }
         "jsonb_path_exists" if args.len() >= 2 => eval_jsonb_path_exists(args, fn_name),
+        "jsonb_path_match" if args.len() >= 2 => eval_jsonb_path_match(args, fn_name),
         "jsonb_path_query" if args.len() >= 2 => eval_jsonb_path_query_first(args, fn_name),
         "jsonb_path_query_array" if args.len() >= 2 => eval_jsonb_path_query_array(args, fn_name),
         "jsonb_path_query_first" if args.len() >= 2 => eval_jsonb_path_query_first(args, fn_name),
@@ -7604,6 +7621,198 @@ fn json_build_array_value(args: &[ScalarValue]) -> Result<JsonValue, EngineError
         items.push(scalar_to_json_value(arg)?);
     }
     Ok(JsonValue::Array(items))
+}
+
+fn parse_json_or_scalar_value(value: &ScalarValue) -> Result<JsonValue, EngineError> {
+    match value {
+        ScalarValue::Text(text) => serde_json::from_str::<JsonValue>(text)
+            .or_else(|_| scalar_to_json_value(value))
+            .map_err(|err| EngineError {
+                message: format!("cannot convert value to JSON: {err}"),
+            }),
+        _ => scalar_to_json_value(value),
+    }
+}
+
+fn parse_json_constructor_pretty_arg(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<Option<bool>, EngineError> {
+    if args.len() < 2 {
+        return Ok(Some(false));
+    }
+    if matches!(args[1], ScalarValue::Null) {
+        return Ok(None);
+    }
+    parse_bool_scalar(
+        &args[1],
+        &format!("{fn_name}() expects boolean pretty argument"),
+    )
+    .map(Some)
+}
+
+fn maybe_pretty_json(value: &JsonValue, pretty: bool) -> Result<String, EngineError> {
+    if pretty {
+        serde_json::to_string_pretty(value).map_err(|err| EngineError {
+            message: format!("failed to pretty-print JSON: {err}"),
+        })
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+fn eval_row_to_json(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
+    if matches!(args[0], ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let Some(pretty) = parse_json_constructor_pretty_arg(args, fn_name)? else {
+        return Ok(ScalarValue::Null);
+    };
+
+    let input = parse_json_or_scalar_value(&args[0])?;
+    let object = match input {
+        JsonValue::Object(map) => JsonValue::Object(map),
+        JsonValue::Array(items) => {
+            let mut map = JsonMap::new();
+            for (idx, value) in items.into_iter().enumerate() {
+                map.insert(format!("f{}", idx + 1), value);
+            }
+            JsonValue::Object(map)
+        }
+        scalar => {
+            let mut map = JsonMap::new();
+            map.insert("f1".to_string(), scalar);
+            JsonValue::Object(map)
+        }
+    };
+    Ok(ScalarValue::Text(maybe_pretty_json(&object, pretty)?))
+}
+
+fn eval_array_to_json(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
+    if matches!(args[0], ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let Some(pretty) = parse_json_constructor_pretty_arg(args, fn_name)? else {
+        return Ok(ScalarValue::Null);
+    };
+    let parsed = parse_json_or_scalar_value(&args[0])?;
+    let JsonValue::Array(_) = parsed else {
+        return Err(EngineError {
+            message: format!("{fn_name}() argument 1 must be a JSON array"),
+        });
+    };
+    Ok(ScalarValue::Text(maybe_pretty_json(&parsed, pretty)?))
+}
+
+fn json_value_text_token(
+    value: &JsonValue,
+    fn_name: &str,
+    key_mode: bool,
+) -> Result<String, EngineError> {
+    match value {
+        JsonValue::Null if key_mode => Err(EngineError {
+            message: format!("{fn_name}() key cannot be null"),
+        }),
+        JsonValue::Null => Ok("null".to_string()),
+        JsonValue::String(text) => Ok(text.clone()),
+        JsonValue::Bool(v) => Ok(v.to_string()),
+        JsonValue::Number(v) => Ok(v.to_string()),
+        JsonValue::Array(_) | JsonValue::Object(_) => Ok(value.to_string()),
+    }
+}
+
+fn parse_json_object_pairs_from_array(
+    value: &JsonValue,
+    fn_name: &str,
+) -> Result<Vec<(String, String)>, EngineError> {
+    let JsonValue::Array(items) = value else {
+        return Err(EngineError {
+            message: format!("{fn_name}() argument must be a JSON array"),
+        });
+    };
+
+    if items
+        .iter()
+        .all(|item| matches!(item, JsonValue::Array(inner) if inner.len() == 2))
+    {
+        let mut pairs = Vec::with_capacity(items.len());
+        for item in items {
+            let JsonValue::Array(inner) = item else {
+                continue;
+            };
+            let key = json_value_text_token(&inner[0], fn_name, true)?;
+            let value = json_value_text_token(&inner[1], fn_name, false)?;
+            pairs.push((key, value));
+        }
+        return Ok(pairs);
+    }
+
+    if items.len() % 2 != 0 {
+        return Err(EngineError {
+            message: format!("{fn_name}() requires an even-length text array"),
+        });
+    }
+
+    let mut pairs = Vec::with_capacity(items.len() / 2);
+    for idx in (0..items.len()).step_by(2) {
+        let key = json_value_text_token(&items[idx], fn_name, true)?;
+        let value = json_value_text_token(&items[idx + 1], fn_name, false)?;
+        pairs.push((key, value));
+    }
+    Ok(pairs)
+}
+
+fn eval_json_object(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
+    if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+        return Ok(ScalarValue::Null);
+    }
+
+    let pairs = match args.len() {
+        1 => {
+            let source = parse_json_document_arg(&args[0], fn_name, 1)?;
+            parse_json_object_pairs_from_array(&source, fn_name)?
+        }
+        2 => {
+            let keys = parse_json_document_arg(&args[0], fn_name, 1)?;
+            let values = parse_json_document_arg(&args[1], fn_name, 2)?;
+            let JsonValue::Array(key_items) = keys else {
+                return Err(EngineError {
+                    message: format!("{fn_name}() argument 1 must be a JSON array"),
+                });
+            };
+            let JsonValue::Array(value_items) = values else {
+                return Err(EngineError {
+                    message: format!("{fn_name}() argument 2 must be a JSON array"),
+                });
+            };
+            if key_items.len() != value_items.len() {
+                return Err(EngineError {
+                    message: format!("{fn_name}() key/value array lengths must match"),
+                });
+            }
+            key_items
+                .iter()
+                .zip(value_items.iter())
+                .map(|(key, value)| {
+                    Ok((
+                        json_value_text_token(key, fn_name, true)?,
+                        json_value_text_token(value, fn_name, false)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, EngineError>>()?
+        }
+        _ => {
+            return Err(EngineError {
+                message: format!("{fn_name}() expects one or two arguments"),
+            });
+        }
+    };
+
+    let mut object = JsonMap::new();
+    for (key, value) in pairs {
+        object.insert(key, JsonValue::String(value));
+    }
+    Ok(ScalarValue::Text(JsonValue::Object(object).to_string()))
 }
 
 fn parse_json_document_arg(
@@ -8206,11 +8415,42 @@ fn parse_json_path_operand(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum JsonPathStep {
     Key(String),
     Index(i64),
     Wildcard,
+    Filter(JsonPathFilterExpr),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonPathFilterOp {
+    Eq,
+    NotEq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum JsonPathFilterOperand {
+    Current,
+    CurrentPath(Vec<JsonPathStep>),
+    RootPath(Vec<JsonPathStep>),
+    Variable(String),
+    Literal(JsonValue),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum JsonPathFilterExpr {
+    Exists(JsonPathFilterOperand),
+    Compare {
+        left: JsonPathFilterOperand,
+        op: JsonPathFilterOp,
+        right: JsonPathFilterOperand,
+    },
+    Truthy(JsonPathFilterOperand),
 }
 
 fn parse_jsonpath_text_arg(
@@ -8224,6 +8464,229 @@ fn parse_jsonpath_text_arg(
         });
     };
     Ok(text.clone())
+}
+
+fn parse_jsonpath_vars_arg(
+    value: &ScalarValue,
+    fn_name: &str,
+    arg_index: usize,
+) -> Result<JsonMap<String, JsonValue>, EngineError> {
+    if matches!(value, ScalarValue::Null) {
+        return Ok(JsonMap::new());
+    }
+    let parsed = parse_json_document_arg(value, fn_name, arg_index)?;
+    let JsonValue::Object(vars) = parsed else {
+        return Err(EngineError {
+            message: format!("{fn_name}() argument {arg_index} must be a JSON object"),
+        });
+    };
+    Ok(vars)
+}
+
+fn parse_jsonpath_silent_arg(
+    value: &ScalarValue,
+    fn_name: &str,
+    arg_index: usize,
+) -> Result<bool, EngineError> {
+    if matches!(value, ScalarValue::Null) {
+        return Ok(false);
+    }
+    parse_bool_scalar(
+        value,
+        &format!("{fn_name}() argument {arg_index} must be boolean"),
+    )
+}
+
+fn strip_outer_parentheses(text: &str) -> &str {
+    let mut trimmed = text.trim();
+    loop {
+        if !trimmed.starts_with('(') || !trimmed.ends_with(')') {
+            return trimmed;
+        }
+        let mut depth = 0isize;
+        let mut in_quote: Option<char> = None;
+        let mut encloses = true;
+        for (idx, ch) in trimmed.char_indices() {
+            if let Some(quote) = in_quote {
+                if ch == quote {
+                    in_quote = None;
+                } else if ch == '\\' {
+                    continue;
+                }
+                continue;
+            }
+            if ch == '\'' || ch == '"' {
+                in_quote = Some(ch);
+                continue;
+            }
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 && idx + ch.len_utf8() < trimmed.len() {
+                    encloses = false;
+                    break;
+                }
+            }
+        }
+        if encloses {
+            trimmed = trimmed[1..trimmed.len() - 1].trim();
+        } else {
+            return trimmed;
+        }
+    }
+}
+
+fn find_jsonpath_compare_operator(expr: &str) -> Option<(usize, &'static str, JsonPathFilterOp)> {
+    let bytes = expr.as_bytes();
+    let mut idx = 0usize;
+    let mut in_quote: Option<u8> = None;
+    let mut paren_depth = 0usize;
+    while idx < bytes.len() {
+        let b = bytes[idx];
+        if let Some(quote) = in_quote {
+            if b == quote {
+                in_quote = None;
+            } else if b == b'\\' {
+                idx += 1;
+            }
+            idx += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => {
+                in_quote = Some(b);
+                idx += 1;
+                continue;
+            }
+            b'(' => {
+                paren_depth += 1;
+                idx += 1;
+                continue;
+            }
+            b')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                idx += 1;
+                continue;
+            }
+            _ => {}
+        }
+        if paren_depth == 0 {
+            for (token, op) in [
+                ("==", JsonPathFilterOp::Eq),
+                ("!=", JsonPathFilterOp::NotEq),
+                (">=", JsonPathFilterOp::Gte),
+                ("<=", JsonPathFilterOp::Lte),
+                (">", JsonPathFilterOp::Gt),
+                ("<", JsonPathFilterOp::Lt),
+            ] {
+                if expr[idx..].starts_with(token) {
+                    return Some((idx, token, op));
+                }
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
+fn parse_jsonpath_filter_operand(
+    token: &str,
+    context: &str,
+) -> Result<JsonPathFilterOperand, EngineError> {
+    let token = token.trim();
+    if token.is_empty() {
+        return Err(EngineError {
+            message: format!("{context} JSONPath filter operand is empty"),
+        });
+    }
+
+    if token == "@" {
+        return Ok(JsonPathFilterOperand::Current);
+    }
+    if token.starts_with("@.") || token.starts_with("@[") {
+        let rooted = format!("${}", &token[1..]);
+        let steps = parse_jsonpath_steps(&rooted, context)?;
+        return Ok(JsonPathFilterOperand::CurrentPath(steps));
+    }
+    if token == "$" {
+        return Ok(JsonPathFilterOperand::RootPath(Vec::new()));
+    }
+    if token.starts_with("$.") || token.starts_with("$[") {
+        let steps = parse_jsonpath_steps(token, context)?;
+        return Ok(JsonPathFilterOperand::RootPath(steps));
+    }
+    if let Some(name) = token.strip_prefix('$') {
+        if !name.is_empty()
+            && name
+                .chars()
+                .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+        {
+            return Ok(JsonPathFilterOperand::Variable(name.to_string()));
+        }
+    }
+
+    if (token.starts_with('"') && token.ends_with('"'))
+        || (token.starts_with('\'') && token.ends_with('\''))
+    {
+        return Ok(JsonPathFilterOperand::Literal(JsonValue::String(
+            token[1..token.len() - 1].to_string(),
+        )));
+    }
+    if token.eq_ignore_ascii_case("true") {
+        return Ok(JsonPathFilterOperand::Literal(JsonValue::Bool(true)));
+    }
+    if token.eq_ignore_ascii_case("false") {
+        return Ok(JsonPathFilterOperand::Literal(JsonValue::Bool(false)));
+    }
+    if token.eq_ignore_ascii_case("null") {
+        return Ok(JsonPathFilterOperand::Literal(JsonValue::Null));
+    }
+    if let Ok(number) = serde_json::from_str::<JsonValue>(token)
+        && matches!(number, JsonValue::Number(_))
+    {
+        return Ok(JsonPathFilterOperand::Literal(number));
+    }
+
+    Err(EngineError {
+        message: format!("{context} unsupported JSONPath filter operand {token}"),
+    })
+}
+
+fn parse_jsonpath_filter_expr(
+    text: &str,
+    context: &str,
+) -> Result<JsonPathFilterExpr, EngineError> {
+    let trimmed = strip_outer_parentheses(text).trim();
+    if trimmed.is_empty() {
+        return Err(EngineError {
+            message: format!("{context} empty JSONPath filter expression"),
+        });
+    }
+
+    if trimmed.len() > 7
+        && trimmed[..6].eq_ignore_ascii_case("exists")
+        && trimmed[6..].trim_start().starts_with('(')
+    {
+        let rest = trimmed[6..].trim_start();
+        if let Some(inner) = rest
+            .strip_prefix('(')
+            .and_then(|value| value.strip_suffix(')'))
+        {
+            let operand = parse_jsonpath_filter_operand(inner, context)?;
+            return Ok(JsonPathFilterExpr::Exists(operand));
+        }
+    }
+
+    if let Some((idx, token, op)) = find_jsonpath_compare_operator(trimmed) {
+        let left = parse_jsonpath_filter_operand(&trimmed[..idx], context)?;
+        let right = parse_jsonpath_filter_operand(&trimmed[idx + token.len()..], context)?;
+        return Ok(JsonPathFilterExpr::Compare { left, op, right });
+    }
+
+    Ok(JsonPathFilterExpr::Truthy(parse_jsonpath_filter_operand(
+        trimmed, context,
+    )?))
 }
 
 fn parse_jsonpath_steps(path: &str, context: &str) -> Result<Vec<JsonPathStep>, EngineError> {
@@ -8354,6 +8817,62 @@ fn parse_jsonpath_steps(path: &str, context: &str) -> Result<Vec<JsonPathStep>, 
                     steps.push(JsonPathStep::Key(token));
                 }
             }
+            b'?' => {
+                idx += 1;
+                while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                    idx += 1;
+                }
+                if idx >= bytes.len() || bytes[idx] != b'(' {
+                    return Err(EngineError {
+                        message: format!("{context} expected '(' after JSONPath filter marker"),
+                    });
+                }
+                idx += 1;
+                let start = idx;
+                let mut depth = 1usize;
+                let mut in_quote: Option<u8> = None;
+                while idx < bytes.len() {
+                    let b = bytes[idx];
+                    if let Some(quote) = in_quote {
+                        if b == quote {
+                            in_quote = None;
+                        } else if b == b'\\' {
+                            idx += 1;
+                        }
+                        idx += 1;
+                        continue;
+                    }
+                    if b == b'\'' || b == b'"' {
+                        in_quote = Some(b);
+                        idx += 1;
+                        continue;
+                    }
+                    if b == b'(' {
+                        depth += 1;
+                        idx += 1;
+                        continue;
+                    }
+                    if b == b')' {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                        idx += 1;
+                        continue;
+                    }
+                    idx += 1;
+                }
+                if idx >= bytes.len() || depth != 0 {
+                    return Err(EngineError {
+                        message: format!("{context} unterminated JSONPath filter expression"),
+                    });
+                }
+                let expr_text = std::str::from_utf8(&bytes[start..idx]).unwrap_or_default();
+                idx += 1;
+                steps.push(JsonPathStep::Filter(parse_jsonpath_filter_expr(
+                    expr_text, context,
+                )?));
+            }
             _ => {
                 return Err(EngineError {
                     message: format!("{context} invalid JSONPath near byte {}", idx),
@@ -8364,7 +8883,14 @@ fn parse_jsonpath_steps(path: &str, context: &str) -> Result<Vec<JsonPathStep>, 
     Ok(steps)
 }
 
-fn jsonpath_query_values(root: &JsonValue, steps: &[JsonPathStep]) -> Vec<JsonValue> {
+fn jsonpath_query_values(
+    root: &JsonValue,
+    steps: &[JsonPathStep],
+    absolute_root: &JsonValue,
+    vars: &JsonMap<String, JsonValue>,
+    context: &str,
+    silent: bool,
+) -> Result<Vec<JsonValue>, EngineError> {
     let mut current = vec![root.clone()];
     for step in steps {
         let mut next = Vec::new();
@@ -8392,6 +8918,18 @@ fn jsonpath_query_values(root: &JsonValue, steps: &[JsonPathStep]) -> Vec<JsonVa
                     | JsonValue::Number(_)
                     | JsonValue::String(_) => {}
                 },
+                JsonPathStep::Filter(expr) => {
+                    if eval_jsonpath_filter_expr(
+                        expr,
+                        &value,
+                        absolute_root,
+                        vars,
+                        context,
+                        silent,
+                    )? {
+                        next.push(value);
+                    }
+                }
             }
         }
         current = next;
@@ -8399,7 +8937,7 @@ fn jsonpath_query_values(root: &JsonValue, steps: &[JsonPathStep]) -> Vec<JsonVa
             break;
         }
     }
-    current
+    Ok(current)
 }
 
 fn jsonpath_value_truthy(value: &JsonValue) -> bool {
@@ -8410,6 +8948,112 @@ fn jsonpath_value_truthy(value: &JsonValue) -> bool {
         JsonValue::String(v) => !v.is_empty(),
         JsonValue::Array(v) => !v.is_empty(),
         JsonValue::Object(v) => !v.is_empty(),
+    }
+}
+
+fn json_values_compare(left: &JsonValue, right: &JsonValue) -> Result<Ordering, EngineError> {
+    match (left, right) {
+        (JsonValue::Array(_), JsonValue::Array(_))
+        | (JsonValue::Object(_), JsonValue::Object(_)) => {
+            if left == right {
+                Ok(Ordering::Equal)
+            } else {
+                Ok(left.to_string().cmp(&right.to_string()))
+            }
+        }
+        _ => {
+            compare_values_for_predicate(&json_value_to_scalar(left), &json_value_to_scalar(right))
+        }
+    }
+}
+
+fn eval_jsonpath_filter_operand(
+    operand: &JsonPathFilterOperand,
+    current: &JsonValue,
+    absolute_root: &JsonValue,
+    vars: &JsonMap<String, JsonValue>,
+    context: &str,
+    silent: bool,
+) -> Result<Vec<JsonValue>, EngineError> {
+    match operand {
+        JsonPathFilterOperand::Current => Ok(vec![current.clone()]),
+        JsonPathFilterOperand::CurrentPath(steps) => {
+            jsonpath_query_values(current, steps, absolute_root, vars, context, silent)
+        }
+        JsonPathFilterOperand::RootPath(steps) => {
+            jsonpath_query_values(absolute_root, steps, absolute_root, vars, context, silent)
+        }
+        JsonPathFilterOperand::Variable(name) => {
+            if let Some(value) = vars.get(name) {
+                Ok(vec![value.clone()])
+            } else if silent {
+                Ok(Vec::new())
+            } else {
+                Err(EngineError {
+                    message: format!("{context} JSONPath variable ${name} is not provided"),
+                })
+            }
+        }
+        JsonPathFilterOperand::Literal(value) => Ok(vec![value.clone()]),
+    }
+}
+
+fn eval_jsonpath_filter_expr(
+    expr: &JsonPathFilterExpr,
+    current: &JsonValue,
+    absolute_root: &JsonValue,
+    vars: &JsonMap<String, JsonValue>,
+    context: &str,
+    silent: bool,
+) -> Result<bool, EngineError> {
+    match expr {
+        JsonPathFilterExpr::Exists(operand) => Ok(!eval_jsonpath_filter_operand(
+            operand,
+            current,
+            absolute_root,
+            vars,
+            context,
+            silent,
+        )?
+        .is_empty()),
+        JsonPathFilterExpr::Truthy(operand) => {
+            let values = eval_jsonpath_filter_operand(
+                operand,
+                current,
+                absolute_root,
+                vars,
+                context,
+                silent,
+            )?;
+            Ok(values.iter().any(jsonpath_value_truthy))
+        }
+        JsonPathFilterExpr::Compare { left, op, right } => {
+            let left_values =
+                eval_jsonpath_filter_operand(left, current, absolute_root, vars, context, silent)?;
+            let right_values =
+                eval_jsonpath_filter_operand(right, current, absolute_root, vars, context, silent)?;
+            for left in &left_values {
+                for right in &right_values {
+                    let ordering = json_values_compare(left, right)?;
+                    let matched = match op {
+                        JsonPathFilterOp::Eq => ordering == Ordering::Equal,
+                        JsonPathFilterOp::NotEq => ordering != Ordering::Equal,
+                        JsonPathFilterOp::Gt => ordering == Ordering::Greater,
+                        JsonPathFilterOp::Gte => {
+                            matches!(ordering, Ordering::Greater | Ordering::Equal)
+                        }
+                        JsonPathFilterOp::Lt => ordering == Ordering::Less,
+                        JsonPathFilterOp::Lte => {
+                            matches!(ordering, Ordering::Less | Ordering::Equal)
+                        }
+                    };
+                    if matched {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }
     }
 }
 
@@ -8447,7 +9091,19 @@ fn eval_json_path_predicate_operator(
             "json operator @?"
         },
     )?;
-    let values = jsonpath_query_values(&target, &steps);
+    let vars = JsonMap::new();
+    let values = jsonpath_query_values(
+        &target,
+        &steps,
+        &target,
+        &vars,
+        if match_mode {
+            "json operator @@"
+        } else {
+            "json operator @?"
+        },
+        false,
+    )?;
     if match_mode {
         if let Some(first) = values.first() {
             Ok(ScalarValue::Bool(jsonpath_value_truthy(first)))
@@ -8471,10 +9127,27 @@ fn jsonb_path_query_values(
     if matches!(args[0], ScalarValue::Null) || matches!(args[1], ScalarValue::Null) {
         return Ok(Vec::new());
     }
-    let target = parse_json_document_arg(&args[0], fn_name, 1)?;
-    let path_text = parse_jsonpath_text_arg(&args[1], fn_name, 2)?;
-    let steps = parse_jsonpath_steps(&path_text, fn_name)?;
-    Ok(jsonpath_query_values(&target, &steps))
+    let silent = if args.len() >= 4 {
+        parse_jsonpath_silent_arg(&args[3], fn_name, 4)?
+    } else {
+        false
+    };
+    let evaluate = || -> Result<Vec<JsonValue>, EngineError> {
+        let target = parse_json_document_arg(&args[0], fn_name, 1)?;
+        let path_text = parse_jsonpath_text_arg(&args[1], fn_name, 2)?;
+        let vars = if args.len() >= 3 {
+            parse_jsonpath_vars_arg(&args[2], fn_name, 3)?
+        } else {
+            JsonMap::new()
+        };
+        let steps = parse_jsonpath_steps(&path_text, fn_name)?;
+        jsonpath_query_values(&target, &steps, &target, &vars, fn_name, silent)
+    };
+    if silent {
+        evaluate().or(Ok(Vec::new()))
+    } else {
+        evaluate()
+    }
 }
 
 fn eval_jsonb_path_exists(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
@@ -8488,6 +9161,27 @@ fn eval_jsonb_path_exists(args: &[ScalarValue], fn_name: &str) -> Result<ScalarV
     }
     let values = jsonb_path_query_values(args, fn_name)?;
     Ok(ScalarValue::Bool(!values.is_empty()))
+}
+
+fn eval_jsonb_path_match(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
+    if args.len() < 2 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects at least two arguments"),
+        });
+    }
+    if matches!(args[0], ScalarValue::Null) || matches!(args[1], ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let values = jsonb_path_query_values(args, fn_name)?;
+    if let Some(first) = values.first() {
+        match first {
+            JsonValue::Null => Ok(ScalarValue::Null),
+            JsonValue::Bool(v) => Ok(ScalarValue::Bool(*v)),
+            _ => Ok(ScalarValue::Bool(jsonpath_value_truthy(first))),
+        }
+    } else {
+        Ok(ScalarValue::Bool(false))
+    }
 }
 
 fn eval_jsonb_path_query_array(
@@ -9864,7 +10558,12 @@ mod tests {
                 json_typeof('{\"a\":1}'), \
                 json_extract_path('{\"a\":{\"b\":[10,true,null]}}', 'a', 'b', 1), \
                 json_extract_path_text('{\"a\":{\"b\":[10,true,null]}}', 'a', 'b', 0), \
-                json_strip_nulls('{\"a\":1,\"b\":null,\"c\":{\"d\":null,\"e\":2}}')");
+                json_strip_nulls('{\"a\":1,\"b\":null,\"c\":{\"d\":null,\"e\":2}}'), \
+                row_to_json(row(1, 'x')), \
+                array_to_json(json_build_array(1, 'x')), \
+                json_object('[[\"a\",\"1\"],[\"b\",\"2\"]]'), \
+                json_object('[\"a\",\"1\",\"b\",\"2\"]'), \
+                json_object('[\"k1\",\"k2\"]', '[\"v1\",\"v2\"]')");
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0][0], ScalarValue::Text("1".to_string()));
         assert_eq!(result.rows[0][1], ScalarValue::Text("\"x\"".to_string()));
@@ -9876,6 +10575,26 @@ mod tests {
         assert_eq!(result.rows[0][9], ScalarValue::Text("object".to_string()));
         assert_eq!(result.rows[0][10], ScalarValue::Text("true".to_string()));
         assert_eq!(result.rows[0][11], ScalarValue::Text("10".to_string()));
+        assert_eq!(
+            result.rows[0][13],
+            ScalarValue::Text("{\"f1\":1,\"f2\":\"x\"}".to_string())
+        );
+        assert_eq!(
+            result.rows[0][14],
+            ScalarValue::Text("[1,\"x\"]".to_string())
+        );
+        assert_eq!(
+            result.rows[0][15],
+            ScalarValue::Text("{\"a\":\"1\",\"b\":\"2\"}".to_string())
+        );
+        assert_eq!(
+            result.rows[0][16],
+            ScalarValue::Text("{\"a\":\"1\",\"b\":\"2\"}".to_string())
+        );
+        assert_eq!(
+            result.rows[0][17],
+            ScalarValue::Text("{\"k1\":\"v1\",\"k2\":\"v2\"}".to_string())
+        );
 
         let ScalarValue::Text(obj_text) = &result.rows[0][2] else {
             panic!("json_build_object should return text");
@@ -10089,13 +10808,21 @@ mod tests {
         let result = run("SELECT \
                 jsonb_path_exists('{\"a\":[{\"id\":1},{\"id\":2}],\"flag\":true}', '$.a[*].id'), \
                 jsonb_path_query_first('{\"a\":[{\"id\":1},{\"id\":2}],\"flag\":true}', '$.a[1].id'), \
-                jsonb_path_query_array('{\"a\":[{\"id\":1},{\"id\":2}],\"flag\":true}', '$.a[*].id')");
+                jsonb_path_query_array('{\"a\":[{\"id\":1},{\"id\":2}],\"flag\":true}', '$.a[*].id'), \
+                jsonb_path_exists('{\"a\":[1,2,3]}', '$.a[*] ? (@ >= $min)', '{\"min\":2}'), \
+                jsonb_path_query_array('{\"a\":[1,2,3]}', '$.a[*] ? (@ >= $min)', '{\"min\":2}'), \
+                jsonb_path_match('{\"flag\":true}', '$.flag'), \
+                jsonb_path_exists('{\"a\":[1]}', '$.a[', NULL, true)");
         assert_eq!(
             result.rows,
             vec![vec![
                 ScalarValue::Bool(true),
                 ScalarValue::Text("2".to_string()),
                 ScalarValue::Text("[1,2]".to_string()),
+                ScalarValue::Bool(true),
+                ScalarValue::Text("[2,3]".to_string()),
+                ScalarValue::Bool(true),
+                ScalarValue::Bool(false),
             ]]
         );
     }

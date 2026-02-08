@@ -1665,12 +1665,13 @@ impl Parser {
                 )?;
             }
             let alias = self.parse_optional_alias()?;
-            let column_aliases = self.parse_optional_column_aliases()?;
+            let (column_aliases, column_alias_types) = self.parse_optional_column_aliases()?;
             return Ok(TableExpression::Function(TableFunctionRef {
                 name,
                 args,
                 alias,
                 column_aliases,
+                column_alias_types,
             }));
         }
         let alias = self.parse_optional_alias()?;
@@ -1712,15 +1713,18 @@ impl Parser {
         Ok(cols)
     }
 
-    fn parse_optional_column_aliases(&mut self) -> Result<Vec<String>, ParseError> {
+    fn parse_optional_column_aliases(
+        &mut self,
+    ) -> Result<(Vec<String>, Vec<Option<String>>), ParseError> {
         if !self.consume_if(|k| matches!(k, TokenKind::LParen)) {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         let mut cols = Vec::new();
+        let mut types = Vec::new();
         loop {
             cols.push(self.parse_identifier()?);
-            self.skip_optional_column_alias_type();
+            types.push(self.parse_optional_column_alias_type()?);
             if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                 break;
             }
@@ -1729,28 +1733,13 @@ impl Parser {
             |k| matches!(k, TokenKind::RParen),
             "expected ')' after column alias list",
         )?;
-        Ok(cols)
+        Ok((cols, types))
     }
 
-    fn skip_optional_column_alias_type(&mut self) {
-        let mut depth = 0usize;
-        loop {
-            match self.current_kind() {
-                TokenKind::Comma | TokenKind::RParen if depth == 0 => break,
-                TokenKind::LParen => {
-                    depth += 1;
-                    self.advance();
-                }
-                TokenKind::RParen => {
-                    if depth == 0 {
-                        break;
-                    }
-                    depth -= 1;
-                    self.advance();
-                }
-                TokenKind::Eof => break,
-                _ => self.advance(),
-            }
+    fn parse_optional_column_alias_type(&mut self) -> Result<Option<String>, ParseError> {
+        match self.current_kind() {
+            TokenKind::Comma | TokenKind::RParen => Ok(None),
+            _ => self.parse_expr_type_name().map(Some),
         }
     }
 
@@ -2542,6 +2531,7 @@ mod tests {
                 assert_eq!(function.args.len(), 1);
                 assert_eq!(function.alias.as_deref(), Some("elem"));
                 assert!(function.column_aliases.is_empty());
+                assert!(function.column_alias_types.is_empty());
             }
             other => panic!("expected function table expression, got {other:?}"),
         }
@@ -2560,6 +2550,7 @@ mod tests {
             TableExpression::Function(function) => {
                 assert_eq!(function.alias.as_deref(), Some("t"));
                 assert_eq!(function.column_aliases, vec!["x".to_string()]);
+                assert_eq!(function.column_alias_types, vec![None]);
             }
             other => panic!("expected function table expression, got {other:?}"),
         }
@@ -3796,6 +3787,10 @@ mod tests {
         assert_eq!(
             function.column_aliases,
             vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(
+            function.column_alias_types,
+            vec![Some("int8".to_string()), Some("text".to_string())]
         );
     }
 }
