@@ -536,8 +536,11 @@ pub enum BinaryOp {
     JsonGetText,
     JsonPath,
     JsonPathText,
+    JsonConcat,
     JsonContains,
+    JsonContainedBy,
     JsonHasKey,
     JsonHasAny,
     JsonHasAll,
+    JsonDeletePath,
 }

@@ -2252,10 +2252,13 @@ impl Parser {
             TokenKind::Operator(op) if op == "->>" => Some((BinaryOp::JsonGetText, 11, 12)),
             TokenKind::Operator(op) if op == "#>" => Some((BinaryOp::JsonPath, 11, 12)),
             TokenKind::Operator(op) if op == "#>>" => Some((BinaryOp::JsonPathText, 11, 12)),
+            TokenKind::Operator(op) if op == "||" => Some((BinaryOp::JsonConcat, 7, 8)),
             TokenKind::Operator(op) if op == "@>" => Some((BinaryOp::JsonContains, 5, 6)),
+            TokenKind::Operator(op) if op == "<@" => Some((BinaryOp::JsonContainedBy, 5, 6)),
             TokenKind::Operator(op) if op == "?" => Some((BinaryOp::JsonHasKey, 5, 6)),
             TokenKind::Operator(op) if op == "?|" => Some((BinaryOp::JsonHasAny, 5, 6)),
             TokenKind::Operator(op) if op == "?&" => Some((BinaryOp::JsonHasAll, 5, 6)),
+            TokenKind::Operator(op) if op == "#-" => Some((BinaryOp::JsonDeletePath, 11, 12)),
             _ => None,
         }
     }
@@ -3636,10 +3639,13 @@ mod tests {
              doc ->> 'a', \
              doc #> '{a,b}', \
              doc #>> '{a,b}', \
+             doc || '{\"z\":1}', \
              doc @> '{\"a\":1}', \
+             doc <@ '{\"a\":1,\"b\":2}', \
              doc ? 'a', \
              doc ?| '{a,b}', \
-             doc ?& '{a,b}' \
+             doc ?& '{a,b}', \
+             doc #- '{a,b}' \
              FROM t",
         )
         .expect("parse should succeed");
@@ -3656,10 +3662,13 @@ mod tests {
             BinaryOp::JsonGetText,
             BinaryOp::JsonPath,
             BinaryOp::JsonPathText,
+            BinaryOp::JsonConcat,
             BinaryOp::JsonContains,
+            BinaryOp::JsonContainedBy,
             BinaryOp::JsonHasKey,
             BinaryOp::JsonHasAny,
             BinaryOp::JsonHasAll,
+            BinaryOp::JsonDeletePath,
         ];
 
         assert_eq!(select.targets.len(), expected.len());

@@ -5611,7 +5611,15 @@ fn contains_aggregate_expr(expr: &Expr) -> bool {
 fn is_aggregate_function(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "count" | "sum" | "avg" | "min" | "max"
+        "count"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "json_agg"
+            | "jsonb_agg"
+            | "json_object_agg"
+            | "jsonb_object_agg"
     )
 }
 
@@ -5821,6 +5829,44 @@ fn eval_aggregate_function(
                 }
             }
             Ok(current.unwrap_or(ScalarValue::Null))
+        }
+        "json_agg" | "jsonb_agg" => {
+            if args.len() != 1 {
+                return Err(EngineError {
+                    message: format!("{fn_name}() expects exactly one argument"),
+                });
+            }
+            if group_rows.is_empty() {
+                return Ok(ScalarValue::Null);
+            }
+            let mut out = Vec::with_capacity(group_rows.len());
+            for scope in group_rows {
+                let value = eval_expr(&args[0], scope, params)?;
+                out.push(scalar_to_json_value(&value)?);
+            }
+            Ok(ScalarValue::Text(JsonValue::Array(out).to_string()))
+        }
+        "json_object_agg" | "jsonb_object_agg" => {
+            if args.len() != 2 {
+                return Err(EngineError {
+                    message: format!("{fn_name}() expects exactly two arguments"),
+                });
+            }
+            if group_rows.is_empty() {
+                return Ok(ScalarValue::Null);
+            }
+            let mut out = JsonMap::new();
+            for scope in group_rows {
+                let key = eval_expr(&args[0], scope, params)?;
+                let value = eval_expr(&args[1], scope, params)?;
+                if matches!(key, ScalarValue::Null) {
+                    return Err(EngineError {
+                        message: format!("{fn_name}() key cannot be null"),
+                    });
+                }
+                out.insert(key.render(), scalar_to_json_value(&value)?);
+            }
+            Ok(ScalarValue::Text(JsonValue::Object(out).to_string()))
         }
         _ => Err(EngineError {
             message: format!("unsupported aggregate function {}", fn_name),
@@ -6719,10 +6765,13 @@ fn eval_binary(
         JsonGetText => eval_json_get_operator(left, right, true),
         JsonPath => eval_json_path_operator(left, right, false),
         JsonPathText => eval_json_path_operator(left, right, true),
+        JsonConcat => eval_json_concat_operator(left, right),
         JsonContains => eval_json_contains_operator(left, right),
+        JsonContainedBy => eval_json_contained_by_operator(left, right),
         JsonHasKey => eval_json_has_key_operator(left, right),
         JsonHasAny => eval_json_has_any_all_operator(left, right, true),
         JsonHasAll => eval_json_has_any_all_operator(left, right, false),
+        JsonDeletePath => eval_json_delete_path_operator(left, right),
     }
 }
 
@@ -6779,6 +6828,12 @@ fn eval_sub(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
         }
         let days = parse_i64_scalar(&right, "date/time arithmetic expects integer day value")?;
         return Ok(temporal_add_days(lhs, -days));
+    }
+
+    if matches!(left, ScalarValue::Text(_)) {
+        if parse_json_document_arg(&left, "json operator -", 1).is_ok() {
+            return eval_json_delete_operator(left, right);
+        }
     }
 
     Err(EngineError {
@@ -6942,6 +6997,8 @@ fn eval_scalar_function(fn_name: &str, args: &[ScalarValue]) -> Result<ScalarVal
             eval_jsonb_exists_any_all(&args[0], &args[1], false, fn_name)
         }
         "jsonb_set" if args.len() == 3 || args.len() == 4 => eval_jsonb_set(args),
+        "jsonb_insert" if args.len() == 3 || args.len() == 4 => eval_jsonb_insert(args),
+        "jsonb_set_lax" if args.len() >= 3 && args.len() <= 5 => eval_jsonb_set_lax(args),
         "nextval" if args.len() == 1 => {
             let sequence_name = match &args[0] {
                 ScalarValue::Text(v) => normalize_sequence_name_from_text(v)?,
@@ -7557,6 +7614,77 @@ fn json_set_path(
     false
 }
 
+fn json_insert_array_index(len: usize, segment: &str, insert_after: bool) -> Option<usize> {
+    let index = segment.parse::<i64>().ok()?;
+    let mut pos = if index >= 0 {
+        index as isize
+    } else {
+        len as isize + index as isize
+    };
+    if insert_after {
+        pos += 1;
+    }
+    if pos < 0 {
+        pos = 0;
+    }
+    if pos > len as isize {
+        pos = len as isize;
+    }
+    Some(pos as usize)
+}
+
+fn json_insert_path(
+    root: &mut JsonValue,
+    path: &[String],
+    new_value: JsonValue,
+    insert_after: bool,
+) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+
+    let mut current = root;
+    for segment in &path[..path.len() - 1] {
+        current = match current {
+            JsonValue::Object(map) => {
+                let Some(next) = map.get_mut(segment) else {
+                    return false;
+                };
+                next
+            }
+            JsonValue::Array(array) => {
+                let Some(idx) = json_array_index_from_segment(array.len(), segment) else {
+                    return false;
+                };
+                &mut array[idx]
+            }
+            JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {
+                return false;
+            }
+        };
+    }
+
+    let last = &path[path.len() - 1];
+    match current {
+        JsonValue::Object(map) => {
+            if map.contains_key(last) {
+                false
+            } else {
+                map.insert(last.clone(), new_value);
+                true
+            }
+        }
+        JsonValue::Array(array) => {
+            let Some(pos) = json_insert_array_index(array.len(), last, insert_after) else {
+                return false;
+            };
+            array.insert(pos, new_value);
+            true
+        }
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => false,
+    }
+}
+
 fn eval_jsonb_set(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     if args[..3].iter().any(|arg| matches!(arg, ScalarValue::Null)) {
         return Ok(ScalarValue::Null);
@@ -7582,6 +7710,101 @@ fn eval_jsonb_set(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     } else {
         true
     };
+    let _ = json_set_path(&mut target, &path, new_value, create_missing);
+    Ok(ScalarValue::Text(target.to_string()))
+}
+
+fn eval_jsonb_insert(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+    if args[..3].iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+        return Ok(ScalarValue::Null);
+    }
+
+    let mut target = parse_json_document_arg(&args[0], "jsonb_insert", 1)?;
+    let path_text = match &args[1] {
+        ScalarValue::Text(text) => text,
+        _ => {
+            return Err(EngineError {
+                message: "jsonb_insert() argument 2 must be text path (for example '{a,b}')"
+                    .to_string(),
+            });
+        }
+    };
+    let path = parse_json_path_text_array(path_text);
+    let new_value = parse_json_new_value_arg(&args[2], "jsonb_insert", 3)?;
+    let insert_after = if args.len() == 4 {
+        parse_bool_scalar(
+            &args[3],
+            "jsonb_insert() expects boolean insert_after argument",
+        )?
+    } else {
+        false
+    };
+    let _ = json_insert_path(&mut target, &path, new_value, insert_after);
+    Ok(ScalarValue::Text(target.to_string()))
+}
+
+fn eval_jsonb_set_lax(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+    if matches!(args[0], ScalarValue::Null) || matches!(args[1], ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+
+    let mut target = parse_json_document_arg(&args[0], "jsonb_set_lax", 1)?;
+    let path_text = match &args[1] {
+        ScalarValue::Text(text) => text,
+        _ => {
+            return Err(EngineError {
+                message: "jsonb_set_lax() argument 2 must be text path (for example '{a,b}')"
+                    .to_string(),
+            });
+        }
+    };
+    let path = parse_json_path_text_array(path_text);
+    let create_missing = if args.len() >= 4 {
+        if matches!(args[3], ScalarValue::Null) {
+            return Ok(ScalarValue::Null);
+        }
+        parse_bool_scalar(
+            &args[3],
+            "jsonb_set_lax() expects boolean create_if_missing argument",
+        )?
+    } else {
+        true
+    };
+
+    if matches!(args[2], ScalarValue::Null) {
+        let treatment = if args.len() >= 5 {
+            if matches!(args[4], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            args[4].render().trim().to_ascii_lowercase()
+        } else {
+            "use_json_null".to_string()
+        };
+        match treatment.as_str() {
+            "raise_exception" => {
+                return Err(EngineError {
+                    message: "jsonb_set_lax() null_value_treatment requested exception".to_string(),
+                });
+            }
+            "use_json_null" => {
+                let _ = json_set_path(&mut target, &path, JsonValue::Null, create_missing);
+            }
+            "delete_key" => {
+                if !path.is_empty() {
+                    let _ = json_remove_path(&mut target, &path);
+                }
+            }
+            "return_target" => {}
+            _ => {
+                return Err(EngineError {
+                    message: format!("jsonb_set_lax() unknown null_value_treatment {}", treatment),
+                });
+            }
+        }
+        return Ok(ScalarValue::Text(target.to_string()));
+    }
+
+    let new_value = parse_json_new_value_arg(&args[2], "jsonb_set_lax", 3)?;
     let _ = json_set_path(&mut target, &path, new_value, create_missing);
     Ok(ScalarValue::Text(target.to_string()))
 }
@@ -7715,6 +7938,44 @@ fn eval_json_path_operator(
     }
 }
 
+fn json_concat(lhs: JsonValue, rhs: JsonValue) -> JsonValue {
+    match (lhs, rhs) {
+        (JsonValue::Object(mut left), JsonValue::Object(right)) => {
+            for (key, value) in right {
+                left.insert(key, value);
+            }
+            JsonValue::Object(left)
+        }
+        (JsonValue::Array(mut left), JsonValue::Array(right)) => {
+            left.extend(right);
+            JsonValue::Array(left)
+        }
+        (JsonValue::Array(mut left), right) => {
+            left.push(right);
+            JsonValue::Array(left)
+        }
+        (left, JsonValue::Array(right)) => {
+            let mut out = Vec::with_capacity(right.len() + 1);
+            out.push(left);
+            out.extend(right);
+            JsonValue::Array(out)
+        }
+        (left, right) => JsonValue::Array(vec![left, right]),
+    }
+}
+
+fn eval_json_concat_operator(
+    left: ScalarValue,
+    right: ScalarValue,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let lhs = parse_json_document_arg(&left, "json operator ||", 1)?;
+    let rhs = parse_json_document_arg(&right, "json operator ||", 2)?;
+    Ok(ScalarValue::Text(json_concat(lhs, rhs).to_string()))
+}
+
 fn json_contains(lhs: &JsonValue, rhs: &JsonValue) -> bool {
     match (lhs, rhs) {
         (JsonValue::Object(lmap), JsonValue::Object(rmap)) => rmap.iter().all(|(key, rvalue)| {
@@ -7738,6 +7999,128 @@ fn eval_json_contains_operator(
     let lhs = parse_json_document_arg(&left, "json operator @>", 1)?;
     let rhs = parse_json_document_arg(&right, "json operator @>", 2)?;
     Ok(ScalarValue::Bool(json_contains(&lhs, &rhs)))
+}
+
+fn eval_json_contained_by_operator(
+    left: ScalarValue,
+    right: ScalarValue,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let lhs = parse_json_document_arg(&left, "json operator <@", 1)?;
+    let rhs = parse_json_document_arg(&right, "json operator <@", 2)?;
+    Ok(ScalarValue::Bool(json_contains(&rhs, &lhs)))
+}
+
+fn json_array_index_from_i64(len: usize, index: i64) -> Option<usize> {
+    if index >= 0 {
+        let idx = index as usize;
+        if idx < len { Some(idx) } else { None }
+    } else {
+        let back = index.unsigned_abs() as usize;
+        if back == 0 || back > len {
+            None
+        } else {
+            Some(len - back)
+        }
+    }
+}
+
+fn json_array_index_from_segment(len: usize, segment: &str) -> Option<usize> {
+    let index = segment.parse::<i64>().ok()?;
+    json_array_index_from_i64(len, index)
+}
+
+fn json_remove_path(target: &mut JsonValue, path: &[String]) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    if path.len() == 1 {
+        return match target {
+            JsonValue::Object(map) => map.remove(&path[0]).is_some(),
+            JsonValue::Array(array) => {
+                let Some(idx) = json_array_index_from_segment(array.len(), &path[0]) else {
+                    return false;
+                };
+                array.remove(idx);
+                true
+            }
+            JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {
+                false
+            }
+        };
+    }
+
+    match target {
+        JsonValue::Object(map) => map
+            .get_mut(&path[0])
+            .is_some_and(|next| json_remove_path(next, &path[1..])),
+        JsonValue::Array(array) => {
+            let Some(idx) = json_array_index_from_segment(array.len(), &path[0]) else {
+                return false;
+            };
+            json_remove_path(&mut array[idx], &path[1..])
+        }
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => false,
+    }
+}
+
+fn eval_json_delete_operator(
+    left: ScalarValue,
+    right: ScalarValue,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let mut target = parse_json_document_arg(&left, "json operator -", 1)?;
+    match &mut target {
+        JsonValue::Object(map) => {
+            let key = scalar_to_json_path_segment(&right, "-")?;
+            map.remove(&key);
+        }
+        JsonValue::Array(array) => match right {
+            ScalarValue::Int(index) => {
+                if let Some(idx) = json_array_index_from_i64(array.len(), index) {
+                    array.remove(idx);
+                }
+            }
+            ScalarValue::Float(index) if index.fract() == 0.0 => {
+                if let Some(idx) = json_array_index_from_i64(array.len(), index as i64) {
+                    array.remove(idx);
+                }
+            }
+            ScalarValue::Text(text) => {
+                array.retain(|item| !matches!(item, JsonValue::String(value) if value == &text));
+            }
+            _ => {
+                return Err(EngineError {
+                    message: "json operator - expects text key or integer array index".to_string(),
+                });
+            }
+        },
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {
+            return Err(EngineError {
+                message: "json operator - expects object or array left operand".to_string(),
+            });
+        }
+    }
+    Ok(ScalarValue::Text(target.to_string()))
+}
+
+fn eval_json_delete_path_operator(
+    left: ScalarValue,
+    right: ScalarValue,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let mut target = parse_json_document_arg(&left, "json operator #-", 1)?;
+    let path = parse_json_path_operand(&right, "#-")?;
+    if !path.is_empty() {
+        let _ = json_remove_path(&mut target, &path);
+    }
+    Ok(ScalarValue::Text(target.to_string()))
 }
 
 fn json_has_key(target: &JsonValue, key: &str) -> bool {
@@ -8948,16 +9331,69 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_jsonb_insert_and_set_lax() {
+        let result = run("SELECT \
+                jsonb_insert('{\"a\":[1,2]}', '{a,1}', '9'), \
+                jsonb_insert('{\"a\":[1,2]}', '{a,1}', '9', true), \
+                jsonb_insert('{\"a\":{\"b\":1}}', '{a,c}', '2'), \
+                jsonb_set_lax('{\"a\":{\"b\":1}}', '{a,b}', NULL, true, 'use_json_null'), \
+                jsonb_set_lax('{\"a\":{\"b\":1}}', '{a,b}', NULL, true, 'delete_key'), \
+                jsonb_set_lax('{\"a\":{\"b\":1}}', '{a,b}', NULL, true, 'return_target')");
+        assert_eq!(result.rows.len(), 1);
+
+        let ScalarValue::Text(insert1_text) = &result.rows[0][0] else {
+            panic!("jsonb_insert output 1 should be text");
+        };
+        let insert1: JsonValue = serde_json::from_str(insert1_text).expect("json should parse");
+        assert_eq!(insert1, serde_json::json!({"a":[1,9,2]}));
+
+        let ScalarValue::Text(insert2_text) = &result.rows[0][1] else {
+            panic!("jsonb_insert output 2 should be text");
+        };
+        let insert2: JsonValue = serde_json::from_str(insert2_text).expect("json should parse");
+        assert_eq!(insert2, serde_json::json!({"a":[1,2,9]}));
+
+        let ScalarValue::Text(insert3_text) = &result.rows[0][2] else {
+            panic!("jsonb_insert output 3 should be text");
+        };
+        let insert3: JsonValue = serde_json::from_str(insert3_text).expect("json should parse");
+        assert_eq!(insert3, serde_json::json!({"a":{"b":1,"c":2}}));
+
+        let ScalarValue::Text(set_lax_1_text) = &result.rows[0][3] else {
+            panic!("jsonb_set_lax output 1 should be text");
+        };
+        let set_lax_1: JsonValue = serde_json::from_str(set_lax_1_text).expect("json should parse");
+        assert_eq!(set_lax_1, serde_json::json!({"a":{"b":null}}));
+
+        let ScalarValue::Text(set_lax_2_text) = &result.rows[0][4] else {
+            panic!("jsonb_set_lax output 2 should be text");
+        };
+        let set_lax_2: JsonValue = serde_json::from_str(set_lax_2_text).expect("json should parse");
+        assert_eq!(set_lax_2, serde_json::json!({"a":{}}));
+
+        let ScalarValue::Text(set_lax_3_text) = &result.rows[0][5] else {
+            panic!("jsonb_set_lax output 3 should be text");
+        };
+        let set_lax_3: JsonValue = serde_json::from_str(set_lax_3_text).expect("json should parse");
+        assert_eq!(set_lax_3, serde_json::json!({"a":{"b":1}}));
+    }
+
+    #[test]
     fn evaluates_json_binary_operators() {
         let result = run("SELECT \
                 '{\"a\":{\"b\":[10,true,null]},\"arr\":[\"k1\",\"k2\"]}' -> 'a', \
                 '{\"a\":{\"b\":[10,true,null]},\"arr\":[\"k1\",\"k2\"]}' ->> 'arr', \
                 '{\"a\":{\"b\":[10,true,null]}}' #> '{a,b,1}', \
                 '{\"a\":{\"b\":[10,true,null]}}' #>> '{a,b,0}', \
+                '{\"a\":1}' || '{\"b\":2}', \
                 '{\"a\":1,\"b\":2}' @> '{\"a\":1}', \
+                '{\"a\":1}' <@ '{\"a\":1,\"b\":2}', \
                 '{\"a\":1,\"b\":2}' ? 'b', \
                 '{\"a\":1,\"b\":2}' ?| '{x,b}', \
-                '{\"a\":1,\"b\":2}' ?& '{a,b}'");
+                '{\"a\":1,\"b\":2}' ?& '{a,b}', \
+                '{\"a\":1,\"b\":2}' - 'a', \
+                '[\"x\",\"y\",\"z\"]' - 1, \
+                '{\"a\":{\"b\":1,\"c\":2}}' #- '{a,b}'");
 
         assert_eq!(result.rows.len(), 1);
         assert_eq!(
@@ -8967,10 +9403,15 @@ mod tests {
                 ScalarValue::Text("[\"k1\",\"k2\"]".to_string()),
                 ScalarValue::Text("true".to_string()),
                 ScalarValue::Text("10".to_string()),
+                ScalarValue::Text("{\"a\":1,\"b\":2}".to_string()),
                 ScalarValue::Bool(true),
                 ScalarValue::Bool(true),
                 ScalarValue::Bool(true),
                 ScalarValue::Bool(true),
+                ScalarValue::Bool(true),
+                ScalarValue::Text("{\"b\":2}".to_string()),
+                ScalarValue::Text("[\"x\",\"z\"]".to_string()),
+                ScalarValue::Text("{\"a\":{\"c\":2}}".to_string()),
             ]
         );
     }
@@ -8982,12 +9423,20 @@ mod tests {
                 '{\"a\":1}' ->> 'missing', \
                 '{\"a\":1}' #> '{missing}', \
                 '{\"a\":1}' #>> '{missing}', \
+                '{\"a\":1}' || NULL::text, \
+                NULL::text <@ '{\"a\":1}', \
                 NULL::text -> 'a', \
                 '{\"a\":1}' @> NULL::text, \
-                '{\"a\":1}' ? NULL::text");
+                '{\"a\":1}' ? NULL::text, \
+                '{\"a\":1}' #- NULL::text, \
+                '{\"a\":1}' - NULL::text");
         assert_eq!(
             result.rows[0],
             vec![
+                ScalarValue::Null,
+                ScalarValue::Null,
+                ScalarValue::Null,
+                ScalarValue::Null,
                 ScalarValue::Null,
                 ScalarValue::Null,
                 ScalarValue::Null,
@@ -9984,9 +10433,49 @@ mod tests {
     }
 
     #[test]
+    fn executes_json_aggregate_functions() {
+        let result = run("SELECT \
+             json_agg(v), \
+             jsonb_agg(v), \
+             json_object_agg(k, v), \
+             jsonb_object_agg(k, v) \
+             FROM (SELECT 'a' AS k, 1 AS v UNION ALL SELECT 'b' AS k, 2 AS v) t");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0],
+            vec![
+                ScalarValue::Text("[1,2]".to_string()),
+                ScalarValue::Text("[1,2]".to_string()),
+                ScalarValue::Text("{\"a\":1,\"b\":2}".to_string()),
+                ScalarValue::Text("{\"a\":1,\"b\":2}".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn json_object_agg_rejects_null_keys() {
+        with_isolated_state(|| {
+            let statement =
+                parse_statement("SELECT json_object_agg(k, v) FROM (SELECT NULL AS k, 1 AS v) t")
+                    .expect("statement should parse");
+            let planned = plan_statement(statement).expect("statement should plan");
+            let err = execute_planned_query(&planned, &[]).expect_err("null key should fail");
+            assert!(err.message.contains("key cannot be null"));
+        });
+    }
+
+    #[test]
     fn executes_global_aggregate_over_empty_input() {
-        let result = run("SELECT count(*) FROM (SELECT 1 WHERE false) t");
-        assert_eq!(result.rows, vec![vec![ScalarValue::Int(0)]]);
+        let result = run("SELECT count(*), json_agg(v), json_object_agg(k, v) \
+             FROM (SELECT 1 AS v, 'a' AS k WHERE false) t");
+        assert_eq!(
+            result.rows,
+            vec![vec![
+                ScalarValue::Int(0),
+                ScalarValue::Null,
+                ScalarValue::Null
+            ]]
+        );
     }
 
     #[test]

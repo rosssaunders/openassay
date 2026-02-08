@@ -366,6 +366,14 @@ impl<'a> Lexer<'a> {
                 end: self.pos,
             });
         }
+        if self.starts_with("<@") {
+            self.pos += 2;
+            return Ok(Token {
+                kind: TokenKind::Operator("<@".to_string()),
+                start,
+                end: self.pos,
+            });
+        }
         if self.starts_with("<>") || self.starts_with("!=") {
             self.pos += 2;
             return Ok(Token {
@@ -964,7 +972,7 @@ mod tests {
 
     #[test]
     fn lexes_json_operators() {
-        let tokens = lex_sql("SELECT doc->'a', doc->>'a', doc#>'{a,b}', doc#>>'{a,b}', doc @> '{\"a\":1}', doc ? 'a', doc ?| '{a,b}', doc ?& '{a,b}'").expect("lexing should succeed");
+        let tokens = lex_sql("SELECT doc->'a', doc->>'a', doc#>'{a,b}', doc#>>'{a,b}', doc || '{\"z\":1}', doc @> '{\"a\":1}', doc <@ '{\"a\":1,\"b\":2}', doc ? 'a', doc ?| '{a,b}', doc ?& '{a,b}', doc #- '{a,b}'").expect("lexing should succeed");
         assert!(
             tokens
                 .iter()
@@ -988,7 +996,17 @@ mod tests {
         assert!(
             tokens
                 .iter()
+                .any(|token| token.kind == TokenKind::Operator("||".to_string()))
+        );
+        assert!(
+            tokens
+                .iter()
                 .any(|token| token.kind == TokenKind::Operator("@>".to_string()))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::Operator("<@".to_string()))
         );
         assert!(
             tokens
@@ -1004,6 +1022,11 @@ mod tests {
             tokens
                 .iter()
                 .any(|token| token.kind == TokenKind::Operator("?&".to_string()))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::Operator("#-".to_string()))
         );
     }
 }
