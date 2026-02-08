@@ -24,8 +24,8 @@ use crate::parser::ast::{
     CreateSchemaStatement, CreateSequenceStatement, CreateTableStatement, CreateViewStatement,
     DeleteStatement, DropBehavior, DropIndexStatement, DropSchemaStatement, DropSequenceStatement,
     DropTableStatement, DropViewStatement, Expr, ForeignKeyAction, InsertSource, InsertStatement,
-    JoinCondition, JoinType, MergeStatement, MergeWhenClause, OnConflictClause, Query, QueryExpr,
-    RefreshMaterializedViewStatement, SelectQuantifier, SelectStatement, SetOperator,
+    JoinCondition, JoinType, MergeStatement, MergeWhenClause, OnConflictClause, OrderByExpr, Query,
+    QueryExpr, RefreshMaterializedViewStatement, SelectQuantifier, SelectStatement, SetOperator,
     SetQuantifier, Statement, TableConstraint, TableExpression, TableFunctionRef, TableRef,
     TruncateStatement, TypeName, UnaryOp, UpdateStatement,
 };
@@ -634,6 +634,9 @@ fn execute_create_table(create: &CreateTableStatement) -> Result<QueryResult, En
         column.default = Some(Expr::FunctionCall {
             name: vec!["nextval".to_string()],
             args: vec![Expr::String(sequence_name.clone())],
+            distinct: false,
+            order_by: Vec::new(),
+            filter: None,
         });
         column.nullable = false;
         identity_sequence_names.push(sequence_name);
@@ -4354,9 +4357,21 @@ fn table_expression_references_relation(table: &TableExpression, relation_name: 
 
 fn expr_references_relation(expr: &Expr, relation_name: &str) -> bool {
     match expr {
-        Expr::FunctionCall { args, .. } => args
-            .iter()
-            .any(|arg| expr_references_relation(arg, relation_name)),
+        Expr::FunctionCall {
+            args,
+            order_by,
+            filter,
+            ..
+        } => {
+            args.iter()
+                .any(|arg| expr_references_relation(arg, relation_name))
+                || order_by
+                    .iter()
+                    .any(|entry| expr_references_relation(&entry.expr, relation_name))
+                || filter
+                    .as_ref()
+                    .is_some_and(|expr| expr_references_relation(expr, relation_name))
+        }
         Expr::Cast { expr, .. } => expr_references_relation(expr, relation_name),
         Expr::Unary { expr, .. } => expr_references_relation(expr, relation_name),
         Expr::Binary { left, right, .. } => {
@@ -5251,6 +5266,19 @@ fn evaluate_set_returning_function(
         "json_object_keys" | "jsonb_object_keys" => {
             eval_json_object_keys_set_function(args, &fn_name)
         }
+        "jsonb_path_query" => eval_jsonb_path_query_set_function(args, &fn_name),
+        "json_to_record" | "jsonb_to_record" => {
+            eval_json_record_table_function(function, args, &fn_name, false, false)
+        }
+        "json_to_recordset" | "jsonb_to_recordset" => {
+            eval_json_record_table_function(function, args, &fn_name, true, false)
+        }
+        "json_populate_record" | "jsonb_populate_record" => {
+            eval_json_record_table_function(function, args, &fn_name, false, true)
+        }
+        "json_populate_recordset" | "jsonb_populate_recordset" => {
+            eval_json_record_table_function(function, args, &fn_name, true, true)
+        }
         _ => Err(EngineError {
             message: format!(
                 "unsupported set-returning table function {}",
@@ -5363,6 +5391,125 @@ fn eval_json_object_keys_set_function(
         .map(|key| vec![ScalarValue::Text(key.clone())])
         .collect::<Vec<_>>();
     Ok((vec!["key".to_string()], rows))
+}
+
+fn json_value_to_scalar(value: &JsonValue) -> ScalarValue {
+    match value {
+        JsonValue::Null => ScalarValue::Null,
+        JsonValue::Bool(v) => ScalarValue::Bool(*v),
+        JsonValue::Number(n) => {
+            if let Some(int) = n.as_i64() {
+                ScalarValue::Int(int)
+            } else if let Some(float) = n.as_f64() {
+                ScalarValue::Float(float)
+            } else {
+                ScalarValue::Text(n.to_string())
+            }
+        }
+        JsonValue::String(v) => ScalarValue::Text(v.clone()),
+        JsonValue::Array(_) | JsonValue::Object(_) => ScalarValue::Text(value.to_string()),
+    }
+}
+
+fn eval_jsonb_path_query_set_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    let values = jsonb_path_query_values(args, fn_name)?;
+    let rows = values
+        .into_iter()
+        .map(|value| vec![ScalarValue::Text(value.to_string())])
+        .collect::<Vec<_>>();
+    Ok((vec!["value".to_string()], rows))
+}
+
+fn eval_json_record_table_function(
+    function: &TableFunctionRef,
+    args: &[ScalarValue],
+    fn_name: &str,
+    recordset: bool,
+    populate: bool,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if function.column_aliases.is_empty() {
+        return Err(EngineError {
+            message: format!("{fn_name}() requires column aliases (for example AS t(col1, col2))"),
+        });
+    }
+    let expected_args = if populate { 2 } else { 1 };
+    if args.len() != expected_args {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects exactly {expected_args} argument(s)"),
+        });
+    }
+
+    let mut base = JsonMap::new();
+    if populate && !matches!(args[0], ScalarValue::Null) {
+        let base_value = parse_json_document_arg(&args[0], fn_name, 1)?;
+        let JsonValue::Object(base_obj) = base_value else {
+            return Err(EngineError {
+                message: format!("{fn_name}() base argument must be a JSON object"),
+            });
+        };
+        base = base_obj;
+    }
+
+    let json_arg_idx = if populate { 2 } else { 1 };
+    if matches!(args[json_arg_idx - 1], ScalarValue::Null) {
+        if recordset {
+            return Ok((function.column_aliases.clone(), Vec::new()));
+        }
+        return Ok((
+            function.column_aliases.clone(),
+            vec![vec![ScalarValue::Null; function.column_aliases.len()]],
+        ));
+    }
+
+    let source = parse_json_document_arg(&args[json_arg_idx - 1], fn_name, json_arg_idx)?;
+    let objects = if recordset {
+        let JsonValue::Array(items) = source else {
+            return Err(EngineError {
+                message: format!("{fn_name}() JSON input must be an array of objects"),
+            });
+        };
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            let JsonValue::Object(map) = item else {
+                return Err(EngineError {
+                    message: format!("{fn_name}() JSON input must be an array of objects"),
+                });
+            };
+            out.push(map);
+        }
+        out
+    } else {
+        let JsonValue::Object(map) = source else {
+            return Err(EngineError {
+                message: format!("{fn_name}() JSON input must be an object"),
+            });
+        };
+        vec![map]
+    };
+
+    let mut rows = Vec::with_capacity(objects.len());
+    for object in objects {
+        let mut merged = base.clone();
+        for (key, value) in object {
+            merged.insert(key, value);
+        }
+        let row = function
+            .column_aliases
+            .iter()
+            .map(|column| {
+                merged
+                    .get(column)
+                    .map(json_value_to_scalar)
+                    .unwrap_or(ScalarValue::Null)
+            })
+            .collect::<Vec<_>>();
+        rows.push(row);
+    }
+
+    Ok((function.column_aliases.clone(), rows))
 }
 
 fn evaluate_relation(
@@ -5573,13 +5720,25 @@ fn project_select_row(
 
 fn contains_aggregate_expr(expr: &Expr) -> bool {
     match expr {
-        Expr::FunctionCall { name, args } => {
+        Expr::FunctionCall {
+            name,
+            args,
+            order_by,
+            filter,
+            ..
+        } => {
             if let Some(fn_name) = name.last() {
                 if is_aggregate_function(fn_name) {
                     return true;
                 }
             }
             args.iter().any(contains_aggregate_expr)
+                || order_by
+                    .iter()
+                    .any(|entry| contains_aggregate_expr(&entry.expr))
+                || filter
+                    .as_ref()
+                    .is_some_and(|entry| contains_aggregate_expr(entry))
         }
         Expr::Cast { expr, .. } => contains_aggregate_expr(expr),
         Expr::Unary { expr, .. } => contains_aggregate_expr(expr),
@@ -5630,13 +5789,35 @@ fn eval_group_expr(
     params: &[Option<String>],
 ) -> Result<ScalarValue, EngineError> {
     match expr {
-        Expr::FunctionCall { name, args } => {
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+            order_by,
+            filter,
+        } => {
             let fn_name = name
                 .last()
                 .map(|n| n.to_ascii_lowercase())
                 .unwrap_or_default();
             if is_aggregate_function(&fn_name) {
-                return eval_aggregate_function(&fn_name, args, group_rows, params);
+                return eval_aggregate_function(
+                    &fn_name,
+                    args,
+                    *distinct,
+                    order_by,
+                    filter.as_deref(),
+                    group_rows,
+                    params,
+                );
+            }
+            if *distinct || !order_by.is_empty() || filter.is_some() {
+                return Err(EngineError {
+                    message: format!(
+                        "{}() aggregate modifiers require grouped aggregate evaluation",
+                        fn_name
+                    ),
+                });
             }
 
             let mut values = Vec::with_capacity(args.len());
@@ -5703,29 +5884,102 @@ fn eval_group_expr(
     }
 }
 
+#[derive(Debug, Clone)]
+struct AggregateInputRow {
+    args: Vec<ScalarValue>,
+    order_keys: Vec<ScalarValue>,
+}
+
+fn build_aggregate_input_rows(
+    args: &[Expr],
+    order_by: &[OrderByExpr],
+    filter: Option<&Expr>,
+    group_rows: &[EvalScope],
+    params: &[Option<String>],
+) -> Result<Vec<AggregateInputRow>, EngineError> {
+    let mut out = Vec::with_capacity(group_rows.len());
+    for scope in group_rows {
+        if let Some(predicate) = filter {
+            if !truthy(&eval_expr(predicate, scope, params)?) {
+                continue;
+            }
+        }
+
+        let mut arg_values = Vec::with_capacity(args.len());
+        for arg in args {
+            arg_values.push(eval_expr(arg, scope, params)?);
+        }
+        let mut order_values = Vec::with_capacity(order_by.len());
+        for order_expr in order_by {
+            order_values.push(eval_expr(&order_expr.expr, scope, params)?);
+        }
+        out.push(AggregateInputRow {
+            args: arg_values,
+            order_keys: order_values,
+        });
+    }
+    Ok(out)
+}
+
+fn apply_aggregate_distinct(rows: &mut Vec<AggregateInputRow>) {
+    let mut seen = HashSet::new();
+    rows.retain(|row| seen.insert(row_key(&row.args)));
+}
+
+fn sort_aggregate_rows(rows: &mut [AggregateInputRow], order_by: &[OrderByExpr]) {
+    if order_by.is_empty() {
+        return;
+    }
+    rows.sort_by(|left, right| compare_order_keys(&left.order_keys, &right.order_keys, order_by));
+}
+
 fn eval_aggregate_function(
     fn_name: &str,
     args: &[Expr],
+    distinct: bool,
+    order_by: &[OrderByExpr],
+    filter: Option<&Expr>,
     group_rows: &[EvalScope],
     params: &[Option<String>],
 ) -> Result<ScalarValue, EngineError> {
     match fn_name {
         "count" => {
             if args.len() == 1 && matches!(args[0], Expr::Wildcard) {
-                return Ok(ScalarValue::Int(group_rows.len() as i64));
+                if distinct {
+                    return Err(EngineError {
+                        message: "count(DISTINCT *) is not supported".to_string(),
+                    });
+                }
+                if !order_by.is_empty() {
+                    return Err(EngineError {
+                        message: "count(*) does not accept aggregate ORDER BY".to_string(),
+                    });
+                }
+                let mut count = 0i64;
+                for scope in group_rows {
+                    if let Some(predicate) = filter {
+                        if !truthy(&eval_expr(predicate, scope, params)?) {
+                            continue;
+                        }
+                    }
+                    count += 1;
+                }
+                return Ok(ScalarValue::Int(count));
             }
             if args.len() != 1 {
                 return Err(EngineError {
                     message: "count() expects exactly one argument".to_string(),
                 });
             }
-            let mut count = 0i64;
-            for scope in group_rows {
-                let value = eval_expr(&args[0], scope, params)?;
-                if !matches!(value, ScalarValue::Null) {
-                    count += 1;
-                }
+            let mut rows = build_aggregate_input_rows(args, order_by, filter, group_rows, params)?;
+            if distinct {
+                apply_aggregate_distinct(&mut rows);
             }
+            sort_aggregate_rows(&mut rows, order_by);
+            let count = rows
+                .iter()
+                .filter(|row| !matches!(row.args[0], ScalarValue::Null))
+                .count() as i64;
             Ok(ScalarValue::Int(count))
         }
         "sum" => {
@@ -5734,13 +5988,18 @@ fn eval_aggregate_function(
                     message: "sum() expects exactly one argument".to_string(),
                 });
             }
+            let mut rows = build_aggregate_input_rows(args, order_by, filter, group_rows, params)?;
+            if distinct {
+                apply_aggregate_distinct(&mut rows);
+            }
+            sort_aggregate_rows(&mut rows, order_by);
+
             let mut int_sum: i64 = 0;
             let mut float_sum: f64 = 0.0;
             let mut saw_float = false;
             let mut saw_any = false;
-
-            for scope in group_rows {
-                match eval_expr(&args[0], scope, params)? {
+            for row in rows {
+                match row.args[0] {
                     ScalarValue::Null => {}
                     ScalarValue::Int(v) => {
                         int_sum += v;
@@ -5759,7 +6018,6 @@ fn eval_aggregate_function(
                     }
                 }
             }
-
             if !saw_any {
                 return Ok(ScalarValue::Null);
             }
@@ -5775,10 +6033,16 @@ fn eval_aggregate_function(
                     message: "avg() expects exactly one argument".to_string(),
                 });
             }
+            let mut rows = build_aggregate_input_rows(args, order_by, filter, group_rows, params)?;
+            if distinct {
+                apply_aggregate_distinct(&mut rows);
+            }
+            sort_aggregate_rows(&mut rows, order_by);
+
             let mut total = 0.0f64;
             let mut count = 0u64;
-            for scope in group_rows {
-                match eval_expr(&args[0], scope, params)? {
+            for row in rows {
+                match row.args[0] {
                     ScalarValue::Null => {}
                     ScalarValue::Int(v) => {
                         total += v as f64;
@@ -5807,9 +6071,15 @@ fn eval_aggregate_function(
                     message: format!("{fn_name}() expects exactly one argument"),
                 });
             }
+            let mut rows = build_aggregate_input_rows(args, order_by, filter, group_rows, params)?;
+            if distinct {
+                apply_aggregate_distinct(&mut rows);
+            }
+            sort_aggregate_rows(&mut rows, order_by);
+
             let mut current: Option<ScalarValue> = None;
-            for scope in group_rows {
-                let value = eval_expr(&args[0], scope, params)?;
+            for row in rows {
+                let value = row.args[0].clone();
                 if matches!(value, ScalarValue::Null) {
                     continue;
                 }
@@ -5836,13 +6106,17 @@ fn eval_aggregate_function(
                     message: format!("{fn_name}() expects exactly one argument"),
                 });
             }
-            if group_rows.is_empty() {
+            let mut rows = build_aggregate_input_rows(args, order_by, filter, group_rows, params)?;
+            if distinct {
+                apply_aggregate_distinct(&mut rows);
+            }
+            sort_aggregate_rows(&mut rows, order_by);
+            if rows.is_empty() {
                 return Ok(ScalarValue::Null);
             }
-            let mut out = Vec::with_capacity(group_rows.len());
-            for scope in group_rows {
-                let value = eval_expr(&args[0], scope, params)?;
-                out.push(scalar_to_json_value(&value)?);
+            let mut out = Vec::with_capacity(rows.len());
+            for row in rows {
+                out.push(scalar_to_json_value(&row.args[0])?);
             }
             Ok(ScalarValue::Text(JsonValue::Array(out).to_string()))
         }
@@ -5852,19 +6126,22 @@ fn eval_aggregate_function(
                     message: format!("{fn_name}() expects exactly two arguments"),
                 });
             }
-            if group_rows.is_empty() {
+            let mut rows = build_aggregate_input_rows(args, order_by, filter, group_rows, params)?;
+            if distinct {
+                apply_aggregate_distinct(&mut rows);
+            }
+            sort_aggregate_rows(&mut rows, order_by);
+            if rows.is_empty() {
                 return Ok(ScalarValue::Null);
             }
             let mut out = JsonMap::new();
-            for scope in group_rows {
-                let key = eval_expr(&args[0], scope, params)?;
-                let value = eval_expr(&args[1], scope, params)?;
-                if matches!(key, ScalarValue::Null) {
+            for row in rows {
+                if matches!(row.args[0], ScalarValue::Null) {
                     return Err(EngineError {
                         message: format!("{fn_name}() key cannot be null"),
                     });
                 }
-                out.insert(key.render(), scalar_to_json_value(&value)?);
+                out.insert(row.args[0].render(), scalar_to_json_value(&row.args[1])?);
             }
             Ok(ScalarValue::Text(JsonValue::Object(out).to_string()))
         }
@@ -6511,7 +6788,21 @@ fn eval_expr(
             let value = eval_expr(expr, scope, params)?;
             eval_cast_scalar(value, type_name)
         }
-        Expr::FunctionCall { name, args } => eval_function(name, args, scope, params),
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+            order_by,
+            filter,
+        } => eval_function(
+            name,
+            args,
+            *distinct,
+            order_by,
+            filter.as_deref(),
+            scope,
+            params,
+        ),
         Expr::Wildcard => Err(EngineError {
             message: "wildcard expression requires FROM support".to_string(),
         }),
@@ -6765,6 +7056,8 @@ fn eval_binary(
         JsonGetText => eval_json_get_operator(left, right, true),
         JsonPath => eval_json_path_operator(left, right, false),
         JsonPathText => eval_json_path_operator(left, right, true),
+        JsonPathExists => eval_json_path_predicate_operator(left, right, false),
+        JsonPathMatch => eval_json_path_predicate_operator(left, right, true),
         JsonConcat => eval_json_concat_operator(left, right),
         JsonContains => eval_json_contains_operator(left, right),
         JsonContainedBy => eval_json_contained_by_operator(left, right),
@@ -6940,6 +7233,9 @@ fn numeric_mod(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Eng
 fn eval_function(
     name: &[String],
     args: &[Expr],
+    distinct: bool,
+    order_by: &[OrderByExpr],
+    filter: Option<&Expr>,
     scope: &EvalScope,
     params: &[Option<String>],
 ) -> Result<ScalarValue, EngineError> {
@@ -6947,6 +7243,14 @@ fn eval_function(
         .last()
         .map(|n| n.to_ascii_lowercase())
         .unwrap_or_else(|| "".to_string());
+    if distinct || !order_by.is_empty() || filter.is_some() {
+        return Err(EngineError {
+            message: format!(
+                "{}() aggregate modifiers require grouped aggregate evaluation",
+                fn_name
+            ),
+        });
+    }
     if is_aggregate_function(&fn_name) {
         return Err(EngineError {
             message: format!(
@@ -6996,6 +7300,10 @@ fn eval_scalar_function(fn_name: &str, args: &[ScalarValue]) -> Result<ScalarVal
         "jsonb_exists_all" if args.len() == 2 => {
             eval_jsonb_exists_any_all(&args[0], &args[1], false, fn_name)
         }
+        "jsonb_path_exists" if args.len() >= 2 => eval_jsonb_path_exists(args, fn_name),
+        "jsonb_path_query" if args.len() >= 2 => eval_jsonb_path_query_first(args, fn_name),
+        "jsonb_path_query_array" if args.len() >= 2 => eval_jsonb_path_query_array(args, fn_name),
+        "jsonb_path_query_first" if args.len() >= 2 => eval_jsonb_path_query_first(args, fn_name),
         "jsonb_set" if args.len() == 3 || args.len() == 4 => eval_jsonb_set(args),
         "jsonb_insert" if args.len() == 3 || args.len() == 4 => eval_jsonb_insert(args),
         "jsonb_set_lax" if args.len() >= 3 && args.len() <= 5 => eval_jsonb_set_lax(args),
@@ -7895,6 +8203,326 @@ fn parse_json_path_operand(
         ScalarValue::Int(v) => Ok(vec![v.to_string()]),
         ScalarValue::Float(v) => Ok(vec![v.to_string()]),
         ScalarValue::Bool(v) => Ok(vec![v.to_string()]),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JsonPathStep {
+    Key(String),
+    Index(i64),
+    Wildcard,
+}
+
+fn parse_jsonpath_text_arg(
+    value: &ScalarValue,
+    fn_name: &str,
+    arg_index: usize,
+) -> Result<String, EngineError> {
+    let ScalarValue::Text(text) = value else {
+        return Err(EngineError {
+            message: format!("{fn_name}() argument {arg_index} must be JSONPath text"),
+        });
+    };
+    Ok(text.clone())
+}
+
+fn parse_jsonpath_steps(path: &str, context: &str) -> Result<Vec<JsonPathStep>, EngineError> {
+    let bytes = path.trim().as_bytes();
+    if bytes.is_empty() || bytes[0] != b'$' {
+        return Err(EngineError {
+            message: format!("{context} JSONPath must start with '$'"),
+        });
+    }
+
+    let mut steps = Vec::new();
+    let mut idx = 1usize;
+    while idx < bytes.len() {
+        match bytes[idx] {
+            b' ' | b'\t' | b'\r' | b'\n' => idx += 1,
+            b'.' => {
+                idx += 1;
+                if idx >= bytes.len() {
+                    return Err(EngineError {
+                        message: format!("{context} invalid JSONPath"),
+                    });
+                }
+                if bytes[idx] == b'*' {
+                    steps.push(JsonPathStep::Wildcard);
+                    idx += 1;
+                    continue;
+                }
+                if bytes[idx] == b'"' {
+                    idx += 1;
+                    let start = idx;
+                    while idx < bytes.len() && bytes[idx] != b'"' {
+                        idx += 1;
+                    }
+                    if idx >= bytes.len() {
+                        return Err(EngineError {
+                            message: format!("{context} unterminated quoted JSONPath key"),
+                        });
+                    }
+                    let key = std::str::from_utf8(&bytes[start..idx]).unwrap_or_default();
+                    idx += 1;
+                    steps.push(JsonPathStep::Key(key.to_string()));
+                    continue;
+                }
+                let start = idx;
+                while idx < bytes.len() && bytes[idx] != b'.' && bytes[idx] != b'[' {
+                    idx += 1;
+                }
+                if start == idx {
+                    return Err(EngineError {
+                        message: format!("{context} invalid JSONPath key"),
+                    });
+                }
+                let key = std::str::from_utf8(&bytes[start..idx]).unwrap_or_default();
+                steps.push(JsonPathStep::Key(key.to_string()));
+            }
+            b'[' => {
+                idx += 1;
+                while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                    idx += 1;
+                }
+                if idx >= bytes.len() {
+                    return Err(EngineError {
+                        message: format!("{context} unterminated JSONPath index"),
+                    });
+                }
+                if bytes[idx] == b'*' {
+                    idx += 1;
+                    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                        idx += 1;
+                    }
+                    if idx >= bytes.len() || bytes[idx] != b']' {
+                        return Err(EngineError {
+                            message: format!("{context} invalid JSONPath wildcard index"),
+                        });
+                    }
+                    idx += 1;
+                    steps.push(JsonPathStep::Wildcard);
+                    continue;
+                }
+                if bytes[idx] == b'\'' || bytes[idx] == b'"' {
+                    let quote = bytes[idx];
+                    idx += 1;
+                    let start = idx;
+                    while idx < bytes.len() && bytes[idx] != quote {
+                        idx += 1;
+                    }
+                    if idx >= bytes.len() {
+                        return Err(EngineError {
+                            message: format!("{context} unterminated quoted JSONPath key"),
+                        });
+                    }
+                    let key = std::str::from_utf8(&bytes[start..idx]).unwrap_or_default();
+                    idx += 1;
+                    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                        idx += 1;
+                    }
+                    if idx >= bytes.len() || bytes[idx] != b']' {
+                        return Err(EngineError {
+                            message: format!("{context} invalid JSONPath bracket expression"),
+                        });
+                    }
+                    idx += 1;
+                    steps.push(JsonPathStep::Key(key.to_string()));
+                    continue;
+                }
+                let start = idx;
+                while idx < bytes.len() && bytes[idx] != b']' {
+                    idx += 1;
+                }
+                if idx >= bytes.len() {
+                    return Err(EngineError {
+                        message: format!("{context} unterminated JSONPath index"),
+                    });
+                }
+                let token = std::str::from_utf8(&bytes[start..idx])
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                idx += 1;
+                if token.is_empty() {
+                    return Err(EngineError {
+                        message: format!("{context} invalid JSONPath index"),
+                    });
+                }
+                if let Ok(index) = token.parse::<i64>() {
+                    steps.push(JsonPathStep::Index(index));
+                } else {
+                    steps.push(JsonPathStep::Key(token));
+                }
+            }
+            _ => {
+                return Err(EngineError {
+                    message: format!("{context} invalid JSONPath near byte {}", idx),
+                });
+            }
+        }
+    }
+    Ok(steps)
+}
+
+fn jsonpath_query_values(root: &JsonValue, steps: &[JsonPathStep]) -> Vec<JsonValue> {
+    let mut current = vec![root.clone()];
+    for step in steps {
+        let mut next = Vec::new();
+        for value in current {
+            match step {
+                JsonPathStep::Key(key) => {
+                    if let JsonValue::Object(map) = value {
+                        if let Some(found) = map.get(key) {
+                            next.push(found.clone());
+                        }
+                    }
+                }
+                JsonPathStep::Index(index) => {
+                    if let JsonValue::Array(items) = value {
+                        if let Some(idx) = json_array_index_from_i64(items.len(), *index) {
+                            next.push(items[idx].clone());
+                        }
+                    }
+                }
+                JsonPathStep::Wildcard => match value {
+                    JsonValue::Array(items) => next.extend(items),
+                    JsonValue::Object(map) => next.extend(map.values().cloned()),
+                    JsonValue::Null
+                    | JsonValue::Bool(_)
+                    | JsonValue::Number(_)
+                    | JsonValue::String(_) => {}
+                },
+            }
+        }
+        current = next;
+        if current.is_empty() {
+            break;
+        }
+    }
+    current
+}
+
+fn jsonpath_value_truthy(value: &JsonValue) -> bool {
+    match value {
+        JsonValue::Null => false,
+        JsonValue::Bool(v) => *v,
+        JsonValue::Number(v) => v.as_f64().is_some_and(|n| n != 0.0),
+        JsonValue::String(v) => !v.is_empty(),
+        JsonValue::Array(v) => !v.is_empty(),
+        JsonValue::Object(v) => !v.is_empty(),
+    }
+}
+
+fn eval_json_path_predicate_operator(
+    left: ScalarValue,
+    right: ScalarValue,
+    match_mode: bool,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let target = parse_json_document_arg(
+        &left,
+        if match_mode {
+            "json operator @@"
+        } else {
+            "json operator @?"
+        },
+        1,
+    )?;
+    let path_text = parse_jsonpath_text_arg(
+        &right,
+        if match_mode {
+            "json operator @@"
+        } else {
+            "json operator @?"
+        },
+        2,
+    )?;
+    let steps = parse_jsonpath_steps(
+        &path_text,
+        if match_mode {
+            "json operator @@"
+        } else {
+            "json operator @?"
+        },
+    )?;
+    let values = jsonpath_query_values(&target, &steps);
+    if match_mode {
+        if let Some(first) = values.first() {
+            Ok(ScalarValue::Bool(jsonpath_value_truthy(first)))
+        } else {
+            Ok(ScalarValue::Bool(false))
+        }
+    } else {
+        Ok(ScalarValue::Bool(!values.is_empty()))
+    }
+}
+
+fn jsonb_path_query_values(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<Vec<JsonValue>, EngineError> {
+    if args.len() < 2 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects at least two arguments"),
+        });
+    }
+    if matches!(args[0], ScalarValue::Null) || matches!(args[1], ScalarValue::Null) {
+        return Ok(Vec::new());
+    }
+    let target = parse_json_document_arg(&args[0], fn_name, 1)?;
+    let path_text = parse_jsonpath_text_arg(&args[1], fn_name, 2)?;
+    let steps = parse_jsonpath_steps(&path_text, fn_name)?;
+    Ok(jsonpath_query_values(&target, &steps))
+}
+
+fn eval_jsonb_path_exists(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
+    if args.len() < 2 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects at least two arguments"),
+        });
+    }
+    if matches!(args[0], ScalarValue::Null) || matches!(args[1], ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let values = jsonb_path_query_values(args, fn_name)?;
+    Ok(ScalarValue::Bool(!values.is_empty()))
+}
+
+fn eval_jsonb_path_query_array(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<ScalarValue, EngineError> {
+    if args.len() < 2 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects at least two arguments"),
+        });
+    }
+    if matches!(args[0], ScalarValue::Null) || matches!(args[1], ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let values = jsonb_path_query_values(args, fn_name)?;
+    Ok(ScalarValue::Text(JsonValue::Array(values).to_string()))
+}
+
+fn eval_jsonb_path_query_first(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<ScalarValue, EngineError> {
+    if args.len() < 2 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects at least two arguments"),
+        });
+    }
+    if matches!(args[0], ScalarValue::Null) || matches!(args[1], ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let values = jsonb_path_query_values(args, fn_name)?;
+    if let Some(first) = values.first() {
+        Ok(ScalarValue::Text(first.to_string()))
+    } else {
+        Ok(ScalarValue::Null)
     }
 }
 
@@ -9388,6 +10016,8 @@ mod tests {
                 '{\"a\":1}' || '{\"b\":2}', \
                 '{\"a\":1,\"b\":2}' @> '{\"a\":1}', \
                 '{\"a\":1}' <@ '{\"a\":1,\"b\":2}', \
+                '{\"a\":[{\"id\":1}],\"flag\":true}' @? '$.a[*].id', \
+                '{\"a\":[{\"id\":1}],\"flag\":true}' @@ '$.flag', \
                 '{\"a\":1,\"b\":2}' ? 'b', \
                 '{\"a\":1,\"b\":2}' ?| '{x,b}', \
                 '{\"a\":1,\"b\":2}' ?& '{a,b}', \
@@ -9409,6 +10039,8 @@ mod tests {
                 ScalarValue::Bool(true),
                 ScalarValue::Bool(true),
                 ScalarValue::Bool(true),
+                ScalarValue::Bool(true),
+                ScalarValue::Bool(true),
                 ScalarValue::Text("{\"b\":2}".to_string()),
                 ScalarValue::Text("[\"x\",\"z\"]".to_string()),
                 ScalarValue::Text("{\"a\":{\"c\":2}}".to_string()),
@@ -9425,6 +10057,8 @@ mod tests {
                 '{\"a\":1}' #>> '{missing}', \
                 '{\"a\":1}' || NULL::text, \
                 NULL::text <@ '{\"a\":1}', \
+                '{\"a\":1}' @? NULL::text, \
+                NULL::text @@ '$.a', \
                 NULL::text -> 'a', \
                 '{\"a\":1}' @> NULL::text, \
                 '{\"a\":1}' ? NULL::text, \
@@ -9444,6 +10078,78 @@ mod tests {
                 ScalarValue::Null,
                 ScalarValue::Null,
                 ScalarValue::Null,
+                ScalarValue::Null,
+                ScalarValue::Null,
+            ]
+        );
+    }
+
+    #[test]
+    fn evaluates_jsonb_path_functions() {
+        let result = run("SELECT \
+                jsonb_path_exists('{\"a\":[{\"id\":1},{\"id\":2}],\"flag\":true}', '$.a[*].id'), \
+                jsonb_path_query_first('{\"a\":[{\"id\":1},{\"id\":2}],\"flag\":true}', '$.a[1].id'), \
+                jsonb_path_query_array('{\"a\":[{\"id\":1},{\"id\":2}],\"flag\":true}', '$.a[*].id')");
+        assert_eq!(
+            result.rows,
+            vec![vec![
+                ScalarValue::Bool(true),
+                ScalarValue::Text("2".to_string()),
+                ScalarValue::Text("[1,2]".to_string()),
+            ]]
+        );
+    }
+
+    #[test]
+    fn expands_jsonb_path_query_in_from_clause() {
+        let result = run(
+            "SELECT * FROM jsonb_path_query('{\"a\":[{\"id\":2},{\"id\":1}]}', '$.a[*].id') ORDER BY 1",
+        );
+        assert_eq!(result.columns, vec!["value".to_string()]);
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![ScalarValue::Text("1".to_string())],
+                vec![ScalarValue::Text("2".to_string())],
+            ]
+        );
+    }
+
+    #[test]
+    fn expands_json_record_functions_in_from_clause() {
+        let results = run_batch(&[
+            "SELECT a, b FROM json_to_record('{\"a\":1,\"b\":\"x\"}') AS r(a int8, b text)",
+            "SELECT a, b FROM json_to_recordset('[{\"a\":2,\"b\":\"y\"},{\"a\":3}]') AS r(a int8, b text) ORDER BY 1",
+            "SELECT a, b FROM json_populate_record('{\"a\":0,\"b\":\"base\"}', '{\"a\":5}') AS r(a int8, b text)",
+            "SELECT a, b FROM json_populate_recordset('{\"b\":\"base\"}', '[{\"a\":7},{\"a\":8,\"b\":\"z\"}]') AS r(a int8, b text) ORDER BY 1",
+        ]);
+
+        assert_eq!(
+            results[0].rows,
+            vec![vec![
+                ScalarValue::Int(1),
+                ScalarValue::Text("x".to_string())
+            ]]
+        );
+        assert_eq!(
+            results[1].rows,
+            vec![
+                vec![ScalarValue::Int(2), ScalarValue::Text("y".to_string())],
+                vec![ScalarValue::Int(3), ScalarValue::Null],
+            ]
+        );
+        assert_eq!(
+            results[2].rows,
+            vec![vec![
+                ScalarValue::Int(5),
+                ScalarValue::Text("base".to_string())
+            ]]
+        );
+        assert_eq!(
+            results[3].rows,
+            vec![
+                vec![ScalarValue::Int(7), ScalarValue::Text("base".to_string())],
+                vec![ScalarValue::Int(8), ScalarValue::Text("z".to_string())],
             ]
         );
     }
@@ -9614,6 +10320,18 @@ mod tests {
             let err = execute_planned_query(&planned, &[])
                 .expect_err("non-object JSON input should fail");
             assert!(err.message.contains("must be a JSON object"));
+        });
+    }
+
+    #[test]
+    fn rejects_missing_column_aliases_for_json_to_record() {
+        with_isolated_state(|| {
+            let statement =
+                parse_statement("SELECT * FROM json_to_record('{\"a\":1}')").expect("parses");
+            let planned = plan_statement(statement).expect("plans");
+            let err = execute_planned_query(&planned, &[])
+                .expect_err("json_to_record should require aliases");
+            assert!(err.message.contains("requires column aliases"));
         });
     }
 
@@ -10449,6 +11167,35 @@ mod tests {
                 ScalarValue::Text("{\"a\":1,\"b\":2}".to_string()),
                 ScalarValue::Text("{\"a\":1,\"b\":2}".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn executes_json_aggregate_modifiers() {
+        let results = run_batch(&[
+            "SELECT \
+             json_agg(DISTINCT v ORDER BY v DESC) FILTER (WHERE keep), \
+             count(DISTINCT v) FILTER (WHERE keep) \
+             FROM (SELECT 1 AS v, true AS keep UNION ALL SELECT 2 AS v, true AS keep UNION ALL SELECT 1 AS v, false AS keep) t",
+            "SELECT \
+             json_object_agg(k, v ORDER BY v DESC), \
+             json_object_agg(k, v ORDER BY v ASC) \
+             FROM (SELECT 'x' AS k, 1 AS v UNION ALL SELECT 'x' AS k, 2 AS v) t",
+        ]);
+
+        assert_eq!(
+            results[0].rows,
+            vec![vec![
+                ScalarValue::Text("[2,1]".to_string()),
+                ScalarValue::Int(2),
+            ]]
+        );
+        assert_eq!(
+            results[1].rows,
+            vec![vec![
+                ScalarValue::Text("{\"x\":1}".to_string()),
+                ScalarValue::Text("{\"x\":2}".to_string()),
+            ]]
         );
     }
 

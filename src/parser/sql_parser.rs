@@ -1717,15 +1717,41 @@ impl Parser {
             return Ok(Vec::new());
         }
 
-        let mut cols = vec![self.parse_identifier()?];
-        while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+        let mut cols = Vec::new();
+        loop {
             cols.push(self.parse_identifier()?);
+            self.skip_optional_column_alias_type();
+            if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                break;
+            }
         }
         self.expect_token(
             |k| matches!(k, TokenKind::RParen),
             "expected ')' after column alias list",
         )?;
         Ok(cols)
+    }
+
+    fn skip_optional_column_alias_type(&mut self) {
+        let mut depth = 0usize;
+        loop {
+            match self.current_kind() {
+                TokenKind::Comma | TokenKind::RParen if depth == 0 => break,
+                TokenKind::LParen => {
+                    depth += 1;
+                    self.advance();
+                }
+                TokenKind::RParen => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    self.advance();
+                }
+                TokenKind::Eof => break,
+                _ => self.advance(),
+            }
+        }
     }
 
     fn parse_order_by_list(&mut self) -> Result<Vec<OrderByExpr>, ParseError> {
@@ -2003,9 +2029,9 @@ impl Parser {
                 Ok(Expr::Wildcard)
             }
             TokenKind::Identifier(_)
-            | TokenKind::Keyword(Keyword::Left | Keyword::Right | Keyword::Replace) => {
-                self.parse_identifier_expr()
-            }
+            | TokenKind::Keyword(
+                Keyword::Left | Keyword::Right | Keyword::Replace | Keyword::Filter,
+            ) => self.parse_identifier_expr(),
             _ => Err(self.error_at_current("expected expression")),
         }
     }
@@ -2017,18 +2043,48 @@ impl Parser {
         }
 
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+            let distinct = self.consume_keyword(Keyword::Distinct);
             let mut args = Vec::new();
+            let mut order_by = Vec::new();
             if !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
                 args.push(self.parse_expr()?);
                 while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                     args.push(self.parse_expr()?);
+                }
+                if self.consume_keyword(Keyword::Order) {
+                    self.expect_keyword(
+                        Keyword::By,
+                        "expected BY after ORDER in function argument list",
+                    )?;
+                    order_by = self.parse_order_by_list()?;
                 }
                 self.expect_token(
                     |k| matches!(k, TokenKind::RParen),
                     "expected ')' after function arguments",
                 )?;
             }
-            return Ok(Expr::FunctionCall { name, args });
+            let filter = if self.consume_keyword(Keyword::Filter) {
+                self.expect_token(
+                    |k| matches!(k, TokenKind::LParen),
+                    "expected '(' after FILTER",
+                )?;
+                self.expect_keyword(Keyword::Where, "expected WHERE in FILTER clause")?;
+                let predicate = self.parse_expr()?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after FILTER clause",
+                )?;
+                Some(Box::new(predicate))
+            } else {
+                None
+            };
+            return Ok(Expr::FunctionCall {
+                name,
+                args,
+                distinct,
+                order_by,
+                filter,
+            });
         }
 
         Ok(Expr::Identifier(name))
@@ -2144,6 +2200,10 @@ impl Parser {
                 self.advance();
                 Ok("replace".to_string())
             }
+            TokenKind::Keyword(Keyword::Filter) => {
+                self.advance();
+                Ok("filter".to_string())
+            }
             _ => Err(self.error_at_current("expected identifier")),
         }
     }
@@ -2220,6 +2280,10 @@ impl Parser {
                 self.advance();
                 Ok(out)
             }
+            TokenKind::Keyword(Keyword::Filter) => {
+                self.advance();
+                Ok("filter".to_string())
+            }
             _ => Err(self.error_at_current("expected identifier")),
         }
     }
@@ -2255,6 +2319,8 @@ impl Parser {
             TokenKind::Operator(op) if op == "||" => Some((BinaryOp::JsonConcat, 7, 8)),
             TokenKind::Operator(op) if op == "@>" => Some((BinaryOp::JsonContains, 5, 6)),
             TokenKind::Operator(op) if op == "<@" => Some((BinaryOp::JsonContainedBy, 5, 6)),
+            TokenKind::Operator(op) if op == "@?" => Some((BinaryOp::JsonPathExists, 5, 6)),
+            TokenKind::Operator(op) if op == "@@" => Some((BinaryOp::JsonPathMatch, 5, 6)),
             TokenKind::Operator(op) if op == "?" => Some((BinaryOp::JsonHasKey, 5, 6)),
             TokenKind::Operator(op) if op == "?|" => Some((BinaryOp::JsonHasAny, 5, 6)),
             TokenKind::Operator(op) if op == "?&" => Some((BinaryOp::JsonHasAll, 5, 6)),
@@ -3642,6 +3708,8 @@ mod tests {
              doc || '{\"z\":1}', \
              doc @> '{\"a\":1}', \
              doc <@ '{\"a\":1,\"b\":2}', \
+             doc @? '$.a', \
+             doc @@ '$.a', \
              doc ? 'a', \
              doc ?| '{a,b}', \
              doc ?& '{a,b}', \
@@ -3665,6 +3733,8 @@ mod tests {
             BinaryOp::JsonConcat,
             BinaryOp::JsonContains,
             BinaryOp::JsonContainedBy,
+            BinaryOp::JsonPathExists,
+            BinaryOp::JsonPathMatch,
             BinaryOp::JsonHasKey,
             BinaryOp::JsonHasAny,
             BinaryOp::JsonHasAll,
@@ -3678,5 +3748,54 @@ mod tests {
                 other => panic!("expected binary expression target, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn parses_aggregate_function_modifiers() {
+        let stmt = parse_statement(
+            "SELECT json_agg(DISTINCT payload ORDER BY id DESC) FILTER (WHERE keep = true) FROM t",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = query.body else {
+            panic!("expected select query body");
+        };
+        let Expr::FunctionCall {
+            name,
+            distinct,
+            order_by,
+            filter,
+            ..
+        } = &select.targets[0].expr
+        else {
+            panic!("expected function call");
+        };
+        assert_eq!(name, &vec!["json_agg".to_string()]);
+        assert!(*distinct);
+        assert_eq!(order_by.len(), 1);
+        assert!(filter.is_some());
+    }
+
+    #[test]
+    fn parses_typed_column_aliases_for_table_functions() {
+        let stmt = parse_statement(
+            "SELECT * FROM json_to_record('{\"a\":1,\"b\":\"x\"}') AS r(a int8, b text)",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = query.body else {
+            panic!("expected select query body");
+        };
+        let TableExpression::Function(function) = &select.from[0] else {
+            panic!("expected function table expression");
+        };
+        assert_eq!(
+            function.column_aliases,
+            vec!["a".to_string(), "b".to_string()]
+        );
     }
 }

@@ -33,6 +33,7 @@ pub enum Keyword {
     Except,
     Exists,
     False,
+    Filter,
     Foreign,
     Full,
     From,
@@ -136,6 +137,7 @@ impl Keyword {
             "except" => Some(Self::Except),
             "exists" => Some(Self::Exists),
             "false" => Some(Self::False),
+            "filter" => Some(Self::Filter),
             "foreign" => Some(Self::Foreign),
             "full" => Some(Self::Full),
             "from" => Some(Self::From),
@@ -386,6 +388,22 @@ impl<'a> Lexer<'a> {
             self.pos += 3;
             return Ok(Token {
                 kind: TokenKind::Operator("->>".to_string()),
+                start,
+                end: self.pos,
+            });
+        }
+        if self.starts_with("@?") {
+            self.pos += 2;
+            return Ok(Token {
+                kind: TokenKind::Operator("@?".to_string()),
+                start,
+                end: self.pos,
+            });
+        }
+        if self.starts_with("@@") {
+            self.pos += 2;
+            return Ok(Token {
+                kind: TokenKind::Operator("@@".to_string()),
                 start,
                 end: self.pos,
             });
@@ -972,7 +990,7 @@ mod tests {
 
     #[test]
     fn lexes_json_operators() {
-        let tokens = lex_sql("SELECT doc->'a', doc->>'a', doc#>'{a,b}', doc#>>'{a,b}', doc || '{\"z\":1}', doc @> '{\"a\":1}', doc <@ '{\"a\":1,\"b\":2}', doc ? 'a', doc ?| '{a,b}', doc ?& '{a,b}', doc #- '{a,b}'").expect("lexing should succeed");
+        let tokens = lex_sql("SELECT doc->'a', doc->>'a', doc#>'{a,b}', doc#>>'{a,b}', doc || '{\"z\":1}', doc @> '{\"a\":1}', doc <@ '{\"a\":1,\"b\":2}', doc @? '$.a', doc @@ '$.a', doc ? 'a', doc ?| '{a,b}', doc ?& '{a,b}', doc #- '{a,b}'").expect("lexing should succeed");
         assert!(
             tokens
                 .iter()
@@ -1007,6 +1025,16 @@ mod tests {
             tokens
                 .iter()
                 .any(|token| token.kind == TokenKind::Operator("<@".to_string()))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::Operator("@?".to_string()))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|token| token.kind == TokenKind::Operator("@@".to_string()))
         );
         assert!(
             tokens

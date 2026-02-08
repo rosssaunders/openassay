@@ -1553,7 +1553,7 @@ fn normalize_sequence_ref(raw: &str) -> Option<String> {
 }
 
 fn default_references_sequence(default: &Expr, sequence_name: &str) -> bool {
-    let Expr::FunctionCall { name, args } = default else {
+    let Expr::FunctionCall { name, args, .. } = default else {
         return false;
     };
     if !name
@@ -1649,7 +1649,13 @@ fn table_expression_references_sequence(table: &TableExpression, sequence_name: 
 
 fn expr_references_sequence(expr: &Expr, sequence_name: &str) -> bool {
     match expr {
-        Expr::FunctionCall { name, args } => {
+        Expr::FunctionCall {
+            name,
+            args,
+            order_by,
+            filter,
+            ..
+        } => {
             if name
                 .last()
                 .is_some_and(|part| part.eq_ignore_ascii_case("nextval"))
@@ -1668,6 +1674,12 @@ fn expr_references_sequence(expr: &Expr, sequence_name: &str) -> bool {
             }
             args.iter()
                 .any(|arg| expr_references_sequence(arg, sequence_name))
+                || order_by
+                    .iter()
+                    .any(|entry| expr_references_sequence(&entry.expr, sequence_name))
+                || filter
+                    .as_ref()
+                    .is_some_and(|expr| expr_references_sequence(expr, sequence_name))
         }
         Expr::Unary { expr, .. } => expr_references_sequence(expr, sequence_name),
         Expr::Binary { left, right, .. } => {

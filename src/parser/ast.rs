@@ -460,6 +460,9 @@ pub enum Expr {
     FunctionCall {
         name: Vec<String>,
         args: Vec<Expr>,
+        distinct: bool,
+        order_by: Vec<OrderByExpr>,
+        filter: Option<Box<Expr>>,
     },
     Cast {
         expr: Box<Expr>,
@@ -539,6 +542,8 @@ pub enum BinaryOp {
     JsonConcat,
     JsonContains,
     JsonContainedBy,
+    JsonPathExists,
+    JsonPathMatch,
     JsonHasKey,
     JsonHasAny,
     JsonHasAll,

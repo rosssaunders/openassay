@@ -357,9 +357,20 @@ fn collect_table_expression_refs(
 
 fn collect_expr_relation_refs(expr: &Expr, ctes: &HashSet<String>, out: &mut Vec<Vec<String>>) {
     match expr {
-        Expr::FunctionCall { args, .. } => {
+        Expr::FunctionCall {
+            args,
+            order_by,
+            filter,
+            ..
+        } => {
             for arg in args {
                 collect_expr_relation_refs(arg, ctes, out);
+            }
+            for entry in order_by {
+                collect_expr_relation_refs(&entry.expr, ctes, out);
+            }
+            if let Some(expr) = filter {
+                collect_expr_relation_refs(expr, ctes, out);
             }
         }
         Expr::Unary { expr, .. } => collect_expr_relation_refs(expr, ctes, out),
