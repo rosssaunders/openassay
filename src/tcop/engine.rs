@@ -4688,25 +4688,30 @@ fn expand_table_expression_columns(
                 .collect())
         }
         TableExpression::Function(function) => {
-            let column_name = function
-                .column_aliases
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "value".to_string());
+            let column_names = if function.column_aliases.is_empty() {
+                table_function_output_columns(function)
+            } else {
+                function.column_aliases.clone()
+            };
             let qualifier = function
                 .alias
                 .as_ref()
                 .map(|alias| alias.to_ascii_lowercase())
                 .or_else(|| function.name.last().map(|name| name.to_ascii_lowercase()));
-            let lookup_parts = if let Some(qualifier) = qualifier {
-                vec![qualifier, column_name.clone()]
-            } else {
-                vec![column_name.clone()]
-            };
-            Ok(vec![ExpandedFromColumn {
-                label: column_name,
-                lookup_parts,
-            }])
+            Ok(column_names
+                .into_iter()
+                .map(|column_name| {
+                    let lookup_parts = if let Some(qualifier) = &qualifier {
+                        vec![qualifier.clone(), column_name.clone()]
+                    } else {
+                        vec![column_name.clone()]
+                    };
+                    ExpandedFromColumn {
+                        label: column_name,
+                        lookup_parts,
+                    }
+                })
+                .collect())
         }
         TableExpression::Subquery(sub) => {
             let mut nested = ctes.clone();
@@ -4762,6 +4767,21 @@ fn expand_table_expression_columns(
             }
             Ok(out)
         }
+    }
+}
+
+fn table_function_output_columns(function: &TableFunctionRef) -> Vec<String> {
+    let fn_name = function
+        .name
+        .last()
+        .map(|name| name.to_ascii_lowercase())
+        .unwrap_or_default();
+    match fn_name.as_str() {
+        "json_each" | "jsonb_each" | "json_each_text" | "jsonb_each_text" => {
+            vec!["key".to_string(), "value".to_string()]
+        }
+        "json_object_keys" | "jsonb_object_keys" => vec!["key".to_string()],
+        _ => vec!["value".to_string()],
     }
 }
 
@@ -5226,6 +5246,11 @@ fn evaluate_set_returning_function(
         "json_array_elements_text" | "jsonb_array_elements_text" => {
             eval_json_array_elements_set_function(args, true, &fn_name)
         }
+        "json_each" | "jsonb_each" => eval_json_each_set_function(args, false, &fn_name),
+        "json_each_text" | "jsonb_each_text" => eval_json_each_set_function(args, true, &fn_name),
+        "json_object_keys" | "jsonb_object_keys" => {
+            eval_json_object_keys_set_function(args, &fn_name)
+        }
         _ => Err(EngineError {
             message: format!(
                 "unsupported set-returning table function {}",
@@ -5274,6 +5299,70 @@ fn eval_json_array_elements_set_function(
         })
         .collect::<Vec<_>>();
     Ok((vec!["value".to_string()], rows))
+}
+
+fn eval_json_each_set_function(
+    args: &[ScalarValue],
+    text_mode: bool,
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if args.len() != 1 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects exactly one argument"),
+        });
+    }
+
+    if matches!(args[0], ScalarValue::Null) {
+        return Ok((vec!["key".to_string(), "value".to_string()], Vec::new()));
+    }
+
+    let value = parse_json_document_arg(&args[0], fn_name, 1)?;
+    let JsonValue::Object(map) = value else {
+        return Err(EngineError {
+            message: format!("{fn_name}() argument 1 must be a JSON object"),
+        });
+    };
+
+    let rows = map
+        .iter()
+        .map(|(key, value)| {
+            let value_col = if text_mode {
+                json_value_text_output(value)
+            } else {
+                ScalarValue::Text(value.to_string())
+            };
+            vec![ScalarValue::Text(key.clone()), value_col]
+        })
+        .collect::<Vec<_>>();
+    Ok((vec!["key".to_string(), "value".to_string()], rows))
+}
+
+fn eval_json_object_keys_set_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if args.len() != 1 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects exactly one argument"),
+        });
+    }
+
+    if matches!(args[0], ScalarValue::Null) {
+        return Ok((vec!["key".to_string()], Vec::new()));
+    }
+
+    let value = parse_json_document_arg(&args[0], fn_name, 1)?;
+    let JsonValue::Object(map) = value else {
+        return Err(EngineError {
+            message: format!("{fn_name}() argument 1 must be a JSON object"),
+        });
+    };
+
+    let rows = map
+        .keys()
+        .map(|key| vec![ScalarValue::Text(key.clone())])
+        .collect::<Vec<_>>();
+    Ok((vec!["key".to_string()], rows))
 }
 
 fn evaluate_relation(
@@ -6837,11 +6926,21 @@ fn eval_scalar_function(fn_name: &str, args: &[ScalarValue]) -> Result<ScalarVal
         "json_extract_path_text" | "jsonb_extract_path_text" if args.len() >= 2 => {
             eval_json_extract_path(args, true, fn_name)
         }
+        "json_array_length" | "jsonb_array_length" if args.len() == 1 => {
+            eval_json_array_length(&args[0], fn_name)
+        }
         "json_typeof" | "jsonb_typeof" if args.len() == 1 => eval_json_typeof(&args[0], fn_name),
         "json_strip_nulls" | "jsonb_strip_nulls" if args.len() == 1 => {
             eval_json_strip_nulls(&args[0], fn_name)
         }
         "json_pretty" | "jsonb_pretty" if args.len() == 1 => eval_json_pretty(&args[0], fn_name),
+        "jsonb_exists" if args.len() == 2 => eval_jsonb_exists(&args[0], &args[1]),
+        "jsonb_exists_any" if args.len() == 2 => {
+            eval_jsonb_exists_any_all(&args[0], &args[1], true, fn_name)
+        }
+        "jsonb_exists_all" if args.len() == 2 => {
+            eval_jsonb_exists_any_all(&args[0], &args[1], false, fn_name)
+        }
         "jsonb_set" if args.len() == 3 || args.len() == 4 => eval_jsonb_set(args),
         "nextval" if args.len() == 1 => {
             let sequence_name = match &args[0] {
@@ -7226,6 +7325,19 @@ fn eval_json_extract_path(
     }
 }
 
+fn eval_json_array_length(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, EngineError> {
+    if matches!(value, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let parsed = parse_json_document_arg(value, fn_name, 1)?;
+    let JsonValue::Array(items) = parsed else {
+        return Err(EngineError {
+            message: format!("{fn_name}() argument 1 must be a JSON array"),
+        });
+    };
+    Ok(ScalarValue::Int(items.len() as i64))
+}
+
 fn eval_json_typeof(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, EngineError> {
     if matches!(value, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
@@ -7282,6 +7394,39 @@ fn eval_json_pretty(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, E
         message: format!("{fn_name}() failed to pretty-print JSON: {err}"),
     })?;
     Ok(ScalarValue::Text(pretty))
+}
+
+fn eval_jsonb_exists(target: &ScalarValue, key: &ScalarValue) -> Result<ScalarValue, EngineError> {
+    if matches!(target, ScalarValue::Null) || matches!(key, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let parsed = parse_json_document_arg(target, "jsonb_exists", 1)?;
+    let key = scalar_to_json_path_segment(key, "jsonb_exists")?;
+    Ok(ScalarValue::Bool(json_has_key(&parsed, &key)))
+}
+
+fn eval_jsonb_exists_any_all(
+    target: &ScalarValue,
+    keys: &ScalarValue,
+    any_mode: bool,
+    fn_name: &str,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(target, ScalarValue::Null) || matches!(keys, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let parsed = parse_json_document_arg(target, fn_name, 1)?;
+    let keys = parse_json_path_operand(keys, fn_name)?;
+    if keys.is_empty() {
+        return Err(EngineError {
+            message: format!("{fn_name}() key array cannot be empty"),
+        });
+    }
+    let matched = if any_mode {
+        keys.iter().any(|key| json_has_key(&parsed, key))
+    } else {
+        keys.iter().all(|key| json_has_key(&parsed, key))
+    };
+    Ok(ScalarValue::Bool(matched))
 }
 
 fn parse_json_path_text_array(text: &str) -> Vec<String> {
@@ -8700,6 +8845,11 @@ mod tests {
                 to_json('x'), \
                 json_build_object('a', 1, 'b', true, 'c', NULL), \
                 json_build_array(1, 'x', NULL), \
+                json_array_length('[1,2,3]'), \
+                jsonb_array_length('[]'), \
+                jsonb_exists('{\"a\":1,\"b\":2}', 'b'), \
+                jsonb_exists_any('{\"a\":1,\"b\":2}', '{x,b}'), \
+                jsonb_exists_all('{\"a\":1,\"b\":2}', '{a,b}'), \
                 json_typeof('{\"a\":1}'), \
                 json_extract_path('{\"a\":{\"b\":[10,true,null]}}', 'a', 'b', 1), \
                 json_extract_path_text('{\"a\":{\"b\":[10,true,null]}}', 'a', 'b', 0), \
@@ -8707,9 +8857,14 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0][0], ScalarValue::Text("1".to_string()));
         assert_eq!(result.rows[0][1], ScalarValue::Text("\"x\"".to_string()));
-        assert_eq!(result.rows[0][4], ScalarValue::Text("object".to_string()));
-        assert_eq!(result.rows[0][5], ScalarValue::Text("true".to_string()));
-        assert_eq!(result.rows[0][6], ScalarValue::Text("10".to_string()));
+        assert_eq!(result.rows[0][4], ScalarValue::Int(3));
+        assert_eq!(result.rows[0][5], ScalarValue::Int(0));
+        assert_eq!(result.rows[0][6], ScalarValue::Bool(true));
+        assert_eq!(result.rows[0][7], ScalarValue::Bool(true));
+        assert_eq!(result.rows[0][8], ScalarValue::Bool(true));
+        assert_eq!(result.rows[0][9], ScalarValue::Text("object".to_string()));
+        assert_eq!(result.rows[0][10], ScalarValue::Text("true".to_string()));
+        assert_eq!(result.rows[0][11], ScalarValue::Text("10".to_string()));
 
         let ScalarValue::Text(obj_text) = &result.rows[0][2] else {
             panic!("json_build_object should return text");
@@ -8732,7 +8887,7 @@ mod tests {
             ])
         );
 
-        let ScalarValue::Text(stripped_text) = &result.rows[0][7] else {
+        let ScalarValue::Text(stripped_text) = &result.rows[0][12] else {
             panic!("json_strip_nulls should return text");
         };
         let stripped: JsonValue =
@@ -8887,6 +9042,67 @@ mod tests {
     }
 
     #[test]
+    fn expands_json_each_in_from_clause() {
+        let result = run(
+            "SELECT k, json_extract_path_text(v, 'currency') AS currency \
+             FROM json_each('{\"first\":{\"currency\":\"XRP\"},\"second\":{\"currency\":\"USDC\"}}') AS src(k, v) \
+             ORDER BY k",
+        );
+        assert_eq!(
+            result.columns,
+            vec!["k".to_string(), "currency".to_string()]
+        );
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![
+                    ScalarValue::Text("first".to_string()),
+                    ScalarValue::Text("XRP".to_string()),
+                ],
+                vec![
+                    ScalarValue::Text("second".to_string()),
+                    ScalarValue::Text("USDC".to_string()),
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn expands_json_each_text_in_from_clause() {
+        let result = run("SELECT k, v \
+             FROM json_each_text('{\"a\":1,\"b\":null,\"c\":{\"x\":1}}') AS src(k, v) \
+             ORDER BY k");
+        assert_eq!(result.columns, vec!["k".to_string(), "v".to_string()]);
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![
+                    ScalarValue::Text("a".to_string()),
+                    ScalarValue::Text("1".to_string()),
+                ],
+                vec![ScalarValue::Text("b".to_string()), ScalarValue::Null],
+                vec![
+                    ScalarValue::Text("c".to_string()),
+                    ScalarValue::Text("{\"x\":1}".to_string()),
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn expands_json_object_keys_in_from_clause() {
+        let result = run("SELECT * FROM json_object_keys('{\"z\":1,\"a\":2}') ORDER BY 1");
+        assert_eq!(result.columns, vec!["key".to_string()]);
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![ScalarValue::Text("a".to_string())],
+                vec![ScalarValue::Text("z".to_string())],
+            ]
+        );
+    }
+
+    #[test]
     fn supports_column_aliases_for_table_functions() {
         let result = run("SELECT item FROM json_array_elements_text('[1,2]') AS t(item)");
         assert_eq!(result.columns, vec!["item".to_string()]);
@@ -8897,6 +9113,18 @@ mod tests {
                 vec![ScalarValue::Text("2".to_string())],
             ]
         );
+    }
+
+    #[test]
+    fn validates_column_alias_count_for_multi_column_table_function() {
+        with_isolated_state(|| {
+            let statement =
+                parse_statement("SELECT * FROM json_each('{\"a\":1}') AS t(k)").expect("parses");
+            let planned = plan_statement(statement).expect("plans");
+            let err = execute_planned_query(&planned, &[])
+                .expect_err("alias count mismatch should be rejected");
+            assert!(err.message.contains("expects 2 column aliases"));
+        });
     }
 
     #[test]
@@ -8926,6 +9154,17 @@ mod tests {
             let err =
                 execute_planned_query(&planned, &[]).expect_err("non-array JSON input should fail");
             assert!(err.message.contains("must be a JSON array"));
+        });
+    }
+
+    #[test]
+    fn rejects_non_object_json_for_json_each() {
+        with_isolated_state(|| {
+            let statement = parse_statement("SELECT * FROM json_each('[1,2,3]')").expect("parses");
+            let planned = plan_statement(statement).expect("plans");
+            let err = execute_planned_query(&planned, &[])
+                .expect_err("non-object JSON input should fail");
+            assert!(err.message.contains("must be a JSON object"));
         });
     }
 
