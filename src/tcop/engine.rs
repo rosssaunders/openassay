@@ -27,7 +27,8 @@ use crate::parser::ast::{
     JoinCondition, JoinType, MergeStatement, MergeWhenClause, OnConflictClause, OrderByExpr, Query,
     QueryExpr, RefreshMaterializedViewStatement, SelectItem, SelectQuantifier, SelectStatement,
     SetOperator, SetQuantifier, Statement, TableConstraint, TableExpression, TableFunctionRef,
-    TableRef, TruncateStatement, TypeName, UnaryOp, UpdateStatement,
+    TableRef, TruncateStatement, TypeName, UnaryOp, UpdateStatement, WindowFrameBound,
+    WindowFrameUnits, WindowSpec,
 };
 use crate::security::{self, RlsCommand, TablePrivilege};
 
@@ -692,6 +693,7 @@ fn execute_create_table(create: &CreateTableStatement) -> Result<QueryResult, En
             distinct: false,
             order_by: Vec::new(),
             filter: None,
+            over: None,
         });
         column.nullable = false;
         identity_sequence_names.push(sequence_name);
@@ -5964,6 +5966,26 @@ fn execute_select(
         .iter()
         .any(|target| contains_aggregate_expr(&target.expr))
         || select.having.as_ref().is_some_and(contains_aggregate_expr);
+    let has_window = select
+        .targets
+        .iter()
+        .any(|target| contains_window_expr(&target.expr));
+
+    if select.where_clause.as_ref().is_some_and(contains_window_expr) {
+        return Err(EngineError {
+            message: "window functions are not allowed in WHERE".to_string(),
+        });
+    }
+    if select.group_by.iter().any(contains_window_expr) {
+        return Err(EngineError {
+            message: "window functions are not allowed in GROUP BY".to_string(),
+        });
+    }
+    if select.having.as_ref().is_some_and(contains_window_expr) {
+        return Err(EngineError {
+            message: "window functions are not allowed in HAVING".to_string(),
+        });
+    }
 
     let mut filtered_rows = Vec::new();
     for scope in source_rows {
@@ -6040,10 +6062,21 @@ fn execute_select(
             }
             rows.push(row);
         }
+    } else if has_window {
+        for (row_idx, scope) in filtered_rows.iter().enumerate() {
+            let row = project_select_row_with_window(
+                &select.targets,
+                scope,
+                row_idx,
+                &filtered_rows,
+                params,
+                wildcard_columns.as_deref(),
+            )?;
+            rows.push(row);
+        }
     } else {
         for scope in filtered_rows {
-            let row =
-                project_select_row(&select.targets, &scope, params, wildcard_columns.as_deref())?;
+            let row = project_select_row(&select.targets, &scope, params, wildcard_columns.as_deref())?;
             rows.push(row);
         }
     }
@@ -6918,6 +6951,38 @@ fn project_select_row(
     Ok(row)
 }
 
+fn project_select_row_with_window(
+    targets: &[crate::parser::ast::SelectItem],
+    scope: &EvalScope,
+    row_idx: usize,
+    all_rows: &[EvalScope],
+    params: &[Option<String>],
+    wildcard_columns: Option<&[ExpandedFromColumn]>,
+) -> Result<Vec<ScalarValue>, EngineError> {
+    let mut row = Vec::new();
+    for target in targets {
+        if matches!(target.expr, Expr::Wildcard) {
+            let Some(expanded) = wildcard_columns else {
+                return Err(EngineError {
+                    message: "wildcard target requires FROM support".to_string(),
+                });
+            };
+            for col in expanded {
+                row.push(scope.lookup_identifier(&col.lookup_parts)?);
+            }
+            continue;
+        }
+        row.push(eval_expr_with_window(
+            &target.expr,
+            scope,
+            row_idx,
+            all_rows,
+            params,
+        )?);
+    }
+    Ok(row)
+}
+
 fn contains_aggregate_expr(expr: &Expr) -> bool {
     match expr {
         Expr::FunctionCall {
@@ -6925,11 +6990,14 @@ fn contains_aggregate_expr(expr: &Expr) -> bool {
             args,
             order_by,
             filter,
+            over,
             ..
         } => {
-            if let Some(fn_name) = name.last() {
-                if is_aggregate_function(fn_name) {
-                    return true;
+            if over.is_none() {
+                if let Some(fn_name) = name.last() {
+                    if is_aggregate_function(fn_name) {
+                        return true;
+                    }
                 }
             }
             args.iter().any(contains_aggregate_expr)
@@ -6990,6 +7058,82 @@ fn contains_aggregate_expr(expr: &Expr) -> bool {
     }
 }
 
+fn contains_window_expr(expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall {
+            args,
+            order_by,
+            filter,
+            over,
+            ..
+        } => {
+            over.is_some()
+                || args.iter().any(contains_window_expr)
+                || order_by.iter().any(|entry| contains_window_expr(&entry.expr))
+                || filter.as_ref().is_some_and(|entry| contains_window_expr(entry))
+                || over.as_ref().is_some_and(|window| {
+                    window.partition_by.iter().any(contains_window_expr)
+                        || window.order_by.iter().any(|entry| contains_window_expr(&entry.expr))
+                        || window.frame.as_ref().is_some_and(|frame| {
+                            contains_window_bound_expr(&frame.start)
+                                || contains_window_bound_expr(&frame.end)
+                        })
+                })
+        }
+        Expr::Cast { expr, .. } => contains_window_expr(expr),
+        Expr::Unary { expr, .. } => contains_window_expr(expr),
+        Expr::Binary { left, right, .. } => contains_window_expr(left) || contains_window_expr(right),
+        Expr::InList { expr, list, .. } => {
+            contains_window_expr(expr) || list.iter().any(contains_window_expr)
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => contains_window_expr(expr) || contains_window_expr(low) || contains_window_expr(high),
+        Expr::Like { expr, pattern, .. } => contains_window_expr(expr) || contains_window_expr(pattern),
+        Expr::IsNull { expr, .. } => contains_window_expr(expr),
+        Expr::IsDistinctFrom { left, right, .. } => {
+            contains_window_expr(left) || contains_window_expr(right)
+        }
+        Expr::CaseSimple {
+            operand,
+            when_then,
+            else_expr,
+        } => {
+            contains_window_expr(operand)
+                || when_then
+                    .iter()
+                    .any(|(when_expr, then_expr)| {
+                        contains_window_expr(when_expr) || contains_window_expr(then_expr)
+                    })
+                || else_expr.as_ref().is_some_and(|expr| contains_window_expr(expr))
+        }
+        Expr::CaseSearched {
+            when_then,
+            else_expr,
+        } => {
+            when_then
+                .iter()
+                .any(|(when_expr, then_expr)| {
+                    contains_window_expr(when_expr) || contains_window_expr(then_expr)
+                })
+                || else_expr.as_ref().is_some_and(|expr| contains_window_expr(expr))
+        }
+        Expr::Exists(_) | Expr::ScalarSubquery(_) | Expr::InSubquery { .. } => false,
+        _ => false,
+    }
+}
+
+fn contains_window_bound_expr(bound: &WindowFrameBound) -> bool {
+    match bound {
+        WindowFrameBound::OffsetPreceding(expr) | WindowFrameBound::OffsetFollowing(expr) => {
+            contains_window_expr(expr)
+        }
+        WindowFrameBound::UnboundedPreceding
+        | WindowFrameBound::CurrentRow
+        | WindowFrameBound::UnboundedFollowing => false,
+    }
+}
+
 fn is_aggregate_function(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
@@ -7018,7 +7162,14 @@ fn eval_group_expr(
             distinct,
             order_by,
             filter,
+            over,
         } => {
+            if over.is_some() {
+                return Err(EngineError {
+                    message: "window functions are not allowed in grouped aggregate expressions"
+                        .to_string(),
+                });
+            }
             let fn_name = name
                 .last()
                 .map(|n| n.to_ascii_lowercase())
@@ -8095,12 +8246,14 @@ fn eval_expr(
             distinct,
             order_by,
             filter,
+            over,
         } => eval_function(
             name,
             args,
             *distinct,
             order_by,
             filter.as_deref(),
+            over.as_deref(),
             scope,
             params,
         ),
@@ -8108,6 +8261,582 @@ fn eval_expr(
             message: "wildcard expression requires FROM support".to_string(),
         }),
     }
+}
+
+fn eval_expr_with_window(
+    expr: &Expr,
+    scope: &EvalScope,
+    row_idx: usize,
+    all_rows: &[EvalScope],
+    params: &[Option<String>],
+) -> Result<ScalarValue, EngineError> {
+    match expr {
+        Expr::Null => Ok(ScalarValue::Null),
+        Expr::Boolean(v) => Ok(ScalarValue::Bool(*v)),
+        Expr::Integer(v) => Ok(ScalarValue::Int(*v)),
+        Expr::Float(v) => {
+            let parsed = v.parse::<f64>().map_err(|_| EngineError {
+                message: format!("invalid float literal \"{v}\""),
+            })?;
+            Ok(ScalarValue::Float(parsed))
+        }
+        Expr::String(v) => Ok(ScalarValue::Text(v.clone())),
+        Expr::Parameter(idx) => parse_param(*idx, params),
+        Expr::Identifier(parts) => scope.lookup_identifier(parts),
+        Expr::Unary { op, expr } => {
+            let value = eval_expr_with_window(expr, scope, row_idx, all_rows, params)?;
+            eval_unary(op.clone(), value)
+        }
+        Expr::Binary { left, op, right } => {
+            let lhs = eval_expr_with_window(left, scope, row_idx, all_rows, params)?;
+            let rhs = eval_expr_with_window(right, scope, row_idx, all_rows, params)?;
+            eval_binary(op.clone(), lhs, rhs)
+        }
+        Expr::Exists(query) => {
+            let result = execute_query_with_outer(query, params, Some(scope))?;
+            Ok(ScalarValue::Bool(!result.rows.is_empty()))
+        }
+        Expr::ScalarSubquery(query) => {
+            let result = execute_query_with_outer(query, params, Some(scope))?;
+            if result.rows.is_empty() {
+                return Ok(ScalarValue::Null);
+            }
+            if result.rows.len() > 1 {
+                return Err(EngineError {
+                    message: "more than one row returned by a subquery used as an expression"
+                        .to_string(),
+                });
+            }
+            if result.rows[0].len() != 1 {
+                return Err(EngineError {
+                    message: "subquery must return only one column".to_string(),
+                });
+            }
+            Ok(result.rows[0][0].clone())
+        }
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } => {
+            let lhs = eval_expr_with_window(expr, scope, row_idx, all_rows, params)?;
+            let mut rhs = Vec::with_capacity(list.len());
+            for item in list {
+                rhs.push(eval_expr_with_window(item, scope, row_idx, all_rows, params)?);
+            }
+            eval_in_membership(lhs, rhs, *negated)
+        }
+        Expr::InSubquery {
+            expr,
+            subquery,
+            negated,
+        } => {
+            let lhs = eval_expr_with_window(expr, scope, row_idx, all_rows, params)?;
+            let result = execute_query_with_outer(subquery, params, Some(scope))?;
+            if !result.columns.is_empty() && result.columns.len() != 1 {
+                return Err(EngineError {
+                    message: "subquery must return only one column".to_string(),
+                });
+            }
+            let rhs_values = result
+                .rows
+                .iter()
+                .map(|row| row.first().cloned().unwrap_or(ScalarValue::Null))
+                .collect::<Vec<_>>();
+            eval_in_membership(lhs, rhs_values, *negated)
+        }
+        Expr::Between {
+            expr,
+            low,
+            high,
+            negated,
+        } => {
+            let value = eval_expr_with_window(expr, scope, row_idx, all_rows, params)?;
+            let low_value = eval_expr_with_window(low, scope, row_idx, all_rows, params)?;
+            let high_value = eval_expr_with_window(high, scope, row_idx, all_rows, params)?;
+            eval_between_predicate(value, low_value, high_value, *negated)
+        }
+        Expr::Like {
+            expr,
+            pattern,
+            case_insensitive,
+            negated,
+        } => {
+            let value = eval_expr_with_window(expr, scope, row_idx, all_rows, params)?;
+            let pattern_value =
+                eval_expr_with_window(pattern, scope, row_idx, all_rows, params)?;
+            eval_like_predicate(value, pattern_value, *case_insensitive, *negated)
+        }
+        Expr::IsNull { expr, negated } => {
+            let value = eval_expr_with_window(expr, scope, row_idx, all_rows, params)?;
+            let is_null = matches!(value, ScalarValue::Null);
+            Ok(ScalarValue::Bool(if *negated { !is_null } else { is_null }))
+        }
+        Expr::IsDistinctFrom {
+            left,
+            right,
+            negated,
+        } => {
+            let left_value = eval_expr_with_window(left, scope, row_idx, all_rows, params)?;
+            let right_value = eval_expr_with_window(right, scope, row_idx, all_rows, params)?;
+            eval_is_distinct_from(left_value, right_value, *negated)
+        }
+        Expr::CaseSimple {
+            operand,
+            when_then,
+            else_expr,
+        } => {
+            let operand_value = eval_expr_with_window(operand, scope, row_idx, all_rows, params)?;
+            for (when_expr, then_expr) in when_then {
+                let when_value =
+                    eval_expr_with_window(when_expr, scope, row_idx, all_rows, params)?;
+                if matches!(operand_value, ScalarValue::Null)
+                    || matches!(when_value, ScalarValue::Null)
+                {
+                    continue;
+                }
+                if compare_values_for_predicate(&operand_value, &when_value)? == Ordering::Equal {
+                    return eval_expr_with_window(then_expr, scope, row_idx, all_rows, params);
+                }
+            }
+            if let Some(else_expr) = else_expr {
+                eval_expr_with_window(else_expr, scope, row_idx, all_rows, params)
+            } else {
+                Ok(ScalarValue::Null)
+            }
+        }
+        Expr::CaseSearched {
+            when_then,
+            else_expr,
+        } => {
+            for (when_expr, then_expr) in when_then {
+                let condition = eval_expr_with_window(when_expr, scope, row_idx, all_rows, params)?;
+                if truthy(&condition) {
+                    return eval_expr_with_window(then_expr, scope, row_idx, all_rows, params);
+                }
+            }
+            if let Some(else_expr) = else_expr {
+                eval_expr_with_window(else_expr, scope, row_idx, all_rows, params)
+            } else {
+                Ok(ScalarValue::Null)
+            }
+        }
+        Expr::Cast { expr, type_name } => {
+            let value = eval_expr_with_window(expr, scope, row_idx, all_rows, params)?;
+            eval_cast_scalar(value, type_name)
+        }
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+            order_by,
+            filter,
+            over,
+        } => {
+            if let Some(window) = over.as_deref() {
+                eval_window_function(
+                    name,
+                    args,
+                    *distinct,
+                    order_by,
+                    filter.as_deref(),
+                    window,
+                    row_idx,
+                    all_rows,
+                    params,
+                )
+            } else {
+                let fn_name = name
+                    .last()
+                    .map(|n| n.to_ascii_lowercase())
+                    .unwrap_or_default();
+                if *distinct || !order_by.is_empty() || filter.is_some() {
+                    return Err(EngineError {
+                        message: format!(
+                            "{}() aggregate modifiers require grouped aggregate evaluation",
+                            fn_name
+                        ),
+                    });
+                }
+                if is_aggregate_function(&fn_name) {
+                    return Err(EngineError {
+                        message: format!(
+                            "aggregate function {}() must be used with grouped evaluation",
+                            fn_name
+                        ),
+                    });
+                }
+
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    values.push(eval_expr_with_window(arg, scope, row_idx, all_rows, params)?);
+                }
+                eval_scalar_function(&fn_name, &values)
+            }
+        }
+        Expr::Wildcard => Err(EngineError {
+            message: "wildcard expression requires FROM support".to_string(),
+        }),
+    }
+}
+
+fn eval_window_function(
+    name: &[String],
+    args: &[Expr],
+    distinct: bool,
+    order_by: &[OrderByExpr],
+    filter: Option<&Expr>,
+    window: &WindowSpec,
+    row_idx: usize,
+    all_rows: &[EvalScope],
+    params: &[Option<String>],
+) -> Result<ScalarValue, EngineError> {
+    let fn_name = name
+        .last()
+        .map(|n| n.to_ascii_lowercase())
+        .unwrap_or_default();
+    let mut partition = window_partition_rows(window, row_idx, all_rows, params)?;
+    let order_keys = window_order_keys(window, &mut partition, all_rows, params)?;
+    let current_pos = partition
+        .iter()
+        .position(|entry| *entry == row_idx)
+        .ok_or_else(|| EngineError {
+            message: "window row not found in partition".to_string(),
+        })?;
+
+    match fn_name.as_str() {
+        "row_number" => {
+            if !args.is_empty() {
+                return Err(EngineError {
+                    message: "row_number() does not accept arguments".to_string(),
+                });
+            }
+            Ok(ScalarValue::Int((current_pos + 1) as i64))
+        }
+        "rank" => {
+            if !args.is_empty() {
+                return Err(EngineError {
+                    message: "rank() does not accept arguments".to_string(),
+                });
+            }
+            if order_keys.is_empty() {
+                return Ok(ScalarValue::Int(1));
+            }
+            let mut rank = 1usize;
+            for idx in 1..=current_pos {
+                if compare_order_keys(&order_keys[idx - 1], &order_keys[idx], &window.order_by)
+                    != Ordering::Equal
+                {
+                    rank = idx + 1;
+                }
+            }
+            Ok(ScalarValue::Int(rank as i64))
+        }
+        "dense_rank" => {
+            if !args.is_empty() {
+                return Err(EngineError {
+                    message: "dense_rank() does not accept arguments".to_string(),
+                });
+            }
+            if order_keys.is_empty() {
+                return Ok(ScalarValue::Int(1));
+            }
+            let mut rank = 1i64;
+            for idx in 1..=current_pos {
+                if compare_order_keys(&order_keys[idx - 1], &order_keys[idx], &window.order_by)
+                    != Ordering::Equal
+                {
+                    rank += 1;
+                }
+            }
+            Ok(ScalarValue::Int(rank))
+        }
+        "lag" | "lead" => {
+            if args.is_empty() || args.len() > 3 {
+                return Err(EngineError {
+                    message: format!("{fn_name}() expects 1 to 3 arguments"),
+                });
+            }
+            let offset = if let Some(offset_expr) = args.get(1) {
+                let offset_value = eval_expr(offset_expr, &all_rows[row_idx], params)?;
+                if matches!(offset_value, ScalarValue::Null) {
+                    return Ok(ScalarValue::Null);
+                }
+                parse_non_negative_int(&offset_value, "window offset")?
+            } else {
+                1usize
+            };
+            let target_pos = if fn_name == "lag" {
+                current_pos.checked_sub(offset)
+            } else {
+                current_pos.checked_add(offset)
+            };
+            let Some(target_pos) = target_pos else {
+                return Ok(if let Some(default_expr) = args.get(2) {
+                    eval_expr(default_expr, &all_rows[row_idx], params)?
+                } else {
+                    ScalarValue::Null
+                });
+            };
+            if target_pos >= partition.len() {
+                return Ok(if let Some(default_expr) = args.get(2) {
+                    eval_expr(default_expr, &all_rows[row_idx], params)?
+                } else {
+                    ScalarValue::Null
+                });
+            }
+            let target_row = partition[target_pos];
+            eval_expr(&args[0], &all_rows[target_row], params)
+        }
+        "sum" | "count" | "avg" | "min" | "max" => {
+            let frame_rows = window_frame_rows(
+                window,
+                &partition,
+                &order_keys,
+                current_pos,
+                all_rows,
+                params,
+            )?;
+            let scoped_rows = frame_rows
+                .iter()
+                .map(|idx| all_rows[*idx].clone())
+                .collect::<Vec<_>>();
+            eval_aggregate_function(
+                &fn_name,
+                args,
+                distinct,
+                order_by,
+                filter,
+                &scoped_rows,
+                params,
+            )
+        }
+        _ => Err(EngineError {
+            message: format!("unsupported window function {}", fn_name),
+        }),
+    }
+}
+
+fn window_partition_rows(
+    window: &WindowSpec,
+    row_idx: usize,
+    all_rows: &[EvalScope],
+    params: &[Option<String>],
+) -> Result<Vec<usize>, EngineError> {
+    if window.partition_by.is_empty() {
+        return Ok((0..all_rows.len()).collect());
+    }
+    let current_scope = &all_rows[row_idx];
+    let current_key = window
+        .partition_by
+        .iter()
+        .map(|expr| eval_expr(expr, current_scope, params))
+        .collect::<Result<Vec<_>, _>>()?;
+    let current_key = row_key(&current_key);
+    let mut out = Vec::new();
+    for (idx, scope) in all_rows.iter().enumerate() {
+        let key_values = window
+            .partition_by
+            .iter()
+            .map(|expr| eval_expr(expr, scope, params))
+            .collect::<Result<Vec<_>, _>>()?;
+        if row_key(&key_values) == current_key {
+            out.push(idx);
+        }
+    }
+    Ok(out)
+}
+
+fn window_order_keys(
+    window: &WindowSpec,
+    partition: &mut [usize],
+    all_rows: &[EvalScope],
+    params: &[Option<String>],
+) -> Result<Vec<Vec<ScalarValue>>, EngineError> {
+    if window.order_by.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut decorated = Vec::with_capacity(partition.len());
+    for idx in partition.iter().copied() {
+        let mut keys = Vec::with_capacity(window.order_by.len());
+        for order in &window.order_by {
+            keys.push(eval_expr(&order.expr, &all_rows[idx], params)?);
+        }
+        decorated.push((idx, keys));
+    }
+    decorated.sort_by(|left, right| compare_order_keys(&left.1, &right.1, &window.order_by));
+    for (slot, (idx, _)) in partition.iter_mut().zip(decorated.iter()) {
+        *slot = *idx;
+    }
+    Ok(decorated.into_iter().map(|(_, keys)| keys).collect())
+}
+
+fn window_frame_rows(
+    window: &WindowSpec,
+    partition: &[usize],
+    order_keys: &[Vec<ScalarValue>],
+    current_pos: usize,
+    all_rows: &[EvalScope],
+    params: &[Option<String>],
+) -> Result<Vec<usize>, EngineError> {
+    let Some(frame) = window.frame.as_ref() else {
+        return Ok(partition.to_vec());
+    };
+
+    match frame.units {
+        WindowFrameUnits::Rows => {
+            let start =
+                frame_row_position(&frame.start, current_pos, partition.len(), &all_rows[partition[current_pos]], params)?;
+            let end =
+                frame_row_position(&frame.end, current_pos, partition.len(), &all_rows[partition[current_pos]], params)?;
+            if start > end {
+                return Ok(Vec::new());
+            }
+            Ok(partition[start..=end].to_vec())
+        }
+        WindowFrameUnits::Range => {
+            if window.order_by.is_empty() {
+                return Ok(partition.to_vec());
+            }
+            let ascending = window.order_by[0].ascending != Some(false);
+            let current_value = window_first_order_numeric_key(
+                order_keys,
+                current_pos,
+                partition[current_pos],
+                all_rows,
+                window,
+                params,
+            )?;
+            let effective_current = if ascending { current_value } else { -current_value };
+            let start = range_bound_threshold(
+                &frame.start,
+                effective_current,
+                true,
+                &all_rows[partition[current_pos]],
+                params,
+            )?;
+            let end = range_bound_threshold(
+                &frame.end,
+                effective_current,
+                false,
+                &all_rows[partition[current_pos]],
+                params,
+            )?;
+            if let (Some(start), Some(end)) = (start, end) {
+                if start > end {
+                    return Ok(Vec::new());
+                }
+            }
+            let mut out = Vec::new();
+            for (pos, row_idx) in partition.iter().enumerate() {
+                let value =
+                    window_first_order_numeric_key(order_keys, pos, *row_idx, all_rows, window, params)?;
+                let effective = if ascending { value } else { -value };
+                if let Some(start) = start {
+                    if effective < start {
+                        continue;
+                    }
+                }
+                if let Some(end) = end {
+                    if effective > end {
+                        continue;
+                    }
+                }
+                out.push(*row_idx);
+            }
+            Ok(out)
+        }
+    }
+}
+
+fn frame_row_position(
+    bound: &WindowFrameBound,
+    current_pos: usize,
+    partition_len: usize,
+    current_scope: &EvalScope,
+    params: &[Option<String>],
+) -> Result<usize, EngineError> {
+    let max_pos = partition_len.saturating_sub(1);
+    Ok(match bound {
+        WindowFrameBound::UnboundedPreceding => 0,
+        WindowFrameBound::UnboundedFollowing => max_pos,
+        WindowFrameBound::CurrentRow => current_pos,
+        WindowFrameBound::OffsetPreceding(expr) => {
+            let offset = frame_bound_offset_usize(expr, current_scope, params)?;
+            current_pos.saturating_sub(offset)
+        }
+        WindowFrameBound::OffsetFollowing(expr) => {
+            let offset = frame_bound_offset_usize(expr, current_scope, params)?;
+            current_pos.saturating_add(offset).min(max_pos)
+        }
+    })
+}
+
+fn frame_bound_offset_usize(
+    expr: &Expr,
+    current_scope: &EvalScope,
+    params: &[Option<String>],
+) -> Result<usize, EngineError> {
+    let value = eval_expr(expr, current_scope, params)?;
+    parse_non_negative_int(&value, "window frame offset")
+}
+
+fn frame_bound_offset_f64(
+    expr: &Expr,
+    current_scope: &EvalScope,
+    params: &[Option<String>],
+) -> Result<f64, EngineError> {
+    let value = eval_expr(expr, current_scope, params)?;
+    let parsed = parse_f64_scalar(&value, "window frame offset must be numeric")?;
+    if parsed < 0.0 {
+        return Err(EngineError {
+            message: "window frame offset must be a non-negative number".to_string(),
+        });
+    }
+    Ok(parsed)
+}
+
+fn range_bound_threshold(
+    bound: &WindowFrameBound,
+    current: f64,
+    is_start: bool,
+    current_scope: &EvalScope,
+    params: &[Option<String>],
+) -> Result<Option<f64>, EngineError> {
+    match bound {
+        WindowFrameBound::UnboundedPreceding if is_start => Ok(None),
+        WindowFrameBound::UnboundedFollowing if !is_start => Ok(None),
+        WindowFrameBound::UnboundedFollowing if is_start => Ok(Some(f64::INFINITY)),
+        WindowFrameBound::UnboundedPreceding if !is_start => Ok(Some(f64::NEG_INFINITY)),
+        WindowFrameBound::CurrentRow => Ok(Some(current)),
+        WindowFrameBound::OffsetPreceding(expr) => Ok(Some(
+            current - frame_bound_offset_f64(expr, current_scope, params)?,
+        )),
+        WindowFrameBound::OffsetFollowing(expr) => Ok(Some(
+            current + frame_bound_offset_f64(expr, current_scope, params)?,
+        )),
+        WindowFrameBound::UnboundedPreceding | WindowFrameBound::UnboundedFollowing => {
+            Err(EngineError {
+                message: "invalid RANGE frame bound configuration".to_string(),
+            })
+        }
+    }
+}
+
+fn window_first_order_numeric_key(
+    order_keys: &[Vec<ScalarValue>],
+    pos: usize,
+    row_idx: usize,
+    all_rows: &[EvalScope],
+    window: &WindowSpec,
+    params: &[Option<String>],
+) -> Result<f64, EngineError> {
+    if let Some(value) = order_keys.get(pos).and_then(|keys| keys.first()) {
+        return parse_f64_scalar(value, "RANGE frame ORDER BY key must be numeric");
+    }
+    let expr = &window.order_by[0].expr;
+    let value = eval_expr(expr, &all_rows[row_idx], params)?;
+    parse_f64_scalar(&value, "RANGE frame ORDER BY key must be numeric")
 }
 
 fn eval_in_membership(
@@ -8537,6 +9266,7 @@ fn eval_function(
     distinct: bool,
     order_by: &[OrderByExpr],
     filter: Option<&Expr>,
+    over: Option<&crate::parser::ast::WindowSpec>,
     scope: &EvalScope,
     params: &[Option<String>],
 ) -> Result<ScalarValue, EngineError> {
@@ -8550,6 +9280,11 @@ fn eval_function(
                 "{}() aggregate modifiers require grouped aggregate evaluation",
                 fn_name
             ),
+        });
+    }
+    if over.is_some() {
+        return Err(EngineError {
+            message: "window functions require SELECT window evaluation context".to_string(),
         });
     }
     if is_aggregate_function(&fn_name) {
@@ -13280,6 +14015,137 @@ mod tests {
         assert_eq!(
             result.rows,
             vec![vec![ScalarValue::Int(1), ScalarValue::Int(2)]]
+        );
+    }
+
+    #[test]
+    fn executes_ranking_and_offset_window_functions() {
+        let results = run_batch(&[
+            "CREATE TABLE wf (dept text, id int8, score int8)",
+            "INSERT INTO wf VALUES ('a', 1, 10), ('a', 2, 10), ('a', 3, 20), ('b', 4, 5), ('b', 5, 7)",
+            "SELECT id, \
+             row_number() OVER (PARTITION BY dept ORDER BY score DESC), \
+             rank() OVER (PARTITION BY dept ORDER BY score DESC), \
+             dense_rank() OVER (PARTITION BY dept ORDER BY score DESC), \
+             lag(score, 1, 0) OVER (PARTITION BY dept ORDER BY id), \
+             lead(score, 2, -1) OVER (PARTITION BY dept ORDER BY id) \
+             FROM wf ORDER BY id",
+        ]);
+        assert_eq!(
+            results[2].rows,
+            vec![
+                vec![
+                    ScalarValue::Int(1),
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(0),
+                    ScalarValue::Int(20),
+                ],
+                vec![
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(3),
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(10),
+                    ScalarValue::Int(-1),
+                ],
+                vec![
+                    ScalarValue::Int(3),
+                    ScalarValue::Int(1),
+                    ScalarValue::Int(1),
+                    ScalarValue::Int(1),
+                    ScalarValue::Int(10),
+                    ScalarValue::Int(-1),
+                ],
+                vec![
+                    ScalarValue::Int(4),
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(0),
+                    ScalarValue::Int(-1),
+                ],
+                vec![
+                    ScalarValue::Int(5),
+                    ScalarValue::Int(1),
+                    ScalarValue::Int(1),
+                    ScalarValue::Int(1),
+                    ScalarValue::Int(5),
+                    ScalarValue::Int(-1),
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn executes_window_aggregates_with_rows_and_range_frames() {
+        let results = run_batch(&[
+            "CREATE TABLE wf (dept text, id int8, score int8)",
+            "INSERT INTO wf VALUES ('a', 1, 10), ('a', 2, 10), ('a', 3, 20), ('b', 4, 5), ('b', 5, 7)",
+            "SELECT id, \
+             sum(score) OVER (PARTITION BY dept ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW), \
+             count(*) OVER (PARTITION BY dept), \
+             avg(score) OVER (PARTITION BY dept), \
+             min(score) OVER (PARTITION BY dept), \
+             max(score) OVER (PARTITION BY dept) \
+             FROM wf ORDER BY id",
+            "SELECT id, \
+             sum(score) OVER (PARTITION BY dept ORDER BY score RANGE BETWEEN 5 PRECEDING AND CURRENT ROW) \
+             FROM wf WHERE dept = 'a' ORDER BY id",
+        ]);
+        assert_eq!(
+            results[2].rows,
+            vec![
+                vec![
+                    ScalarValue::Int(1),
+                    ScalarValue::Int(10),
+                    ScalarValue::Int(3),
+                    ScalarValue::Float(13.333333333333334),
+                    ScalarValue::Int(10),
+                    ScalarValue::Int(20),
+                ],
+                vec![
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(20),
+                    ScalarValue::Int(3),
+                    ScalarValue::Float(13.333333333333334),
+                    ScalarValue::Int(10),
+                    ScalarValue::Int(20),
+                ],
+                vec![
+                    ScalarValue::Int(3),
+                    ScalarValue::Int(30),
+                    ScalarValue::Int(3),
+                    ScalarValue::Float(13.333333333333334),
+                    ScalarValue::Int(10),
+                    ScalarValue::Int(20),
+                ],
+                vec![
+                    ScalarValue::Int(4),
+                    ScalarValue::Int(5),
+                    ScalarValue::Int(2),
+                    ScalarValue::Float(6.0),
+                    ScalarValue::Int(5),
+                    ScalarValue::Int(7),
+                ],
+                vec![
+                    ScalarValue::Int(5),
+                    ScalarValue::Int(12),
+                    ScalarValue::Int(2),
+                    ScalarValue::Float(6.0),
+                    ScalarValue::Int(5),
+                    ScalarValue::Int(7),
+                ],
+            ]
+        );
+        assert_eq!(
+            results[3].rows,
+            vec![
+                vec![ScalarValue::Int(1), ScalarValue::Int(20)],
+                vec![ScalarValue::Int(2), ScalarValue::Int(20)],
+                vec![ScalarValue::Int(3), ScalarValue::Int(20)],
+            ]
         );
     }
 

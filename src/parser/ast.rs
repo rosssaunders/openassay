@@ -452,6 +452,35 @@ pub struct OrderByExpr {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct WindowSpec {
+    pub partition_by: Vec<Expr>,
+    pub order_by: Vec<OrderByExpr>,
+    pub frame: Option<WindowFrame>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowFrame {
+    pub units: WindowFrameUnits,
+    pub start: WindowFrameBound,
+    pub end: WindowFrameBound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowFrameUnits {
+    Rows,
+    Range,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WindowFrameBound {
+    UnboundedPreceding,
+    OffsetPreceding(Expr),
+    CurrentRow,
+    OffsetFollowing(Expr),
+    UnboundedFollowing,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Identifier(Vec<String>),
     String(String),
@@ -466,6 +495,7 @@ pub enum Expr {
         distinct: bool,
         order_by: Vec<OrderByExpr>,
         filter: Option<Box<Expr>>,
+        over: Option<Box<WindowSpec>>,
     },
     Cast {
         expr: Box<Expr>,

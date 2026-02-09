@@ -10,7 +10,8 @@ use crate::parser::ast::{
     JoinType, MergeStatement, MergeWhenClause, OnConflictClause, OrderByExpr, Query, QueryExpr,
     RefreshMaterializedViewStatement, SelectItem, SelectQuantifier, SelectStatement, SetOperator,
     SetQuantifier, Statement, SubqueryRef, TableConstraint, TableExpression, TableFunctionRef,
-    TableRef, TruncateStatement, TypeName, UnaryOp, UpdateStatement, WithClause,
+    TableRef, TruncateStatement, TypeName, UnaryOp, UpdateStatement, WindowFrame,
+    WindowFrameBound, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::parser::lexer::{Keyword, LexError, Token, TokenKind, lex_sql};
 
@@ -2072,16 +2073,116 @@ impl Parser {
             } else {
                 None
             };
+            let over = if self.consume_keyword(Keyword::Over) {
+                Some(Box::new(self.parse_window_spec()?))
+            } else {
+                None
+            };
             return Ok(Expr::FunctionCall {
                 name,
                 args,
                 distinct,
                 order_by,
                 filter,
+                over,
             });
         }
 
         Ok(Expr::Identifier(name))
+    }
+
+    fn parse_window_spec(&mut self) -> Result<WindowSpec, ParseError> {
+        self.expect_token(
+            |k| matches!(k, TokenKind::LParen),
+            "expected '(' after OVER",
+        )?;
+        let mut partition_by = Vec::new();
+        let mut order_by = Vec::new();
+        let mut frame = None;
+
+        if self.consume_keyword(Keyword::Partition) {
+            self.expect_keyword(Keyword::By, "expected BY after PARTITION")?;
+            partition_by = self.parse_expr_list()?;
+        }
+
+        if self.consume_keyword(Keyword::Order) {
+            self.expect_keyword(Keyword::By, "expected BY after ORDER in window clause")?;
+            order_by = self.parse_order_by_list()?;
+        }
+
+        if self.peek_keyword(Keyword::Rows) || self.peek_keyword(Keyword::Range) {
+            frame = Some(self.parse_window_frame()?);
+        }
+
+        self.expect_token(
+            |k| matches!(k, TokenKind::RParen),
+            "expected ')' to close OVER clause",
+        )?;
+
+        Ok(WindowSpec {
+            partition_by,
+            order_by,
+            frame,
+        })
+    }
+
+    fn parse_window_frame(&mut self) -> Result<WindowFrame, ParseError> {
+        let units = if self.consume_keyword(Keyword::Rows) {
+            WindowFrameUnits::Rows
+        } else {
+            self.expect_keyword(
+                Keyword::Range,
+                "expected ROWS or RANGE in window frame clause",
+            )?;
+            WindowFrameUnits::Range
+        };
+
+        self.expect_keyword(
+            Keyword::Between,
+            "expected BETWEEN in window frame clause",
+        )?;
+        let start = self.parse_window_frame_bound()?;
+        self.expect_keyword(Keyword::And, "expected AND in window frame clause")?;
+        let end = self.parse_window_frame_bound()?;
+
+        Ok(WindowFrame { units, start, end })
+    }
+
+    fn parse_window_frame_bound(&mut self) -> Result<WindowFrameBound, ParseError> {
+        if self.consume_keyword(Keyword::Unbounded) {
+            if self.consume_keyword(Keyword::Preceding) {
+                return Ok(WindowFrameBound::UnboundedPreceding);
+            }
+            if self.consume_keyword(Keyword::Following) {
+                return Ok(WindowFrameBound::UnboundedFollowing);
+            }
+            return Err(self.error_at_current("expected PRECEDING or FOLLOWING after UNBOUNDED"));
+        }
+
+        if self.consume_keyword(Keyword::Current) {
+            self.expect_window_row_keyword("expected ROW after CURRENT in frame bound")?;
+            return Ok(WindowFrameBound::CurrentRow);
+        }
+
+        let offset = self.parse_expr()?;
+        if self.consume_keyword(Keyword::Preceding) {
+            return Ok(WindowFrameBound::OffsetPreceding(offset));
+        }
+        if self.consume_keyword(Keyword::Following) {
+            return Ok(WindowFrameBound::OffsetFollowing(offset));
+        }
+
+        Err(self.error_at_current("expected PRECEDING or FOLLOWING in frame bound"))
+    }
+
+    fn expect_window_row_keyword(&mut self, message: &'static str) -> Result<(), ParseError> {
+        match self.current_kind() {
+            TokenKind::Identifier(ident) if ident.eq_ignore_ascii_case("row") => {
+                self.advance();
+                Ok(())
+            }
+            _ => Err(self.error_at_current(message)),
+        }
     }
 
     fn parse_case_expr(&mut self) -> Result<Expr, ParseError> {
@@ -3884,6 +3985,84 @@ mod tests {
         assert!(*distinct);
         assert_eq!(order_by.len(), 1);
         assert!(filter.is_some());
+    }
+
+    #[test]
+    fn parses_window_function_with_partition_and_order_by() {
+        let stmt =
+            parse_statement("SELECT row_number() OVER (PARTITION BY team ORDER BY score DESC) FROM t")
+                .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = query.body else {
+            panic!("expected select query body");
+        };
+        let Expr::FunctionCall {
+            name,
+            args,
+            over,
+            ..
+        } = &select.targets[0].expr
+        else {
+            panic!("expected function call");
+        };
+        assert_eq!(name, &vec!["row_number".to_string()]);
+        assert!(args.is_empty());
+        let over = over.as_deref().expect("expected OVER clause");
+        assert_eq!(over.partition_by.len(), 1);
+        assert_eq!(over.order_by.len(), 1);
+        assert!(over.frame.is_none());
+    }
+
+    #[test]
+    fn parses_window_frame_rows_and_range_between() {
+        let stmt = parse_statement(
+            "SELECT \
+             sum(v) OVER (ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW), \
+             avg(v) OVER (ORDER BY id RANGE BETWEEN 2 PRECEDING AND 1 FOLLOWING) \
+             FROM t",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = query.body else {
+            panic!("expected select query body");
+        };
+
+        let Expr::FunctionCall {
+            over: over_rows, ..
+        } = &select.targets[0].expr
+        else {
+            panic!("expected function call");
+        };
+        let over_rows = over_rows.as_deref().expect("expected OVER clause");
+        let frame_rows = over_rows.frame.as_ref().expect("expected frame");
+        assert_eq!(frame_rows.units, WindowFrameUnits::Rows);
+        assert!(matches!(
+            frame_rows.start,
+            WindowFrameBound::OffsetPreceding(Expr::Integer(1))
+        ));
+        assert!(matches!(frame_rows.end, WindowFrameBound::CurrentRow));
+
+        let Expr::FunctionCall {
+            over: over_range, ..
+        } = &select.targets[1].expr
+        else {
+            panic!("expected function call");
+        };
+        let over_range = over_range.as_deref().expect("expected OVER clause");
+        let frame_range = over_range.frame.as_ref().expect("expected frame");
+        assert_eq!(frame_range.units, WindowFrameUnits::Range);
+        assert!(matches!(
+            frame_range.start,
+            WindowFrameBound::OffsetPreceding(Expr::Integer(2))
+        ));
+        assert!(matches!(
+            frame_range.end,
+            WindowFrameBound::OffsetFollowing(Expr::Integer(1))
+        ));
     }
 
     #[test]
