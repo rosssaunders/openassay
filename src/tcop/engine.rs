@@ -13108,10 +13108,35 @@ fn eval_http_get_builtin(url_value: &ScalarValue) -> Result<ScalarValue, EngineE
 
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = url;
-        Err(EngineError {
-            message: "http_get() is async in browser builds; use execute_sql_http(...)".to_string(),
-        })
+        // Synchronous XHR — works on main thread in browsers.
+        // This lets http_get() behave identically to native: a real SQL function
+        // that blocks until the response arrives.
+        use wasm_bindgen::JsCast;
+        let xhr = web_sys::XmlHttpRequest::new().map_err(|_| EngineError {
+            message: "http_get(): failed to create XMLHttpRequest".to_string(),
+        })?;
+        xhr.open_with_async("GET", url, false).map_err(|_| EngineError {
+            message: format!("http_get(): failed to open request to {url}"),
+        })?;
+        xhr.send().map_err(|e| EngineError {
+            message: format!(
+                "http_get() request failed: {}",
+                e.as_string().unwrap_or_else(|| "unknown error".to_string())
+            ),
+        })?;
+        let status = xhr.status().unwrap_or(0);
+        if status < 200 || status >= 300 {
+            return Err(EngineError {
+                message: format!(
+                    "http_get() request failed with status {status} {}",
+                    xhr.status_text().unwrap_or_default()
+                ),
+            });
+        }
+        let body = xhr.response_text().map_err(|_| EngineError {
+            message: "http_get(): failed to read response body".to_string(),
+        })?.unwrap_or_default();
+        Ok(ScalarValue::Text(body))
     }
 }
 

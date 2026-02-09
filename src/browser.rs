@@ -8,9 +8,7 @@ use crate::tcop::engine::{EngineStateSnapshot, restore_state, snapshot_state};
 use crate::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
 
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen_futures::JsFuture;
+use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
 
 const SNAPSHOT_HEADER: &str = "POSTGRUST_BROWSER_SNAPSHOT_V1";
 
@@ -52,62 +50,24 @@ pub fn run_sql(sql: &str) -> String {
     execute_sql(sql)
 }
 
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(js_name = execute_sql_http)]
-pub async fn execute_sql_http(sql: String) -> Result<String, JsValue> {
-    let rewritten = rewrite_http_get_calls(&sql).await?;
-    Ok(execute_sql(&rewritten))
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = execute_sql_http))]
+pub fn execute_sql_http(sql: &str) -> String {
+    execute_sql(sql)
 }
 
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(js_name = run_sql_http)]
-pub async fn run_sql_http(sql: String) -> Result<String, JsValue> {
-    execute_sql_http(sql).await
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = run_sql_http))]
+pub fn run_sql_http(sql: &str) -> String {
+    execute_sql_http(sql)
 }
 
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(js_name = execute_sql_http_json)]
-pub async fn execute_sql_http_json(sql: String) -> Result<String, JsValue> {
-    let rewritten = rewrite_http_get_calls(&sql).await?;
-    Ok(execute_sql_json_internal(&rewritten, true))
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = execute_sql_http_json))]
+pub fn execute_sql_http_json(sql: &str) -> String {
+    execute_sql_json_internal(sql, true)
 }
 
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(js_name = run_sql_http_json)]
-pub async fn run_sql_http_json(sql: String) -> Result<String, JsValue> {
-    execute_sql_http_json(sql).await
-}
-
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(js_name = http_get)]
-pub async fn http_get(url: String) -> Result<String, JsValue> {
-    let window = web_sys::window().ok_or_else(|| JsValue::from_str("window is not available"))?;
-    let response_value = JsFuture::from(window.fetch_with_str(&url)).await?;
-    let response: web_sys::Response = response_value
-        .dyn_into()
-        .map_err(|_| JsValue::from_str("failed to decode fetch response"))?;
-    if !response.ok() {
-        return Err(JsValue::from_str(&format!(
-            "http_get request failed with status {} {}",
-            response.status(),
-            response.status_text()
-        )));
-    }
-    let text_promise = response
-        .text()
-        .map_err(|_| JsValue::from_str("failed to read response body"))?;
-    let text_value = JsFuture::from(text_promise).await?;
-    Ok(text_value.as_string().unwrap_or_default())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn http_get(url: &str) -> Result<String, String> {
-    let response = ureq::get(url)
-        .call()
-        .map_err(|err| format!("http_get request failed: {err}"))?;
-    response
-        .into_string()
-        .map_err(|err| format!("http_get body read failed: {err}"))
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = run_sql_http_json))]
+pub fn run_sql_http_json(sql: &str) -> String {
+    execute_sql_json_internal(sql, true)
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = export_state_snapshot))]
@@ -186,172 +146,6 @@ fn execute_sql_results_internal(
         }
     }
     Ok(results)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[derive(Debug, Clone)]
-struct HttpGetCallSpan {
-    start: usize,
-    end: usize,
-    url: String,
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn rewrite_http_get_calls(sql: &str) -> Result<String, JsValue> {
-    let mut rewritten = sql.to_string();
-    let mut search_from = 0usize;
-    loop {
-        let Some(call) = find_next_http_get_call(&rewritten, search_from)? else {
-            break;
-        };
-        let body = http_get(call.url).await?;
-        let replacement = sql_quote_literal(&body);
-        rewritten.replace_range(call.start..call.end, &replacement);
-        search_from = call.start + replacement.len();
-    }
-    Ok(rewritten)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn find_next_http_get_call(sql: &str, start: usize) -> Result<Option<HttpGetCallSpan>, JsValue> {
-    let bytes = sql.as_bytes();
-    let mut idx = start.min(bytes.len());
-    let mut in_single = false;
-
-    while idx < bytes.len() {
-        let byte = bytes[idx];
-        if byte == b'\'' {
-            if in_single && idx + 1 < bytes.len() && bytes[idx + 1] == b'\'' {
-                idx += 2;
-                continue;
-            }
-            in_single = !in_single;
-            idx += 1;
-            continue;
-        }
-
-        if in_single {
-            idx += 1;
-            continue;
-        }
-
-        if matches_http_get_name(bytes, idx) {
-            let fn_start = idx;
-            let fn_end = idx + 8;
-            if fn_start > 0 && is_ident_byte(bytes[fn_start - 1]) {
-                idx += 1;
-                continue;
-            }
-            if fn_end < bytes.len() && is_ident_byte(bytes[fn_end]) {
-                idx += 1;
-                continue;
-            }
-
-            let mut open_idx = fn_end;
-            while open_idx < bytes.len() && bytes[open_idx].is_ascii_whitespace() {
-                open_idx += 1;
-            }
-            if open_idx >= bytes.len() || bytes[open_idx] != b'(' {
-                idx += 1;
-                continue;
-            }
-
-            let close_idx = find_matching_paren(bytes, open_idx)
-                .ok_or_else(|| JsValue::from_str("unterminated http_get(...) call in SQL input"))?;
-            let arg_sql = sql[open_idx + 1..close_idx].trim();
-            let url = parse_single_quoted_sql_literal(arg_sql)
-                .map_err(|err| JsValue::from_str(&format!("invalid http_get argument: {err}")))?;
-            return Ok(Some(HttpGetCallSpan {
-                start: fn_start,
-                end: close_idx + 1,
-                url,
-            }));
-        }
-
-        idx += 1;
-    }
-
-    Ok(None)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn matches_http_get_name(bytes: &[u8], idx: usize) -> bool {
-    let name = b"http_get";
-    if idx + name.len() > bytes.len() {
-        return false;
-    }
-    name.iter()
-        .enumerate()
-        .all(|(offset, expected)| bytes[idx + offset].to_ascii_lowercase() == *expected)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn is_ident_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'
-}
-
-#[cfg(target_arch = "wasm32")]
-fn find_matching_paren(bytes: &[u8], open_idx: usize) -> Option<usize> {
-    let mut idx = open_idx;
-    let mut depth = 0usize;
-    let mut in_single = false;
-    while idx < bytes.len() {
-        let byte = bytes[idx];
-        if byte == b'\'' {
-            if in_single && idx + 1 < bytes.len() && bytes[idx + 1] == b'\'' {
-                idx += 2;
-                continue;
-            }
-            in_single = !in_single;
-            idx += 1;
-            continue;
-        }
-        if in_single {
-            idx += 1;
-            continue;
-        }
-        if byte == b'(' {
-            depth += 1;
-        } else if byte == b')' {
-            depth = depth.saturating_sub(1);
-            if depth == 0 {
-                return Some(idx);
-            }
-        }
-        idx += 1;
-    }
-    None
-}
-
-#[cfg(target_arch = "wasm32")]
-fn parse_single_quoted_sql_literal(input: &str) -> Result<String, String> {
-    let trimmed = input.trim();
-    if trimmed.len() < 2 || !trimmed.starts_with('\'') || !trimmed.ends_with('\'') {
-        return Err("http_get() currently requires a single quoted string literal URL".to_string());
-    }
-
-    let mut out = String::new();
-    let inner = &trimmed[1..trimmed.len() - 1];
-    let mut chars = inner.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\'' {
-            if chars.peek().is_some_and(|next| *next == '\'') {
-                let _ = chars.next();
-                out.push('\'');
-            } else {
-                return Err("unterminated single quote in URL literal".to_string());
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-    Ok(out)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn sql_quote_literal(value: &str) -> String {
-    let escaped = value.replace('\'', "''");
-    format!("'{escaped}'")
 }
 
 fn execute_simple_query(sql: &str) -> Result<Vec<BrowserQueryResult>, String> {
