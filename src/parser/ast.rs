@@ -482,6 +482,7 @@ pub struct TableFunctionRef {
 pub struct SubqueryRef {
     pub query: Query,
     pub alias: Option<String>,
+    pub lateral: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -585,6 +586,8 @@ pub enum Expr {
     },
     Exists(Box<Query>),
     ScalarSubquery(Box<Query>),
+    ArrayConstructor(Vec<Expr>),
+    ArraySubquery(Box<Query>),
     InList {
         expr: Box<Expr>,
         list: Vec<Expr>,

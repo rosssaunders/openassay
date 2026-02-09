@@ -1801,6 +1801,7 @@ impl Parser {
     }
 
     fn parse_table_factor(&mut self) -> Result<TableExpression, ParseError> {
+        let lateral = self.consume_keyword(Keyword::Lateral);
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
             if self.peek_keyword(Keyword::Select)
                 || matches!(self.current_kind(), TokenKind::LParen)
@@ -1811,7 +1812,11 @@ impl Parser {
                     "expected ')' to close subquery in FROM",
                 )?;
                 let alias = self.parse_optional_alias()?;
-                return Ok(TableExpression::Subquery(SubqueryRef { query, alias }));
+                return Ok(TableExpression::Subquery(SubqueryRef {
+                    query,
+                    alias,
+                    lateral,
+                }));
             }
 
             let mut inner = self.parse_table_expression()?;
@@ -1823,6 +1828,9 @@ impl Parser {
                 self.apply_table_alias(&mut inner, alias);
             }
             return Ok(inner);
+        }
+        if lateral {
+            return Err(self.error_at_current("expected subquery after LATERAL"));
         }
 
         let name = self.parse_qualified_name()?;
@@ -2085,6 +2093,35 @@ impl Parser {
     }
 
     fn parse_prefix_expr(&mut self) -> Result<Expr, ParseError> {
+        if self.consume_keyword(Keyword::Array) {
+            if self.consume_if(|k| matches!(k, TokenKind::LBracket)) {
+                if self.consume_if(|k| matches!(k, TokenKind::RBracket)) {
+                    return Ok(Expr::ArrayConstructor(Vec::new()));
+                }
+                let mut items = Vec::new();
+                items.push(self.parse_expr()?);
+                while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    items.push(self.parse_expr()?);
+                }
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RBracket),
+                    "expected ']' to close ARRAY constructor",
+                )?;
+                return Ok(Expr::ArrayConstructor(items));
+            }
+            if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+                if !self.current_starts_query() {
+                    return Err(self.error_at_current("expected subquery after ARRAY("));
+                }
+                let query = self.parse_query()?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after ARRAY subquery",
+                )?;
+                return Ok(Expr::ArraySubquery(Box::new(query)));
+            }
+            return Err(self.error_at_current("expected ARRAY[ or ARRAY("));
+        }
         if self.consume_keyword(Keyword::Cast) {
             self.expect_token(
                 |k| matches!(k, TokenKind::LParen),
@@ -3101,6 +3138,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_lateral_subquery_in_from_clause() {
+        let stmt = parse_statement(
+            "SELECT t.id FROM test_table t, LATERAL (SELECT t.id AS id) l",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert_eq!(select.from.len(), 2);
+        match &select.from[1] {
+            TableExpression::Subquery(sub) => {
+                assert_eq!(sub.alias.as_deref(), Some("l"));
+                assert!(sub.lateral);
+            }
+            other => panic!("expected lateral subquery table expression, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_function_call_in_from_clause() {
         let stmt = parse_statement("SELECT elem FROM json_array_elements('[1,2,3]') AS elem")
             .expect("parse should succeed");
@@ -3153,6 +3210,26 @@ mod tests {
             .as_ref()
             .expect("where clause should exist");
         assert!(matches!(where_clause, Expr::Exists(_)));
+    }
+
+    #[test]
+    fn parses_array_constructors() {
+        let stmt = parse_statement("SELECT ARRAY[1, 2, 3]").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert_eq!(select.targets.len(), 1);
+        assert!(matches!(select.targets[0].expr, Expr::ArrayConstructor(_)));
+
+        let stmt = parse_statement("SELECT ARRAY(SELECT id FROM users)")
+            .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert_eq!(select.targets.len(), 1);
+        assert!(matches!(select.targets[0].expr, Expr::ArraySubquery(_)));
     }
 
     #[test]

@@ -26,13 +26,13 @@ use crate::parser::ast::{
     CreateSchemaStatement, CreateSequenceStatement, CreateTableStatement, CreateViewStatement,
     DeleteStatement, DropBehavior, DropIndexStatement, DropSchemaStatement, DropSequenceStatement,
     DropTableStatement, DropViewStatement, Expr, ForeignKeyAction, InsertSource, InsertStatement,
-    JoinCondition, JoinType, MergeStatement, MergeWhenClause, OnConflictClause, OrderByExpr, Query,
+    JoinCondition, JoinExpr, JoinType, MergeStatement, MergeWhenClause, OnConflictClause, OrderByExpr, Query,
     QueryExpr, RefreshMaterializedViewStatement, SelectItem, SelectQuantifier, SelectStatement,
     SetOperator, SetQuantifier, Statement, TableConstraint, TableExpression, TableFunctionRef,
     TableRef, TruncateStatement, TypeName, UnaryOp, UpdateStatement, WindowFrameBound,
     WindowFrameUnits, WindowSpec, ExplainStatement, SetStatement, ShowStatement,
     CreateExtensionStatement, DropExtensionStatement, CreateFunctionStatement,
-    FunctionParam, FunctionReturnType,
+    FunctionParam, FunctionReturnType, SubqueryRef,
     // DiscardStatement, DoStatement, ListenStatement, NotifyStatement, UnlistenStatement used in pattern matching
 };
 use crate::security::{self, RlsCommand, TablePrivilege};
@@ -59,6 +59,7 @@ pub enum ScalarValue {
     Int(i64),
     Float(f64),
     Text(String),
+    Array(Vec<ScalarValue>),
 }
 
 impl ScalarValue {
@@ -75,8 +76,20 @@ impl ScalarValue {
                 text
             }
             Self::Text(v) => v.clone(),
+            Self::Array(values) => render_array_literal(values),
         }
     }
+}
+
+fn render_array_literal(values: &[ScalarValue]) -> String {
+    let parts: Vec<String> = values
+        .iter()
+        .map(|value| match value {
+            ScalarValue::Null => "NULL".to_string(),
+            _ => value.render(),
+        })
+        .collect();
+    format!("{{{}}}", parts.join(","))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -4794,6 +4807,7 @@ fn scalar_key(value: &ScalarValue) -> String {
         ScalarValue::Int(v) => format!("I:{v}"),
         ScalarValue::Float(v) => format!("F:{v}"),
         ScalarValue::Text(v) => format!("T:{v}"),
+        ScalarValue::Array(_) => format!("A:{}", value.render()),
     }
 }
 
@@ -5162,6 +5176,7 @@ fn infer_expr_type_oid(
                 .and_then(|cols| cols.first().map(|col| col.type_oid))
                 .unwrap_or(PG_TEXT_OID)
         }
+        Expr::ArrayConstructor(_) | Expr::ArraySubquery(_) => PG_TEXT_OID,
     }
 }
 
@@ -5554,6 +5569,10 @@ fn expr_references_relation(expr: &Expr, relation_name: &str) -> bool {
                 .as_ref()
                 .is_some_and(|expr| expr_references_relation(expr, relation_name))
         }
+        Expr::ArrayConstructor(items) => items
+            .iter()
+            .any(|item| expr_references_relation(item, relation_name)),
+        Expr::ArraySubquery(query) => query_references_relation(query, relation_name),
         _ => false,
     }
 }
@@ -6858,7 +6877,7 @@ async fn evaluate_from_clause(
     for item in from {
         let mut next = Vec::new();
         match item {
-            TableExpression::Function(_) => {
+            TableExpression::Function(_) | TableExpression::Subquery(SubqueryRef { lateral: true, .. }) => {
                 // Table functions in FROM may reference prior FROM bindings; evaluate per lhs scope.
                 for lhs_scope in &current {
                     let mut merged_outer = lhs_scope.clone();
@@ -6925,18 +6944,139 @@ fn evaluate_table_expression<'a>(
             }
             TableExpression::Join(join) => {
                 let left = evaluate_table_expression(&join.left, params, outer_scope).await?;
-                let right = evaluate_table_expression(&join.right, params, outer_scope).await?;
-                evaluate_join(
-                    join.kind,
-                    join.condition.as_ref(),
-                    join.natural,
-                    &left,
-                    &right,
-                    params,
-                )
-                .await
+                if is_lateral_table_expression(&join.right) {
+                    evaluate_lateral_join(join, &left, params, outer_scope).await
+                } else {
+                    let right = evaluate_table_expression(&join.right, params, outer_scope).await?;
+                    evaluate_join(
+                        join.kind,
+                        join.condition.as_ref(),
+                        join.natural,
+                        &left,
+                        &right,
+                        params,
+                    )
+                    .await
+                }
             }
         }
+    })
+}
+
+fn is_lateral_table_expression(table: &TableExpression) -> bool {
+    matches!(table, TableExpression::Subquery(SubqueryRef { lateral: true, .. }))
+}
+
+async fn evaluate_lateral_join(
+    join: &JoinExpr,
+    left: &TableEval,
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+) -> Result<TableEval, EngineError> {
+    if matches!(join.kind, JoinType::Right | JoinType::Full) {
+        return Err(EngineError {
+            message: "RIGHT/FULL JOIN with LATERAL is not supported".to_string(),
+        });
+    }
+
+    let mut right_columns: Option<Vec<String>> = None;
+    let mut right_null_scope: Option<EvalScope> = None;
+    let mut using_columns: Option<Vec<String>> = None;
+    let mut using_set: Option<HashSet<String>> = None;
+    let empty_set: HashSet<String> = HashSet::new();
+    let mut output_rows = Vec::new();
+
+    if left.rows.is_empty() {
+        let mut merged_outer = left.null_scope.clone();
+        if let Some(outer) = outer_scope {
+            merged_outer.inherit_outer(outer);
+        }
+        let right_eval = evaluate_table_expression(&join.right, params, Some(&merged_outer)).await?;
+        right_columns = Some(right_eval.columns.clone());
+        right_null_scope = Some(right_eval.null_scope.clone());
+    } else {
+        for left_row in &left.rows {
+            let mut merged_outer = left_row.clone();
+            if let Some(outer) = outer_scope {
+                merged_outer.inherit_outer(outer);
+            }
+            let right_eval =
+                evaluate_table_expression(&join.right, params, Some(&merged_outer)).await?;
+
+            if right_columns.is_none() {
+                right_columns = Some(right_eval.columns.clone());
+                right_null_scope = Some(right_eval.null_scope.clone());
+                let cols = if join.natural {
+                    left.columns
+                        .iter()
+                        .filter(|c| right_eval.columns.iter().any(|r| r.eq_ignore_ascii_case(c)))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                } else if let Some(JoinCondition::Using(cols)) = &join.condition {
+                    cols.clone()
+                } else {
+                    Vec::new()
+                };
+                let set = cols
+                    .iter()
+                    .map(|c| c.to_ascii_lowercase())
+                    .collect::<HashSet<_>>();
+                using_columns = Some(cols);
+                using_set = Some(set);
+            } else if right_columns.as_ref() != Some(&right_eval.columns) {
+                return Err(EngineError {
+                    message: "LATERAL subquery returned inconsistent columns".to_string(),
+                });
+            }
+
+            let mut left_matched = false;
+            let cols = using_columns.as_deref().unwrap_or(&[]);
+            let set = using_set.as_ref().unwrap_or(&empty_set);
+            for right_row in &right_eval.rows {
+                let matches = match join.kind {
+                    JoinType::Cross => true,
+                    _ => join_condition_matches(
+                        join.condition.as_ref(),
+                        cols,
+                        left_row,
+                        right_row,
+                        params,
+                    )
+                    .await?,
+                };
+                if matches {
+                    left_matched = true;
+                    output_rows.push(combine_scopes(left_row, right_row, set));
+                }
+            }
+
+            if !left_matched && matches!(join.kind, JoinType::Left) {
+                if let Some(null_scope) = right_null_scope.as_ref() {
+                    output_rows.push(combine_scopes(left_row, null_scope, set));
+                }
+            }
+        }
+    }
+
+    let right_columns = right_columns.unwrap_or_default();
+    let using_set = using_set.unwrap_or_default();
+    let mut output_columns = left.columns.clone();
+    for col in &right_columns {
+        if using_set.contains(&col.to_ascii_lowercase()) {
+            continue;
+        }
+        output_columns.push(col.clone());
+    }
+    let null_scope = combine_scopes(
+        &left.null_scope,
+        &right_null_scope.unwrap_or_default(),
+        &using_set,
+    );
+
+    Ok(TableEval {
+        rows: output_rows,
+        columns: output_columns,
+        null_scope,
     })
 }
 
@@ -8059,6 +8199,8 @@ fn contains_aggregate_expr(expr: &Expr) -> bool {
                 .as_ref()
                 .is_some_and(|expr| contains_aggregate_expr(expr))
         }
+        Expr::ArrayConstructor(items) => items.iter().any(contains_aggregate_expr),
+        Expr::ArraySubquery(_) => false,
         Expr::Exists(_) | Expr::ScalarSubquery(_) | Expr::InSubquery { .. } => false,
         _ => false,
     }
@@ -8124,6 +8266,8 @@ fn contains_window_expr(expr: &Expr) -> bool {
                 })
                 || else_expr.as_ref().is_some_and(|expr| contains_window_expr(expr))
         }
+        Expr::ArrayConstructor(items) => items.iter().any(contains_window_expr),
+        Expr::ArraySubquery(_) => false,
         Expr::Exists(_) | Expr::ScalarSubquery(_) | Expr::InSubquery { .. } => false,
         _ => false,
     }
@@ -8308,6 +8452,26 @@ fn eval_group_expr<'a>(
             } else {
                 Ok(ScalarValue::Null)
             }
+        }
+        Expr::ArrayConstructor(items) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                values.push(eval_group_expr(item, group_rows, representative, params).await?);
+            }
+            Ok(ScalarValue::Array(values))
+        }
+        Expr::ArraySubquery(query) => {
+            let result = execute_query_with_outer(query, params, Some(representative)).await?;
+            if !result.columns.is_empty() && result.columns.len() != 1 {
+                return Err(EngineError {
+                    message: "subquery must return only one column".to_string(),
+                });
+            }
+            let mut values = Vec::with_capacity(result.rows.len());
+            for row in &result.rows {
+                values.push(row.first().cloned().unwrap_or(ScalarValue::Null));
+            }
+            Ok(ScalarValue::Array(values))
         }
         _ => {
             if group_rows.is_empty() {
@@ -8969,6 +9133,7 @@ fn row_key(row: &[ScalarValue]) -> String {
             ScalarValue::Int(i) => format!("I:{i}"),
             ScalarValue::Float(f) => format!("F:{f}"),
             ScalarValue::Text(t) => format!("T:{t}"),
+            ScalarValue::Array(_) => format!("A:{}", v.render()),
         })
         .collect::<Vec<_>>()
         .join("|")
@@ -9295,6 +9460,26 @@ fn eval_expr<'a>(
             }
             Ok(result.rows[0][0].clone())
         }
+        Expr::ArrayConstructor(items) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                values.push(eval_expr(item, scope, params).await?);
+            }
+            Ok(ScalarValue::Array(values))
+        }
+        Expr::ArraySubquery(query) => {
+            let result = execute_query_with_outer(query, params, Some(scope)).await?;
+            if !result.columns.is_empty() && result.columns.len() != 1 {
+                return Err(EngineError {
+                    message: "subquery must return only one column".to_string(),
+                });
+            }
+            let mut values = Vec::with_capacity(result.rows.len());
+            for row in &result.rows {
+                values.push(row.first().cloned().unwrap_or(ScalarValue::Null));
+            }
+            Ok(ScalarValue::Array(values))
+        }
         Expr::InList {
             expr,
             list,
@@ -9480,6 +9665,26 @@ fn eval_expr_with_window<'a>(
                 });
             }
             Ok(result.rows[0][0].clone())
+        }
+        Expr::ArrayConstructor(items) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                values.push(eval_expr_with_window(item, scope, row_idx, all_rows, params).await?);
+            }
+            Ok(ScalarValue::Array(values))
+        }
+        Expr::ArraySubquery(query) => {
+            let result = execute_query_with_outer(query, params, Some(scope)).await?;
+            if !result.columns.is_empty() && result.columns.len() != 1 {
+                return Err(EngineError {
+                    message: "subquery must return only one column".to_string(),
+                });
+            }
+            let mut values = Vec::with_capacity(result.rows.len());
+            for row in &result.rows {
+                values.push(row.first().cloned().unwrap_or(ScalarValue::Null));
+            }
+            Ok(ScalarValue::Array(values))
         }
         Expr::InList {
             expr,
@@ -11356,6 +11561,13 @@ fn scalar_to_json_value(value: &ScalarValue) -> Result<JsonValue, EngineError> {
                 message: "cannot convert non-finite float to JSON value".to_string(),
             }),
         ScalarValue::Text(v) => Ok(JsonValue::String(v.clone())),
+        ScalarValue::Array(values) => {
+            let mut items = Vec::with_capacity(values.len());
+            for value in values {
+                items.push(scalar_to_json_value(value)?);
+            }
+            Ok(JsonValue::Array(items))
+        }
     }
 }
 
@@ -11603,6 +11815,11 @@ fn parse_json_path_segments(
             ScalarValue::Int(v) => out.push(v.to_string()),
             ScalarValue::Float(v) => out.push(v.to_string()),
             ScalarValue::Bool(v) => out.push(v.to_string()),
+            ScalarValue::Array(_) => {
+                return Err(EngineError {
+                    message: format!("{fn_name}() path arguments must be scalar values"),
+                });
+            }
         }
     }
     if out.is_empty() {
@@ -12119,6 +12336,9 @@ fn scalar_to_json_path_segment(
         ScalarValue::Int(v) => Ok(v.to_string()),
         ScalarValue::Float(v) => Ok(v.to_string()),
         ScalarValue::Bool(v) => Ok(v.to_string()),
+        ScalarValue::Array(_) => Err(EngineError {
+            message: format!("{operator_name} operator path operand must be scalar"),
+        }),
     }
 }
 
@@ -12173,6 +12393,20 @@ fn parse_json_path_operand(
         ScalarValue::Int(v) => Ok(vec![v.to_string()]),
         ScalarValue::Float(v) => Ok(vec![v.to_string()]),
         ScalarValue::Bool(v) => Ok(vec![v.to_string()]),
+        ScalarValue::Array(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                if matches!(value, ScalarValue::Null) {
+                    return Err(EngineError {
+                        message: format!(
+                            "{operator_name} operator path array cannot contain null"
+                        ),
+                    });
+                }
+                out.push(value.render());
+            }
+            Ok(out)
+        }
     }
 }
 
@@ -13054,9 +13288,25 @@ fn eval_json_concat_operator(
     if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
-    let lhs = parse_json_document_arg(&left, "json operator ||", 1)?;
-    let rhs = parse_json_document_arg(&right, "json operator ||", 2)?;
-    Ok(ScalarValue::Text(json_concat(lhs, rhs).to_string()))
+    match (left, right) {
+        (ScalarValue::Array(mut left_items), ScalarValue::Array(right_items)) => {
+            left_items.extend(right_items);
+            return Ok(ScalarValue::Array(left_items));
+        }
+        (ScalarValue::Array(mut left_items), other) => {
+            left_items.push(other);
+            return Ok(ScalarValue::Array(left_items));
+        }
+        (other, ScalarValue::Array(mut right_items)) => {
+            right_items.insert(0, other);
+            return Ok(ScalarValue::Array(right_items));
+        }
+        (left, right) => {
+            let lhs = parse_json_document_arg(&left, "json operator ||", 1)?;
+            let rhs = parse_json_document_arg(&right, "json operator ||", 2)?;
+            return Ok(ScalarValue::Text(json_concat(lhs, rhs).to_string()));
+        }
+    }
 }
 
 fn json_contains(lhs: &JsonValue, rhs: &JsonValue) -> bool {
@@ -13349,6 +13599,9 @@ fn parse_numeric_operand(value: &ScalarValue) -> Result<NumericOperand, EngineEr
                 message: "numeric operation expects numeric values".to_string(),
             })
         }
+        ScalarValue::Array(_) => Err(EngineError {
+            message: "numeric operation expects numeric values".to_string(),
+        }),
         _ => Err(EngineError {
             message: "numeric operation expects numeric values".to_string(),
         }),
@@ -13999,6 +14252,7 @@ fn truthy(value: &ScalarValue) -> bool {
         ScalarValue::Int(v) => *v != 0,
         ScalarValue::Float(v) => *v != 0.0,
         ScalarValue::Text(v) => !v.is_empty(),
+        ScalarValue::Array(values) => !values.is_empty(),
     }
 }
 
@@ -15398,7 +15652,11 @@ mod tests {
         use std::thread;
 
         with_isolated_state(|| {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+            let listener = match TcpListener::bind("127.0.0.1:0") {
+                Ok(listener) => listener,
+                Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return,
+                Err(err) => panic!("listener should bind: {err}"),
+            };
             let addr = listener.local_addr().expect("listener local addr");
             let handle = thread::spawn(move || {
                 let (mut stream, _) = listener.accept().expect("should accept connection");
@@ -15445,6 +15703,144 @@ mod tests {
              WHERE u.id > 1 \
              ORDER BY 1");
         assert_eq!(result.rows, vec![vec![ScalarValue::Int(2)]]);
+    }
+
+    #[test]
+    fn executes_lateral_subquery_basic() {
+        let results = run_batch(&[
+            "CREATE TABLE test_table (id int8)",
+            "INSERT INTO test_table VALUES (1), (2)",
+            "SELECT t.id, l.val FROM test_table t, LATERAL (SELECT t.id * 2 AS val) l ORDER BY 1",
+        ]);
+        assert_eq!(
+            results[2].rows,
+            vec![
+                vec![ScalarValue::Int(1), ScalarValue::Int(2)],
+                vec![ScalarValue::Int(2), ScalarValue::Int(4)],
+            ]
+        );
+    }
+
+    #[test]
+    fn executes_lateral_generate_series() {
+        let result = run(
+            "SELECT g.n, l.tens \
+             FROM generate_series(1,3) g(n), LATERAL (SELECT n * 10 AS tens) l \
+             ORDER BY 1",
+        );
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![ScalarValue::Int(1), ScalarValue::Int(10)],
+                vec![ScalarValue::Int(2), ScalarValue::Int(20)],
+                vec![ScalarValue::Int(3), ScalarValue::Int(30)],
+            ]
+        );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn executes_lateral_http_get() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        with_isolated_state(|| {
+            let listener = match TcpListener::bind("127.0.0.1:0") {
+                Ok(listener) => listener,
+                Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return,
+                Err(err) => panic!("listener should bind: {err}"),
+            };
+            let addr = listener.local_addr().expect("listener local addr");
+            let handle = thread::spawn(move || {
+                for _ in 0..2 {
+                    let (mut stream, _) = listener.accept().expect("should accept connection");
+                    let mut request_buf = [0u8; 1024];
+                    let _ = stream.read(&mut request_buf);
+                    let body = "lateral-http-get";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream
+                        .write_all(response.as_bytes())
+                        .expect("response write should succeed");
+                }
+            });
+
+            let url1 = format!("http://{}/one", addr);
+            let url2 = format!("http://{}/two", addr);
+            run_statement("CREATE TABLE urls (url text)", &[]);
+            let insert_sql = format!(
+                "INSERT INTO urls VALUES ('{}'), ('{}')",
+                url1, url2
+            );
+            run_statement(&insert_sql, &[]);
+            let result = run_statement(
+                "SELECT u.url, length(body) \
+                 FROM urls u, LATERAL (SELECT http_get(u.url) AS body) l \
+                 ORDER BY 1",
+                &[],
+            );
+            assert_eq!(
+                result.rows,
+                vec![
+                    vec![ScalarValue::Text(url1), ScalarValue::Int(16)],
+                    vec![ScalarValue::Text(url2), ScalarValue::Int(16)],
+                ]
+            );
+
+            handle.join().expect("http server thread should finish");
+        });
+    }
+
+    #[test]
+    fn executes_array_constructors() {
+        with_isolated_state(|| {
+            run_statement("CREATE TABLE test_table (id int8)", &[]);
+            run_statement("INSERT INTO test_table VALUES (1), (2)", &[]);
+
+            let r1 = run_statement("SELECT ARRAY[1, 2, 3]", &[]);
+            assert_eq!(
+                r1.rows[0][0],
+                ScalarValue::Array(vec![
+                    ScalarValue::Int(1),
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(3),
+                ])
+            );
+
+            let r2 = run_statement("SELECT ARRAY['a', 'b', 'c']", &[]);
+            assert_eq!(
+                r2.rows[0][0],
+                ScalarValue::Array(vec![
+                    ScalarValue::Text("a".to_string()),
+                    ScalarValue::Text("b".to_string()),
+                    ScalarValue::Text("c".to_string()),
+                ])
+            );
+
+            let r3 = run_statement(
+                "SELECT ARRAY(SELECT id FROM test_table ORDER BY id)",
+                &[],
+            );
+            assert_eq!(
+                r3.rows[0][0],
+                ScalarValue::Array(vec![ScalarValue::Int(1), ScalarValue::Int(2)])
+            );
+
+            let r4 = run_statement("SELECT ARRAY[1, 2] || ARRAY[3, 4]", &[]);
+            assert_eq!(
+                r4.rows[0][0],
+                ScalarValue::Array(vec![
+                    ScalarValue::Int(1),
+                    ScalarValue::Int(2),
+                    ScalarValue::Int(3),
+                    ScalarValue::Int(4),
+                ])
+            );
+        });
     }
 
     #[test]
