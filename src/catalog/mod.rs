@@ -743,15 +743,15 @@ impl Catalog {
             });
         };
 
-        if let Some(name) = &constraint.name {
-            if constraint_name_exists(table, name) {
-                return Err(CatalogError {
-                    message: format!(
-                        "constraint \"{}\" already exists for relation \"{}.{}\"",
-                        name, schema_name, table_name
-                    ),
-                });
-            }
+        if let Some(name) = &constraint.name
+            && constraint_name_exists(table, name)
+        {
+            return Err(CatalogError {
+                message: format!(
+                    "constraint \"{}\" already exists for relation \"{}.{}\"",
+                    name, schema_name, table_name
+                ),
+            });
         }
         if constraint.primary
             && table
@@ -838,15 +838,15 @@ impl Catalog {
             });
         };
 
-        if let Some(name) = &constraint.name {
-            if constraint_name_exists(table, name) {
-                return Err(CatalogError {
-                    message: format!(
-                        "constraint \"{}\" already exists for relation \"{}.{}\"",
-                        name, schema_name, table_name
-                    ),
-                });
-            }
+        if let Some(name) = &constraint.name
+            && constraint_name_exists(table, name)
+        {
+            return Err(CatalogError {
+                message: format!(
+                    "constraint \"{}\" already exists for relation \"{}.{}\"",
+                    name, schema_name, table_name
+                ),
+            });
         }
 
         let mut normalized_cols = Vec::with_capacity(constraint.columns.len());

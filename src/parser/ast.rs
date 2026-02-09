@@ -169,6 +169,7 @@ pub struct InsertStatement {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum InsertSource {
     Values(Vec<Vec<Expr>>),
     Query(Query),
@@ -416,6 +417,7 @@ pub struct CommonTableExpr {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum QueryExpr {
     Select(SelectStatement),
     SetOperation {
@@ -504,6 +506,7 @@ pub struct JoinExpr {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum TableExpression {
     Relation(TableRef),
     Function(TableFunctionRef),

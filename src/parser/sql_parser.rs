@@ -800,7 +800,7 @@ impl Parser {
         }
         if self.consume_keyword(Keyword::Function) {
             // DROP FUNCTION name - simple form only
-            let name = self.parse_qualified_name()?;
+            let _name = self.parse_qualified_name()?;
             // consume optional parameter list
             if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
                 while !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
@@ -1091,6 +1091,7 @@ impl Parser {
         Ok(row)
     }
 
+    #[allow(clippy::type_complexity)]
     fn parse_create_sequence_options(
         &mut self,
     ) -> Result<
@@ -1421,10 +1422,10 @@ impl Parser {
             "real" | "float4" => TypeName::Float4,
             "float" | "float8" => TypeName::Float8,
             "double" => {
-                if let TokenKind::Identifier(next) = self.current_kind() {
-                    if next.eq_ignore_ascii_case("precision") {
-                        self.advance();
-                    }
+                if let TokenKind::Identifier(next) = self.current_kind()
+                    && next.eq_ignore_ascii_case("precision")
+                {
+                    self.advance();
                 }
                 TypeName::Float8
             }
@@ -1549,10 +1550,7 @@ impl Parser {
     fn parse_query_expr_bp(&mut self, min_bp: u8) -> Result<QueryExpr, ParseError> {
         let mut lhs = self.parse_query_term()?;
 
-        loop {
-            let Some((op, l_bp, r_bp)) = self.current_set_op() else {
-                break;
-            };
+        while let Some((op, l_bp, r_bp)) = self.current_set_op() {
             if l_bp < min_bp {
                 break;
             }
@@ -1596,7 +1594,7 @@ impl Parser {
             }
             // Generate column names: column1, column2, ...
             let ncols = all_rows.first().map(|r| r.len()).unwrap_or(0);
-            let targets: Vec<SelectItem> = (0..ncols).map(|i| SelectItem {
+            let _targets: Vec<SelectItem> = (0..ncols).map(|i| SelectItem {
                 expr: Expr::Identifier(vec![format!("column{}", i + 1)]),
                 alias: Some(format!("column{}", i + 1)),
             }).collect();
@@ -2981,10 +2979,10 @@ impl Parser {
         let is_local = self.consume_keyword(Keyword::Local);
         let name = self.parse_identifier()?;
         // Accept = or TO
-        if !self.consume_if(|k| matches!(k, TokenKind::Equal)) {
-            if !self.consume_keyword(Keyword::To) {
-                return Err(self.error_at_current("expected = or TO after SET variable name"));
-            }
+        if !self.consume_if(|k| matches!(k, TokenKind::Equal))
+            && !self.consume_keyword(Keyword::To)
+        {
+            return Err(self.error_at_current("expected = or TO after SET variable name"));
         }
         // Collect the rest as value
         let mut value_parts = Vec::new();

@@ -381,7 +381,7 @@ async fn execute_show(show_stmt: &ShowStatement) -> Result<QueryResult, EngineEr
     let value = guc.get(&show_stmt.name)
         .or_else(|| guc.iter().find(|(k, _)| k.eq_ignore_ascii_case(&show_stmt.name)).map(|(_, v)| v))
         .cloned()
-        .unwrap_or_else(|| "".to_string());
+        .unwrap_or_default();
     Ok(QueryResult {
         columns: vec![show_stmt.name.clone()],
         rows: vec![vec![ScalarValue::Text(value)]],
@@ -406,9 +406,7 @@ async fn execute_explain(
         ))
         .await?;
         let elapsed = start.elapsed();
-        plan_lines.push(format!(
-            "Planning Time: 0.001 ms"
-        ));
+        plan_lines.push("Planning Time: 0.001 ms".to_string());
         plan_lines.push(format!(
             "Execution Time: {:.3} ms",
             elapsed.as_secs_f64() * 1000.0
@@ -692,8 +690,6 @@ mod ws_native {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-use std::collections::HashMap as WsHandleMap;
-
 /// Global map of connection id -> native WS handle (non-wasm only)
 #[cfg(not(target_arch = "wasm32"))]
 static NATIVE_WS_HANDLES: std::sync::OnceLock<std::sync::Mutex<HashMap<i64, ws_native::NativeWsHandle>>> = std::sync::OnceLock::new();
@@ -1895,11 +1891,11 @@ async fn execute_insert(
         }
 
         for (idx, column) in table.columns().iter().enumerate() {
-            if !provided[idx] {
-                if let Some(default_expr) = column.default() {
-                    let raw = eval_expr(default_expr, &EvalScope::default(), params).await?;
-                    row[idx] = coerce_value_for_column(raw, column)?;
-                }
+            if !provided[idx]
+                && let Some(default_expr) = column.default()
+            {
+                let raw = eval_expr(default_expr, &EvalScope::default(), params).await?;
+                row[idx] = coerce_value_for_column(raw, column)?;
             }
         }
 
@@ -1948,10 +1944,10 @@ async fn execute_insert(
                 _ => None,
             };
             for row in &materialized {
-                if let Some(target_indexes) = conflict_target_indexes.as_ref() {
-                    if row_conflicts_on_columns(&candidate_rows, row, target_indexes) {
-                        continue;
-                    }
+                if let Some(target_indexes) = conflict_target_indexes.as_ref()
+                    && row_conflicts_on_columns(&candidate_rows, row, target_indexes)
+                {
+                    continue;
                 }
                 let mut trial = candidate_rows.clone();
                 trial.push(row.clone());
@@ -2021,10 +2017,10 @@ async fn execute_insert(
                     &conflict_scope_qualifiers,
                 );
                 add_excluded_row_to_scope(&mut scope, &table, row);
-                if let Some(predicate) = where_clause {
-                    if !truthy(&eval_expr(predicate, &scope, params).await?) {
-                        continue;
-                    }
+                if let Some(predicate) = where_clause
+                    && !truthy(&eval_expr(predicate, &scope, params).await?)
+                {
+                    continue;
                 }
 
                 let mut updated_row = existing_row.clone();
@@ -2510,7 +2506,7 @@ async fn execute_drop_schema(
         })?;
         for plan in sequence_plans {
             for oid in plan.relation_drop_order {
-                if !relation_oids.iter().any(|existing| *existing == oid) {
+                if !relation_oids.contains(&oid) {
                     relation_oids.push(oid);
                 }
             }
@@ -2920,10 +2916,10 @@ async fn execute_merge(
                         );
                         let combined =
                             combine_scopes(&target_scope, &source_scope, &HashSet::new());
-                        if let Some(cond) = condition {
-                            if !truthy(&eval_expr(cond, &combined, params).await?) {
-                                continue;
-                            }
+                        if let Some(cond) = condition
+                            && !truthy(&eval_expr(cond, &combined, params).await?)
+                        {
+                            continue;
                         }
                         let source_idx = candidate_rows[target_idx]
                             .source_row_index
@@ -3000,10 +2996,10 @@ async fn execute_merge(
                         );
                         let combined =
                             combine_scopes(&target_scope, &source_scope, &HashSet::new());
-                        if let Some(cond) = condition {
-                            if !truthy(&eval_expr(cond, &combined, params).await?) {
-                                continue;
-                            }
+                        if let Some(cond) = condition
+                            && !truthy(&eval_expr(cond, &combined, params).await?)
+                        {
+                            continue;
                         }
                         let source_idx = candidate_rows[target_idx]
                             .source_row_index
@@ -3040,10 +3036,10 @@ async fn execute_merge(
                         );
                         let combined =
                             combine_scopes(&target_scope, &source_scope, &HashSet::new());
-                        if let Some(cond) = condition {
-                            if !truthy(&eval_expr(cond, &combined, params).await?) {
-                                continue;
-                            }
+                        if let Some(cond) = condition
+                            && !truthy(&eval_expr(cond, &combined, params).await?)
+                        {
+                            continue;
                         }
                         clause_applied = true;
                         break;
@@ -3062,10 +3058,10 @@ async fn execute_merge(
                         columns,
                         values,
                     } => {
-                        if let Some(cond) = condition {
-                            if !truthy(&eval_expr(cond, &source_scope, params).await?) {
-                                continue;
-                            }
+                        if let Some(cond) = condition
+                            && !truthy(&eval_expr(cond, &source_scope, params).await?)
+                        {
+                            continue;
                         }
                         let target_indexes = resolve_insert_target_indexes(&table, columns)?;
                         if values.len() != target_indexes.len() {
@@ -3086,12 +3082,12 @@ async fn execute_merge(
                             provided[*col_idx] = true;
                         }
                         for (idx, column) in table.columns().iter().enumerate() {
-                            if !provided[idx] {
-                                if let Some(default_expr) = column.default() {
-                                    let raw =
-                                        eval_expr(default_expr, &source_scope, params).await?;
-                                    row[idx] = coerce_value_for_column(raw, column)?;
-                                }
+                            if !provided[idx]
+                                && let Some(default_expr) = column.default()
+                            {
+                                let raw =
+                                    eval_expr(default_expr, &source_scope, params).await?;
+                                row[idx] = coerce_value_for_column(raw, column)?;
                             }
                             if matches!(row[idx], ScalarValue::Null) && !column.nullable() {
                                 return Err(EngineError {
@@ -3136,10 +3132,10 @@ async fn execute_merge(
                         break;
                     }
                     MergeWhenClause::NotMatchedDoNothing { condition } => {
-                        if let Some(cond) = condition {
-                            if !truthy(&eval_expr(cond, &source_scope, params).await?) {
-                                continue;
-                            }
+                        if let Some(cond) = condition
+                            && !truthy(&eval_expr(cond, &source_scope, params).await?)
+                        {
+                            continue;
                         }
                         break;
                     }
@@ -3192,10 +3188,10 @@ async fn execute_merge(
                             &candidate_rows[row_idx].values,
                             &target_qualifiers,
                         );
-                        if let Some(cond) = condition {
-                            if !truthy(&eval_expr(cond, &scope, params).await?) {
-                                continue;
-                            }
+                        if let Some(cond) = condition
+                            && !truthy(&eval_expr(cond, &scope, params).await?)
+                        {
+                            continue;
                         }
                         let assignment_targets =
                             resolve_update_assignment_targets(&table, assignments)?;
@@ -3261,10 +3257,10 @@ async fn execute_merge(
                             &candidate_rows[row_idx].values,
                             &target_qualifiers,
                         );
-                        if let Some(cond) = condition {
-                            if !truthy(&eval_expr(cond, &scope, params).await?) {
-                                continue;
-                            }
+                        if let Some(cond) = condition
+                            && !truthy(&eval_expr(cond, &scope, params).await?)
+                        {
+                            continue;
                         }
                         let removed = candidate_rows.remove(row_idx);
                         if !merge.returning.is_empty() {
@@ -3291,10 +3287,10 @@ async fn execute_merge(
                             &candidate_rows[row_idx].values,
                             &target_qualifiers,
                         );
-                        if let Some(cond) = condition {
-                            if !truthy(&eval_expr(cond, &scope, params).await?) {
-                                continue;
-                            }
+                        if let Some(cond) = condition
+                            && !truthy(&eval_expr(cond, &scope, params).await?)
+                        {
+                            continue;
                         }
                         clause_applied = true;
                         break;
@@ -4407,6 +4403,7 @@ async fn apply_on_update_actions_with_staged(
         return Ok(staged_rows);
     }
 
+    #[allow(clippy::type_complexity)]
     let mut queue: VecDeque<(
         crate::catalog::Table,
         Vec<(Vec<ScalarValue>, Vec<ScalarValue>)>,
@@ -4692,16 +4689,16 @@ fn preview_table_with_added_constraint(
         TableConstraint::PrimaryKey { .. } | TableConstraint::Unique { .. } => {
             let mut specs = key_constraint_specs_from_ast(std::slice::from_ref(constraint))?;
             let spec = specs.pop().expect("one key constraint spec");
-            if let Some(name) = &spec.name {
-                if table_constraint_name_exists(&preview, name) {
-                    return Err(EngineError {
-                        message: format!(
-                            "constraint \"{}\" already exists for relation \"{}\"",
-                            name,
-                            preview.qualified_name()
-                        ),
-                    });
-                }
+            if let Some(name) = &spec.name
+                && table_constraint_name_exists(&preview, name)
+            {
+                return Err(EngineError {
+                    message: format!(
+                        "constraint \"{}\" already exists for relation \"{}\"",
+                        name,
+                        preview.qualified_name()
+                    ),
+                });
             }
             if spec.primary
                 && preview
@@ -4742,16 +4739,16 @@ fn preview_table_with_added_constraint(
             let mut specs =
                 foreign_key_constraint_specs_from_ast(std::slice::from_ref(constraint))?;
             let spec = specs.pop().expect("one foreign key constraint spec");
-            if let Some(name) = &spec.name {
-                if table_constraint_name_exists(&preview, name) {
-                    return Err(EngineError {
-                        message: format!(
-                            "constraint \"{}\" already exists for relation \"{}\"",
-                            name,
-                            preview.qualified_name()
-                        ),
-                    });
-                }
+            if let Some(name) = &spec.name
+                && table_constraint_name_exists(&preview, name)
+            {
+                return Err(EngineError {
+                    message: format!(
+                        "constraint \"{}\" already exists for relation \"{}\"",
+                        name,
+                        preview.qualified_name()
+                    ),
+                });
             }
             for column in &spec.columns {
                 find_column_index(&preview, column)?;
@@ -4921,6 +4918,7 @@ impl TypeScope {
         if self.ambiguous.contains(&key) {
             return;
         }
+        #[allow(clippy::map_entry)]
         if self.unqualified.contains_key(&key) {
             self.unqualified.remove(&key);
             self.ambiguous.insert(key);
@@ -5840,7 +5838,7 @@ async fn project_returning_row_from_scope(
             out.extend(row.iter().cloned());
             continue;
         }
-        out.push(eval_expr(&target.expr, &scope, params).await?);
+        out.push(eval_expr(&target.expr, scope, params).await?);
     }
     Ok(out)
 }
@@ -5870,6 +5868,7 @@ fn current_cte_binding(name: &str) -> Option<CteBinding> {
     })
 }
 
+#[allow(dead_code)]
 fn with_cte_context<T>(ctes: HashMap<String, CteBinding>, f: impl FnOnce() -> T) -> T {
     ACTIVE_CTE_STACK.with(|stack| {
         stack.borrow_mut().push(ctes);
@@ -6721,11 +6720,11 @@ async fn execute_select(
     } else {
         evaluate_from_clause(&select.from, params, outer_scope).await?
     };
-    if let Some(outer) = outer_scope {
-        if !select.from.is_empty() {
-            for scope in &mut source_rows {
-                scope.inherit_outer(outer);
-            }
+    if let Some(outer) = outer_scope
+        && !select.from.is_empty()
+    {
+        for scope in &mut source_rows {
+            scope.inherit_outer(outer);
         }
     }
 
@@ -6757,10 +6756,10 @@ async fn execute_select(
 
     let mut filtered_rows = Vec::new();
     for scope in source_rows {
-        if let Some(predicate) = &select.where_clause {
-            if !truthy(&eval_expr(predicate, &scope, params).await?) {
-                continue;
-            }
+        if let Some(predicate) = &select.where_clause
+            && !truthy(&eval_expr(predicate, &scope, params).await?)
+        {
+            continue;
         }
         filtered_rows.push(scope);
     }
@@ -7108,10 +7107,10 @@ async fn evaluate_lateral_join(
                 }
             }
 
-            if !left_matched && matches!(join.kind, JoinType::Left) {
-                if let Some(null_scope) = right_null_scope.as_ref() {
-                    output_rows.push(combine_scopes(left_row, null_scope, set));
-                }
+            if !left_matched && matches!(join.kind, JoinType::Left)
+                && let Some(null_scope) = right_null_scope.as_ref()
+            {
+                output_rows.push(combine_scopes(left_row, null_scope, set));
             }
         }
     }
@@ -7237,7 +7236,7 @@ async fn evaluate_set_returning_function(
         "generate_series" => eval_generate_series(args, &fn_name),
         "unnest" => eval_unnest_set_function(args, &fn_name),
         "pg_get_keywords" => eval_pg_get_keywords(),
-        "messages" if function.name.len() == 2 && function.name[0].to_ascii_lowercase() == "ws" => {
+        "messages" if function.name.len() == 2 && function.name[0].eq_ignore_ascii_case("ws") => {
             execute_ws_messages(args).await
         }
         _ => Err(EngineError {
@@ -7583,27 +7582,27 @@ async fn evaluate_relation(
     params: &[Option<String>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<TableEval, EngineError> {
-    if rel.name.len() == 1 {
-        if let Some(cte) = current_cte_binding(&rel.name[0]) {
-            let qualifiers = if let Some(alias) = &rel.alias {
-                vec![alias.to_ascii_lowercase()]
-            } else {
-                vec![rel.name[0].to_ascii_lowercase()]
-            };
+    if rel.name.len() == 1
+        && let Some(cte) = current_cte_binding(&rel.name[0])
+    {
+        let qualifiers = if let Some(alias) = &rel.alias {
+            vec![alias.to_ascii_lowercase()]
+        } else {
+            vec![rel.name[0].to_ascii_lowercase()]
+        };
 
-            let mut scoped_rows = Vec::with_capacity(cte.rows.len());
-            for row in &cte.rows {
-                scoped_rows.push(scope_from_row(&cte.columns, row, &qualifiers, &cte.columns));
-            }
-            let null_values = vec![ScalarValue::Null; cte.columns.len()];
-            let null_scope = scope_from_row(&cte.columns, &null_values, &qualifiers, &cte.columns);
-
-            return Ok(TableEval {
-                rows: scoped_rows,
-                columns: cte.columns,
-                null_scope,
-            });
+        let mut scoped_rows = Vec::with_capacity(cte.rows.len());
+        for row in &cte.rows {
+            scoped_rows.push(scope_from_row(&cte.columns, row, &qualifiers, &cte.columns));
         }
+        let null_values = vec![ScalarValue::Null; cte.columns.len()];
+        let null_scope = scope_from_row(&cte.columns, &null_values, &qualifiers, &cte.columns);
+
+        return Ok(TableEval {
+            rows: scoped_rows,
+            columns: cte.columns,
+            null_scope,
+        });
     }
 
     if let Some((schema_name, relation_name, columns)) = lookup_virtual_relation(&rel.name) {
@@ -7733,7 +7732,7 @@ fn virtual_relation_rows(
                     .map(|schema| (schema.oid(), schema.name().to_string()))
                     .collect::<Vec<_>>()
             });
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            entries.sort_by_key(|a| a.0);
             Ok(entries
                 .into_iter()
                 .map(|(oid, name)| vec![ScalarValue::Int(oid as i64), ScalarValue::Text(name)])
@@ -7808,7 +7807,7 @@ fn virtual_relation_rows(
                 (1082u32, "date".to_string()),
                 (1114u32, "timestamp".to_string()),
             ];
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            entries.sort_by_key(|a| a.0);
             Ok(entries
                 .into_iter()
                 .map(|(oid, typname)| {
@@ -8200,12 +8199,11 @@ fn contains_aggregate_expr(expr: &Expr) -> bool {
             over,
             ..
         } => {
-            if over.is_none() {
-                if let Some(fn_name) = name.last() {
-                    if is_aggregate_function(fn_name) {
-                        return true;
-                    }
-                }
+            if over.is_none()
+                && let Some(fn_name) = name.last()
+                && is_aggregate_function(fn_name)
+            {
+                return true;
             }
             args.iter().any(contains_aggregate_expr)
                 || order_by
@@ -8363,14 +8361,14 @@ fn group_by_contains_window_expr(group_by: &[GroupByExpr]) -> bool {
         GroupByExpr::Expr(expr) => contains_window_expr(expr),
         GroupByExpr::GroupingSets(sets) => sets
             .iter()
-            .any(|set| set.iter().any(|expr| contains_window_expr(expr))),
+            .any(|set| set.iter().any(contains_window_expr)),
         GroupByExpr::Rollup(exprs) | GroupByExpr::Cube(exprs) => {
-            exprs.iter().any(|expr| contains_window_expr(expr))
+            exprs.iter().any(contains_window_expr)
         }
     })
 }
 
-fn group_by_exprs<'a>(group_by: &'a [GroupByExpr]) -> Vec<&'a Expr> {
+fn group_by_exprs(group_by: &[GroupByExpr]) -> Vec<&Expr> {
     let mut out = Vec::new();
     for entry in group_by {
         match entry {
@@ -8708,12 +8706,11 @@ fn eval_group_expr<'a>(
             Ok(ScalarValue::Array(values))
         }
         Expr::Identifier(_) => {
-            if let Some(key) = identifier_key(expr) {
-                if grouping.all_grouping.contains(&key)
-                    && !grouping.current_grouping.contains(&key)
-                {
-                    return Ok(ScalarValue::Null);
-                }
+            if let Some(key) = identifier_key(expr)
+                && grouping.all_grouping.contains(&key)
+                && !grouping.current_grouping.contains(&key)
+            {
+                return Ok(ScalarValue::Null);
             }
             if group_rows.is_empty() {
                 eval_expr(expr, &EvalScope::default(), params).await
@@ -8758,7 +8755,7 @@ fn compute_regr_stats(rows: &[AggregateInputRow], message: &str) -> Result<RegrS
         sum_xy: 0.0,
     };
     for row in rows {
-        let Some(y_value) = row.args.get(0) else {
+        let Some(y_value) = row.args.first() else {
             continue;
         };
         let Some(x_value) = row.args.get(1) else {
@@ -8788,10 +8785,10 @@ async fn build_aggregate_input_rows(
 ) -> Result<Vec<AggregateInputRow>, EngineError> {
     let mut out = Vec::with_capacity(group_rows.len());
     for scope in group_rows {
-        if let Some(predicate) = filter {
-            if !truthy(&eval_expr(predicate, scope, params).await?) {
-                continue;
-            }
+        if let Some(predicate) = filter
+            && !truthy(&eval_expr(predicate, scope, params).await?)
+        {
+            continue;
         }
 
         let mut arg_values = Vec::with_capacity(args.len());
@@ -8822,6 +8819,7 @@ fn sort_aggregate_rows(rows: &mut [AggregateInputRow], order_by: &[OrderByExpr])
     rows.sort_by(|left, right| compare_order_keys(&left.order_keys, &right.order_keys, order_by));
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn eval_aggregate_function(
     fn_name: &str,
     args: &[Expr],
@@ -8859,10 +8857,10 @@ async fn eval_aggregate_function(
                 }
                 let mut count = 0i64;
                 for scope in group_rows {
-                    if let Some(predicate) = filter {
-                        if !truthy(&eval_expr(predicate, scope, params).await?) {
-                            continue;
-                        }
+                    if let Some(predicate) = filter
+                        && !truthy(&eval_expr(predicate, scope, params).await?)
+                    {
+                        continue;
                     }
                     count += 1;
                 }
@@ -9284,7 +9282,7 @@ async fn eval_aggregate_function(
             }
             let mut values = Vec::new();
             for row in &rows {
-                let Some(value) = row.order_keys.get(0) else {
+                let Some(value) = row.order_keys.first() else {
                     continue;
                 };
                 if matches!(value, ScalarValue::Null) {
@@ -9356,7 +9354,7 @@ async fn eval_aggregate_function(
             }
             let mut values = Vec::new();
             for row in &rows {
-                let Some(value) = row.order_keys.get(0) else {
+                let Some(value) = row.order_keys.first() else {
                     continue;
                 };
                 if matches!(value, ScalarValue::Null) {
@@ -9402,7 +9400,7 @@ async fn eval_aggregate_function(
             let mut current_value: Option<ScalarValue> = None;
             let mut current_count = 0usize;
             for row in rows {
-                let Some(value) = row.order_keys.get(0) else {
+                let Some(value) = row.order_keys.first() else {
                     continue;
                 };
                 if matches!(value, ScalarValue::Null) {
@@ -9536,7 +9534,7 @@ fn scope_for_table_row_with_qualifiers(
         .iter()
         .map(|column| column.name().to_string())
         .collect::<Vec<_>>();
-    scope_from_row(&columns, row, &qualifiers, &columns)
+    scope_from_row(&columns, row, qualifiers, &columns)
 }
 
 fn combine_scopes(
@@ -9633,11 +9631,11 @@ fn intersect_rows(
         let mut right_counts = count_rows(right);
         for row in left {
             let key = row_key(row);
-            if let Some(count) = right_counts.get_mut(&key) {
-                if *count > 0 {
-                    *count -= 1;
-                    out.push(row.clone());
-                }
+            if let Some(count) = right_counts.get_mut(&key)
+                && *count > 0
+            {
+                *count -= 1;
+                out.push(row.clone());
             }
         }
         return out;
@@ -9665,11 +9663,11 @@ fn except_rows(
         let mut right_counts = count_rows(right);
         for row in left {
             let key = row_key(row);
-            if let Some(count) = right_counts.get_mut(&key) {
-                if *count > 0 {
-                    *count -= 1;
-                    continue;
-                }
+            if let Some(count) = right_counts.get_mut(&key)
+                && *count > 0
+            {
+                *count -= 1;
+                continue;
             }
             out.push(row.clone());
         }
@@ -9778,25 +9776,25 @@ async fn resolve_order_key(
     row: &[ScalarValue],
     params: &[Option<String>],
 ) -> Result<ScalarValue, EngineError> {
-    if let Expr::Integer(pos) = expr {
-        if *pos > 0 {
-            let idx = (*pos as usize).saturating_sub(1);
-            if idx < row.len() {
-                return Ok(row[idx].clone());
-            }
+    if let Expr::Integer(pos) = expr
+        && *pos > 0
+    {
+        let idx = (*pos as usize).saturating_sub(1);
+        if idx < row.len() {
+            return Ok(row[idx].clone());
         }
     }
 
-    if let Expr::Identifier(parts) = expr {
-        if parts.len() == 1 {
-            let want = parts[0].to_ascii_lowercase();
-            if let Some((idx, _)) = columns
-                .iter()
-                .enumerate()
-                .find(|(_, col)| col.to_ascii_lowercase() == want)
-            {
-                return Ok(row[idx].clone());
-            }
+    if let Expr::Identifier(parts) = expr
+        && parts.len() == 1
+    {
+        let want = parts[0].to_ascii_lowercase();
+        if let Some((idx, _)) = columns
+            .iter()
+            .enumerate()
+            .find(|(_, col)| col.to_ascii_lowercase() == want)
+        {
+            return Ok(row[idx].clone());
         }
     }
 
@@ -9834,10 +9832,10 @@ async fn apply_offset_limit(
         result.rows = result.rows[offset..].to_vec();
     }
 
-    if let Some(limit) = limit {
-        if limit < result.rows.len() {
-            result.rows.truncate(limit);
-        }
+    if let Some(limit) = limit
+        && limit < result.rows.len()
+    {
+        result.rows.truncate(limit);
     }
 
     Ok(())
@@ -9879,6 +9877,7 @@ impl EvalScope {
         if self.ambiguous.contains(&key) {
             return;
         }
+        #[allow(clippy::map_entry)]
         if self.unqualified.contains_key(&key) {
             self.unqualified.remove(&key);
             self.ambiguous.insert(key);
@@ -9929,10 +9928,10 @@ impl EvalScope {
 
     fn lookup_join_column(&self, column: &str) -> Option<ScalarValue> {
         let key = column.to_ascii_lowercase();
-        if !self.ambiguous.contains(&key) {
-            if let Some(value) = self.unqualified.get(&key) {
-                return Some(value.clone());
-            }
+        if !self.ambiguous.contains(&key)
+            && let Some(value) = self.unqualified.get(&key)
+        {
+            return Some(value.clone());
         }
 
         let suffix = format!(".{}", key);
@@ -10457,6 +10456,7 @@ fn eval_expr_with_window<'a>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn eval_window_function(
     name: &[String],
     args: &[Expr],
@@ -10790,10 +10790,10 @@ async fn window_frame_rows(
                 params,
             )
             .await?;
-            if let (Some(start), Some(end)) = (start, end) {
-                if start > end {
-                    return Ok(Vec::new());
-                }
+            if let (Some(start), Some(end)) = (start, end)
+                && start > end
+            {
+                return Ok(Vec::new());
             }
             let mut out = Vec::new();
             for (pos, row_idx) in partition.iter().enumerate() {
@@ -10807,15 +10807,15 @@ async fn window_frame_rows(
                 )
                 .await?;
                 let effective = if ascending { value } else { -value };
-                if let Some(start) = start {
-                    if effective < start {
-                        continue;
-                    }
+                if let Some(start) = start
+                    && effective < start
+                {
+                    continue;
                 }
-                if let Some(end) = end {
-                    if effective > end {
-                        continue;
-                    }
+                if let Some(end) = end
+                    && effective > end
+                {
+                    continue;
                 }
                 out.push(*row_idx);
             }
@@ -11228,10 +11228,10 @@ fn eval_sub(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
         return Ok(temporal_add_days(lhs, -days));
     }
 
-    if matches!(left, ScalarValue::Text(_)) {
-        if parse_json_document_arg(&left, "json operator -", 1).is_ok() {
-            return eval_json_delete_operator(left, right);
-        }
+    if matches!(left, ScalarValue::Text(_))
+        && parse_json_document_arg(&left, "json operator -", 1).is_ok()
+    {
+        return eval_json_delete_operator(left, right);
     }
 
     Err(EngineError {
@@ -11419,6 +11419,7 @@ fn numeric_mod(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Eng
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn eval_function(
     name: &[String],
     args: &[Expr],
@@ -11433,7 +11434,7 @@ async fn eval_function(
     let fn_name = name
         .last()
         .map(|n| n.to_ascii_lowercase())
-        .unwrap_or_else(|| "".to_string());
+        .unwrap_or_default();
     if distinct || !order_by.is_empty() || !within_group.is_empty() || filter.is_some() {
         return Err(EngineError {
             message: format!(
@@ -11502,7 +11503,7 @@ async fn eval_scalar_function(
         "row_to_json" if args.len() == 1 || args.len() == 2 => eval_row_to_json(args, fn_name),
         "array_to_json" if args.len() == 1 || args.len() == 2 => eval_array_to_json(args, fn_name),
         "json_object" if args.len() == 1 || args.len() == 2 => eval_json_object(args, fn_name),
-        "json_build_object" | "jsonb_build_object" if args.len() % 2 == 0 => Ok(ScalarValue::Text(
+        "json_build_object" | "jsonb_build_object" if args.len().is_multiple_of(2) => Ok(ScalarValue::Text(
             json_build_object_value(args)?.to_string(),
         )),
         "json_build_array" | "jsonb_build_array" => {
@@ -12010,7 +12011,7 @@ async fn eval_scalar_function(
             let to: Vec<char> = args[2].render().chars().collect();
             let result: String = input.chars().filter_map(|c| {
                 if let Some(pos) = from.iter().position(|f| *f == c) {
-                    to.get(pos).copied().map(|r| Some(r)).unwrap_or(None)
+                    to.get(pos).copied()
                 } else {
                     Some(c)
                 }
@@ -12119,7 +12120,7 @@ async fn eval_scalar_function(
         "pg_type_is_visible" if args.len() == 1 => {
             Ok(ScalarValue::Bool(true))
         },
-        "obj_description" | "col_description" | "shobj_description" if args.len() >= 1 => {
+        "obj_description" | "col_description" | "shobj_description" if !args.is_empty() => {
             Ok(ScalarValue::Null)
         },
         "format_type" if args.len() == 2 => {
@@ -12657,7 +12658,7 @@ fn escape_bytes(input: &[u8]) -> String {
 fn decode_hex_bytes(input: &str) -> Result<Vec<u8>, EngineError> {
     let trimmed = input.trim();
     let hex = trimmed.strip_prefix("\\x").or_else(|| trimmed.strip_prefix("\\X")).unwrap_or(trimmed);
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(EngineError {
             message: "decode() invalid hex input length".to_string(),
         });
@@ -12694,11 +12695,11 @@ fn decode_escape_bytes(input: &str) -> Result<Vec<u8>, EngineError> {
         }
         let mut octal = String::new();
         for _ in 0..3 {
-            if let Some(digit) = chars.peek().copied() {
-                if digit.is_ascii_digit() && digit <= '7' {
-                    octal.push(digit);
-                    chars.next();
-                }
+            if let Some(digit) = chars.peek().copied()
+                && digit.is_ascii_digit() && digit <= '7'
+            {
+                octal.push(digit);
+                chars.next();
             }
         }
         if octal.is_empty() {
@@ -13937,14 +13938,13 @@ fn parse_jsonpath_filter_operand(
         let steps = parse_jsonpath_steps(token, context)?;
         return Ok(JsonPathFilterOperand::RootPath(steps));
     }
-    if let Some(name) = token.strip_prefix('$') {
-        if !name.is_empty()
-            && name
-                .chars()
-                .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-        {
-            return Ok(JsonPathFilterOperand::Variable(name.to_string()));
-        }
+    if let Some(name) = token.strip_prefix('$')
+        && !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    {
+        return Ok(JsonPathFilterOperand::Variable(name.to_string()));
     }
 
     if (token.starts_with('"') && token.ends_with('"'))
@@ -14218,17 +14218,17 @@ fn jsonpath_query_values(
         for value in current {
             match step {
                 JsonPathStep::Key(key) => {
-                    if let JsonValue::Object(map) = value {
-                        if let Some(found) = map.get(key) {
-                            next.push(found.clone());
-                        }
+                    if let JsonValue::Object(map) = value
+                        && let Some(found) = map.get(key)
+                    {
+                        next.push(found.clone());
                     }
                 }
                 JsonPathStep::Index(index) => {
-                    if let JsonValue::Array(items) = value {
-                        if let Some(idx) = json_array_index_from_i64(items.len(), *index) {
-                            next.push(items[idx].clone());
-                        }
+                    if let JsonValue::Array(items) = value
+                        && let Some(idx) = json_array_index_from_i64(items.len(), *index)
+                    {
+                        next.push(items[idx].clone());
                     }
                 }
                 JsonPathStep::Wildcard => match value {
@@ -14617,20 +14617,20 @@ fn eval_json_concat_operator(
     match (left, right) {
         (ScalarValue::Array(mut left_items), ScalarValue::Array(right_items)) => {
             left_items.extend(right_items);
-            return Ok(ScalarValue::Array(left_items));
+            Ok(ScalarValue::Array(left_items))
         }
         (ScalarValue::Array(mut left_items), other) => {
             left_items.push(other);
-            return Ok(ScalarValue::Array(left_items));
+            Ok(ScalarValue::Array(left_items))
         }
         (other, ScalarValue::Array(mut right_items)) => {
             right_items.insert(0, other);
-            return Ok(ScalarValue::Array(right_items));
+            Ok(ScalarValue::Array(right_items))
         }
         (left, right) => {
             let lhs = parse_json_document_arg(&left, "json operator ||", 1)?;
             let rhs = parse_json_document_arg(&right, "json operator ||", 2)?;
-            return Ok(ScalarValue::Text(json_concat(lhs, rhs).to_string()));
+            Ok(ScalarValue::Text(json_concat(lhs, rhs).to_string()))
         }
     }
 }
@@ -14859,7 +14859,7 @@ async fn eval_http_get_builtin(url_value: &ScalarValue) -> Result<ScalarValue, E
         let body = response.text().await.map_err(|err| EngineError {
             message: format!("http_get body read failed: {err}"),
         })?;
-        return Ok(ScalarValue::Text(body));
+        Ok(ScalarValue::Text(body))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -15021,12 +15021,12 @@ enum TrimMode {
 }
 
 fn substring_chars(input: &str, start: i64, length: Option<i64>) -> Result<String, EngineError> {
-    if let Some(length) = length {
-        if length < 0 {
-            return Err(EngineError {
-                message: "negative substring length not allowed".to_string(),
-            });
-        }
+    if let Some(length) = length
+        && length < 0
+    {
+        return Err(EngineError {
+            message: "negative substring length not allowed".to_string(),
+        });
     }
     let chars = input.chars().collect::<Vec<_>>();
     if chars.is_empty() {
@@ -15632,15 +15632,14 @@ fn parse_time_text(text: &str) -> Result<(u32, u32, u32), EngineError> {
         message: "invalid timestamp minute".to_string(),
     })?;
     let second = if time_parts.len() == 3 {
-        let whole_seconds = time_parts[2]
+        time_parts[2]
             .split('.')
             .next()
             .unwrap_or("")
             .parse::<u32>()
             .map_err(|_| EngineError {
                 message: "invalid timestamp second".to_string(),
-            })?;
-        whole_seconds
+            })?
     } else {
         0
     };
@@ -15877,7 +15876,7 @@ fn parse_interval_text(text: &str) -> Result<IntervalValue, EngineError> {
         message: "invalid interval days".to_string(),
     })?;
     let time = parts[4];
-    let mut time_parts = time.split(':').collect::<Vec<_>>();
+    let time_parts = time.split(':').collect::<Vec<_>>();
     if time_parts.len() != 3 {
         return Err(EngineError {
             message: "invalid interval time".to_string(),
@@ -16011,10 +16010,10 @@ fn parse_i64_scalar(value: &ScalarValue, message: &str) -> Result<i64, EngineErr
             if let Ok(parsed) = v.parse::<i64>() {
                 return Ok(parsed);
             }
-            if let Ok(parsed) = v.parse::<f64>() {
-                if parsed.fract() == 0.0 {
-                    return Ok(parsed as i64);
-                }
+            if let Ok(parsed) = v.parse::<f64>()
+                && parsed.fract() == 0.0
+            {
+                return Ok(parsed as i64);
             }
             Err(EngineError {
                 message: message.to_string(),

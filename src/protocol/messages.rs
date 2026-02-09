@@ -426,7 +426,7 @@ pub fn encode_backend_message(message: &BackendMessage) -> Option<Vec<u8>> {
             column_formats,
         } => {
             let mut payload = Vec::new();
-            payload.extend_from_slice(&(*overall_format as i8).to_be_bytes());
+            payload.extend_from_slice(&(*overall_format).to_be_bytes());
             payload.extend_from_slice(&(column_formats.len() as i16).to_be_bytes());
             for format in column_formats {
                 payload.extend_from_slice(&format.to_be_bytes());
@@ -438,7 +438,7 @@ pub fn encode_backend_message(message: &BackendMessage) -> Option<Vec<u8>> {
             column_formats,
         } => {
             let mut payload = Vec::new();
-            payload.extend_from_slice(&(*overall_format as i8).to_be_bytes());
+            payload.extend_from_slice(&(*overall_format).to_be_bytes());
             payload.extend_from_slice(&(column_formats.len() as i16).to_be_bytes());
             for format in column_formats {
                 payload.extend_from_slice(&format.to_be_bytes());

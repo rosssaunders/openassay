@@ -84,6 +84,7 @@ pub struct Column {
 }
 
 impl Column {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         oid: Oid,
         name: String,
@@ -246,6 +247,7 @@ pub struct Table {
 }
 
 impl Table {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         oid: Oid,
         schema_oid: Oid,

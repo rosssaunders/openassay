@@ -43,17 +43,17 @@ fn main() {
 
 fn build_tls_config() -> io::Result<Arc<ServerConfig>> {
     let cert = generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("rcgen: {}", err)))?;
+        .map_err(|err| io::Error::other(format!("rcgen: {}", err)))?;
     let cert_der = cert
         .serialize_der()
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("cert: {}", err)))?;
+        .map_err(|err| io::Error::other(format!("cert: {}", err)))?;
     let key_der = cert.serialize_private_key_der();
 
     let config = ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(vec![Certificate(cert_der)], PrivateKey(key_der))
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("rustls: {}", err)))?;
+        .map_err(|err| io::Error::other(format!("rustls: {}", err)))?;
     Ok(Arc::new(config))
 }
 
@@ -241,6 +241,7 @@ fn read_tagged_message(stream: &mut ClientStream) -> io::Result<Option<(u8, Vec<
     Ok(Some((tag_buf[0], payload)))
 }
 
+#[allow(clippy::large_enum_variant)]
 enum ClientStream {
     Plain(TcpStream),
     Tls(StreamOwned<ServerConnection, TcpStream>),
@@ -269,7 +270,7 @@ impl ClientStream {
             }
         };
         let conn = ServerConnection::new(config)
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("tls: {}", err)))?;
+            .map_err(|err| io::Error::other(format!("tls: {}", err)))?;
         *self = Self::Tls(StreamOwned::new(conn, plain));
         Ok(())
     }

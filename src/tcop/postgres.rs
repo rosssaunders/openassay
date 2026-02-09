@@ -230,6 +230,7 @@ struct Portal {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 enum PlannedOperation {
     ParsedQuery(PlannedQuery),
     Transaction(TransactionCommand),
@@ -340,6 +341,7 @@ struct CopyInState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 enum SecurityCommand {
     CreateRole {
         role_name: String,
@@ -1153,10 +1155,10 @@ impl PostgresSession {
             message: format!("portal \"{}\" does not exist", portal_name),
         })?;
 
-        if portal.result_cache.is_none() {
-            if let ExecutionOutcome::Query(result) = &outcome {
-                portal.result_cache = Some(result.clone());
-            }
+        if portal.result_cache.is_none()
+            && let ExecutionOutcome::Query(result) = &outcome
+        {
+            portal.result_cache = Some(result.clone());
         }
 
         Self::emit_outcome(
@@ -1467,7 +1469,7 @@ impl PostgresSession {
                     };
                     self.copy_in_state = Some(CopyInState {
                         table_name: command.table_name.clone(),
-                        format: command.format.clone(),
+                        format: command.format,
                         delimiter: command.delimiter,
                         null_marker: command.null_marker.clone(),
                         column_type_oids: column_type_oids.clone(),
@@ -2116,11 +2118,7 @@ fn parse_copy_target_spec(
     }
     let mut remainder = target[prefix.len()..].trim();
 
-    let mut format = if remainder.is_empty() {
-        CopyFormat::Text
-    } else {
-        CopyFormat::Text
-    };
+    let mut format = CopyFormat::Text;
     let mut delimiter: Option<char> = None;
     let mut null_marker: Option<String> = None;
 
@@ -2753,10 +2751,10 @@ fn split_until_keywords<'a>(input: &'a str, keywords: &[&str]) -> (&'a str, &'a 
     let mut next_idx = trimmed.len();
     for keyword in keywords {
         let keyword_upper = keyword.to_ascii_uppercase();
-        if let Some(idx) = upper.find(&keyword_upper) {
-            if idx < next_idx {
-                next_idx = idx;
-            }
+        if let Some(idx) = upper.find(&keyword_upper)
+            && idx < next_idx
+        {
+            next_idx = idx;
         }
     }
     if next_idx == trimmed.len() {
@@ -3156,10 +3154,10 @@ fn default_field_description(
     }
 }
 
-fn scram_attribute<'a>(message: &'a str, key: char) -> Option<&'a str> {
+fn scram_attribute(message: &str, key: char) -> Option<&str> {
     message.split(',').find_map(|part| {
         let (k, value) = part.split_once('=')?;
-        (k.len() == 1 && k.chars().next() == Some(key)).then_some(value)
+        (k.len() == 1 && k.starts_with(key)).then_some(value)
     })
 }
 
