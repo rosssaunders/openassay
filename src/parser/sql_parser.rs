@@ -2250,6 +2250,61 @@ impl Parser {
             let mut args = Vec::new();
             let mut order_by = Vec::new();
             if !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+                let fn_name = name
+                    .last()
+                    .map(|part| part.to_ascii_lowercase())
+                    .unwrap_or_default();
+                let args_start = self.idx;
+                if fn_name == "position" {
+                    let left = self.parse_expr_bp(6)?;
+                    if self.consume_keyword(Keyword::In) {
+                        let right = self.parse_expr_bp(6)?;
+                        self.expect_token(
+                            |k| matches!(k, TokenKind::RParen),
+                            "expected ')' after position arguments",
+                        )?;
+                        args = vec![left, right];
+                        return Ok(Expr::FunctionCall {
+                            name,
+                            args,
+                            distinct,
+                            order_by,
+                            filter: None,
+                            over: None,
+                        });
+                    }
+                    self.idx = args_start;
+                } else if fn_name == "overlay" {
+                    let input = self.parse_expr_bp(6)?;
+                    if self.consume_keyword(Keyword::Placing) {
+                        let replacement = self.parse_expr_bp(6)?;
+                        self.expect_keyword(Keyword::From, "expected FROM in overlay")?;
+                        let start = self.parse_expr_bp(6)?;
+                        let count = if self.consume_keyword(Keyword::For) {
+                            Some(self.parse_expr_bp(6)?)
+                        } else {
+                            None
+                        };
+                        self.expect_token(
+                            |k| matches!(k, TokenKind::RParen),
+                            "expected ')' after overlay arguments",
+                        )?;
+                        args = vec![input, replacement, start];
+                        if let Some(count) = count {
+                            args.push(count);
+                        }
+                        return Ok(Expr::FunctionCall {
+                            name,
+                            args,
+                            distinct,
+                            order_by,
+                            filter: None,
+                            over: None,
+                        });
+                    }
+                    self.idx = args_start;
+                }
+
                 args.push(self.parse_expr()?);
                 while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                     args.push(self.parse_expr()?);

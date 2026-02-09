@@ -5025,11 +5025,13 @@ fn infer_function_return_oid(
         .unwrap_or_default();
     match fn_name.as_str() {
         "count" | "char_length" | "length" | "nextval" | "currval" | "setval"
-        | "strpos" | "pg_backend_pid" => PG_INT8_OID,
+        | "strpos" | "position" | "ascii" | "pg_backend_pid" | "width_bucket"
+        | "scale" | "factorial" | "num_nulls" | "num_nonnulls" => PG_INT8_OID,
         "extract" | "date_part" => PG_INT8_OID,
         "avg" | "stddev" | "stddev_samp" | "stddev_pop" | "variance" | "var_samp" | "var_pop" => PG_FLOAT8_OID,
         "bool_and" | "bool_or" | "every" | "has_table_privilege" | "has_column_privilege"
-        | "has_schema_privilege" | "pg_table_is_visible" | "pg_type_is_visible" => PG_BOOL_OID,
+        | "has_schema_privilege" | "pg_table_is_visible" | "pg_type_is_visible"
+        | "isfinite" => PG_BOOL_OID,
         "abs" | "ceil" | "ceiling" | "floor" | "round" | "trunc" | "sign" | "mod" => args
             .first()
             .map(|expr| infer_expr_type_oid(expr, scope, ctes))
@@ -5055,8 +5057,9 @@ fn infer_function_return_oid(
             .map(|expr| infer_expr_type_oid(expr, scope, ctes))
             .unwrap_or(PG_TEXT_OID),
         "coalesce" | "greatest" | "least" => infer_common_type_oid(args, scope, ctes),
-        "date" | "current_date" => PG_DATE_OID,
-        "timestamp" | "current_timestamp" | "now" | "date_trunc" => PG_TIMESTAMP_OID,
+        "date" | "current_date" | "to_date" => PG_DATE_OID,
+        "timestamp" | "current_timestamp" | "now" | "date_trunc" | "to_timestamp"
+        | "clock_timestamp" => PG_TIMESTAMP_OID,
         "date_add" | "date_sub" => PG_DATE_OID,
         "jsonb_path_exists" | "jsonb_path_match" | "jsonb_exists" | "jsonb_exists_any"
         | "jsonb_exists_all" => PG_BOOL_OID,
@@ -6453,6 +6456,8 @@ fn table_function_output_columns(function: &TableFunctionRef) -> Vec<String> {
         "json_object_keys" | "jsonb_object_keys" => vec!["key".to_string()],
         "generate_series" => vec!["generate_series".to_string()],
         "unnest" => vec!["unnest".to_string()],
+        "regexp_matches" => vec!["regexp_matches".to_string()],
+        "regexp_split_to_table" => vec!["regexp_split_to_table".to_string()],
         "pg_get_keywords" => vec!["word".to_string(), "catcode".to_string(), "catdesc".to_string()],
         _ => vec!["value".to_string()],
     }
@@ -7174,6 +7179,8 @@ async fn evaluate_set_returning_function(
         "json_populate_recordset" | "jsonb_populate_recordset" => {
             eval_json_record_table_function(function, args, &fn_name, true, true)
         }
+        "regexp_matches" => eval_regexp_matches_set_function(args, &fn_name),
+        "regexp_split_to_table" => eval_regexp_split_to_table_set_function(args, &fn_name),
         "generate_series" => eval_generate_series(args, &fn_name),
         "unnest" => eval_unnest_set_function(args, &fn_name),
         "pg_get_keywords" => eval_pg_get_keywords(),
@@ -11003,6 +11010,33 @@ async fn eval_scalar_function(
             };
             Ok(ScalarValue::Text(substring_chars(&input, start, length)?))
         }
+        "position" if args.len() == 2 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let needle = args[0].render();
+            let haystack = args[1].render();
+            Ok(ScalarValue::Int(find_substring_position(&haystack, &needle)))
+        }
+        "overlay" if args.len() == 3 || args.len() == 4 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let input = args[0].render();
+            let replacement = args[1].render();
+            let start = parse_i64_scalar(&args[2], "overlay() expects integer start")?;
+            let count = if args.len() == 4 {
+                Some(parse_i64_scalar(&args[3], "overlay() expects integer count")?)
+            } else {
+                None
+            };
+            Ok(ScalarValue::Text(overlay_text(
+                &input,
+                &replacement,
+                start,
+                count,
+            )?))
+        }
         "left" if args.len() == 2 => {
             if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
                 return Ok(ScalarValue::Null);
@@ -11064,16 +11098,58 @@ async fn eval_scalar_function(
             let to = args[2].render();
             Ok(ScalarValue::Text(input.replace(&from, &to)))
         }
+        "ascii" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Int(ascii_code(&args[0].render())))
+        }
+        "chr" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let code = parse_i64_scalar(&args[0], "chr() expects integer")?;
+            Ok(ScalarValue::Text(chr_from_code(code)?))
+        }
+        "encode" if args.len() == 2 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let data = args[0].render();
+            let format = args[1].render();
+            Ok(ScalarValue::Text(encode_bytes(data.as_bytes(), &format)?))
+        }
+        "decode" if args.len() == 2 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let input = args[0].render();
+            let format = args[1].render();
+            let decoded = decode_bytes(&input, &format)?;
+            Ok(ScalarValue::Text(String::from_utf8_lossy(&decoded).to_string()))
+        }
         "date" if args.len() == 1 => eval_date_function(&args[0]),
         "timestamp" if args.len() == 1 => eval_timestamp_function(&args[0]),
         "now" | "current_timestamp" if args.is_empty() => {
             Ok(ScalarValue::Text(current_timestamp_string()?))
         }
+        "clock_timestamp" if args.is_empty() => Ok(ScalarValue::Text(current_timestamp_string()?)),
         "current_date" if args.is_empty() => Ok(ScalarValue::Text(current_date_string()?)),
+        "age" if args.len() == 1 || args.len() == 2 => eval_age(args),
         "extract" | "date_part" if args.len() == 2 => eval_extract_or_date_part(&args[0], &args[1]),
         "date_trunc" if args.len() == 2 => eval_date_trunc(&args[0], &args[1]),
         "date_add" if args.len() == 2 => eval_date_add_sub(&args[0], &args[1], true),
         "date_sub" if args.len() == 2 => eval_date_add_sub(&args[0], &args[1], false),
+        "to_timestamp" if args.len() == 1 => eval_to_timestamp(&args[0]),
+        "to_timestamp" if args.len() == 2 => eval_to_timestamp_with_format(&args[0], &args[1]),
+        "to_date" if args.len() == 2 => eval_to_date_with_format(&args[0], &args[1]),
+        "make_interval" if args.len() == 7 => eval_make_interval(args),
+        "justify_hours" if args.len() == 1 => eval_justify_interval(&args[0], JustifyMode::Hours),
+        "justify_days" if args.len() == 1 => eval_justify_interval(&args[0], JustifyMode::Days),
+        "justify_interval" if args.len() == 1 => {
+            eval_justify_interval(&args[0], JustifyMode::Full)
+        }
+        "isfinite" if args.len() == 1 => eval_isfinite(&args[0]),
         "coalesce" if !args.is_empty() => {
             for value in args {
                 if !matches!(value, ScalarValue::Null) {
@@ -11204,6 +11280,9 @@ async fn eval_scalar_function(
             ScalarValue::Float(f) => Ok(ScalarValue::Float(if *f > 0.0 { 1.0 } else if *f < 0.0 { -1.0 } else { 0.0 })),
             _ => Err(EngineError { message: "sign() expects numeric argument".to_string() }),
         },
+        "width_bucket" if args.len() == 4 => eval_width_bucket(args),
+        "scale" if args.len() == 1 => eval_scale(&args[0]),
+        "factorial" if args.len() == 1 => eval_factorial(&args[0]),
         "pi" if args.is_empty() => Ok(ScalarValue::Float(std::f64::consts::PI)),
         "random" if args.is_empty() => Ok(ScalarValue::Float(rand_f64())),
         "mod" if args.len() == 2 => {
@@ -11289,9 +11368,26 @@ async fn eval_scalar_function(
             let fill = if args.len() == 3 { args[2].render() } else { " ".to_string() };
             Ok(ScalarValue::Text(pad_string(&input, len, &fill, false)))
         },
+        "quote_literal" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            Ok(ScalarValue::Text(quote_literal(&args[0].render())))
+        },
+        "quote_ident" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            Ok(ScalarValue::Text(quote_ident(&args[0].render())))
+        },
+        "quote_nullable" if args.len() == 1 => Ok(ScalarValue::Text(quote_nullable(&args[0]))),
         "md5" if args.len() == 1 => {
             if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
             Ok(ScalarValue::Text(md5_hex(&args[0].render())))
+        },
+        "regexp_match" if args.len() == 2 => {
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
+            eval_regexp_match(&args[0].render(), &args[1].render(), "")
+        },
+        "regexp_match" if args.len() == 3 => {
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
+            eval_regexp_match(&args[0].render(), &args[1].render(), &args[2].render())
         },
         "regexp_replace" if args.len() == 3 || args.len() == 4 => {
             if args.iter().take(3).any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
@@ -11301,6 +11397,12 @@ async fn eval_scalar_function(
             let flags = if args.len() == 4 { args[3].render() } else { String::new() };
             eval_regexp_replace(&source, &pattern, &replacement, &flags)
         },
+        "regexp_split_to_array" if args.len() == 2 => {
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
+            eval_regexp_split_to_array(&args[0].render(), &args[1].render())
+        },
+        "num_nulls" => Ok(ScalarValue::Int(count_nulls(args) as i64)),
+        "num_nonnulls" => Ok(ScalarValue::Int(count_nonnulls(args) as i64)),
         // --- System info functions ---
         "version" if args.is_empty() => {
             Ok(ScalarValue::Text("Postrust 0.1.0 on Rust".to_string()))
@@ -11480,16 +11582,311 @@ fn pad_string(input: &str, len: usize, fill: &str, left: bool) -> String {
 }
 
 fn md5_hex(input: &str) -> String {
-    // Simple MD5 implementation using a basic approach
-    // For now, use a simple hash-like function
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    input.hash(&mut hasher);
-    let h1 = hasher.finish();
-    input.len().hash(&mut hasher);
-    let h2 = hasher.finish();
-    format!("{:016x}{:016x}", h1, h2)
+    let digest = md5_digest(input.as_bytes());
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn md5_digest(input: &[u8]) -> [u8; 16] {
+    const S: [u32; 64] = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9,
+        14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+        4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    const K: [u32; 64] = [
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613,
+        0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193,
+        0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d,
+        0x02441453, 0xd8a1e681, 0xe7d3fbc8, 0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122,
+        0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
+        0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665, 0xf4292244,
+        0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb,
+        0xeb86d391,
+    ];
+
+    let mut msg = input.to_vec();
+    let bit_len = (msg.len() as u64) * 8;
+    msg.push(0x80);
+    while (msg.len() % 64) != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_le_bytes());
+
+    let mut a0: u32 = 0x67452301;
+    let mut b0: u32 = 0xefcdab89;
+    let mut c0: u32 = 0x98badcfe;
+    let mut d0: u32 = 0x10325476;
+
+    for chunk in msg.chunks(64) {
+        let mut m = [0u32; 16];
+        for (i, word) in m.iter_mut().enumerate() {
+            let start = i * 4;
+            *word = u32::from_le_bytes([
+                chunk[start],
+                chunk[start + 1],
+                chunk[start + 2],
+                chunk[start + 3],
+            ]);
+        }
+
+        let mut a = a0;
+        let mut b = b0;
+        let mut c = c0;
+        let mut d = d0;
+
+        for i in 0..64 {
+            let (f, g) = match i {
+                0..=15 => ((b & c) | (!b & d), i),
+                16..=31 => ((d & b) | (!d & c), (5 * i + 1) % 16),
+                32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
+                _ => (c ^ (b | !d), (7 * i) % 16),
+            };
+            let temp = d;
+            d = c;
+            c = b;
+            let rotate = a
+                .wrapping_add(f)
+                .wrapping_add(K[i])
+                .wrapping_add(m[g]);
+            b = b.wrapping_add(rotate.rotate_left(S[i]));
+            a = temp;
+        }
+
+        a0 = a0.wrapping_add(a);
+        b0 = b0.wrapping_add(b);
+        c0 = c0.wrapping_add(c);
+        d0 = d0.wrapping_add(d);
+    }
+
+    let mut out = [0u8; 16];
+    out[0..4].copy_from_slice(&a0.to_le_bytes());
+    out[4..8].copy_from_slice(&b0.to_le_bytes());
+    out[8..12].copy_from_slice(&c0.to_le_bytes());
+    out[12..16].copy_from_slice(&d0.to_le_bytes());
+    out
+}
+
+fn encode_bytes(input: &[u8], format: &str) -> Result<String, EngineError> {
+    let format = format.trim().to_ascii_lowercase();
+    match format.as_str() {
+        "hex" => Ok(input.iter().map(|b| format!("{:02x}", b)).collect()),
+        "base64" => {
+            use base64::Engine;
+            Ok(base64::engine::general_purpose::STANDARD.encode(input))
+        }
+        "escape" => Ok(escape_bytes(input)),
+        _ => Err(EngineError {
+            message: format!("encode() unsupported format {}", format),
+        }),
+    }
+}
+
+fn decode_bytes(input: &str, format: &str) -> Result<Vec<u8>, EngineError> {
+    let format = format.trim().to_ascii_lowercase();
+    match format.as_str() {
+        "hex" => decode_hex_bytes(input),
+        "base64" => {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .decode(input.trim())
+                .map_err(|_| EngineError {
+                    message: "decode() invalid base64 input".to_string(),
+                })
+        }
+        "escape" => decode_escape_bytes(input),
+        _ => Err(EngineError {
+            message: format!("decode() unsupported format {}", format),
+        }),
+    }
+}
+
+fn escape_bytes(input: &[u8]) -> String {
+    let mut out = String::new();
+    for &byte in input {
+        if byte == b'\\' {
+            out.push_str("\\\\");
+        } else if (0x20..=0x7e).contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push('\\');
+            out.push_str(&format!("{:03o}", byte));
+        }
+    }
+    out
+}
+
+fn decode_hex_bytes(input: &str) -> Result<Vec<u8>, EngineError> {
+    let trimmed = input.trim();
+    let hex = trimmed.strip_prefix("\\x").or_else(|| trimmed.strip_prefix("\\X")).unwrap_or(trimmed);
+    if hex.len() % 2 != 0 {
+        return Err(EngineError {
+            message: "decode() invalid hex input length".to_string(),
+        });
+    }
+    let mut out = Vec::with_capacity(hex.len() / 2);
+    let bytes = hex.as_bytes();
+    for idx in (0..bytes.len()).step_by(2) {
+        let part = std::str::from_utf8(&bytes[idx..idx + 2]).unwrap_or("");
+        let value = u8::from_str_radix(part, 16).map_err(|_| EngineError {
+            message: "decode() invalid hex input".to_string(),
+        })?;
+        out.push(value);
+    }
+    Ok(out)
+}
+
+fn decode_escape_bytes(input: &str) -> Result<Vec<u8>, EngineError> {
+    let mut out = Vec::new();
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch as u8);
+            continue;
+        }
+        let Some(next) = chars.peek().copied() else {
+            return Err(EngineError {
+                message: "decode() invalid escape input".to_string(),
+            });
+        };
+        if next == '\\' {
+            chars.next();
+            out.push(b'\\');
+            continue;
+        }
+        let mut octal = String::new();
+        for _ in 0..3 {
+            if let Some(digit) = chars.peek().copied() {
+                if digit.is_ascii_digit() && digit <= '7' {
+                    octal.push(digit);
+                    chars.next();
+                }
+            }
+        }
+        if octal.is_empty() {
+            return Err(EngineError {
+                message: "decode() invalid escape input".to_string(),
+            });
+        }
+        let value = u8::from_str_radix(&octal, 8).map_err(|_| EngineError {
+            message: "decode() invalid escape input".to_string(),
+        })?;
+        out.push(value);
+    }
+    Ok(out)
+}
+
+fn build_regex(pattern: &str, flags: &str, fn_name: &str) -> Result<regex::Regex, EngineError> {
+    let mut builder = regex::RegexBuilder::new(pattern);
+    for flag in flags.chars() {
+        match flag {
+            'i' => {
+                builder.case_insensitive(true);
+            }
+            'm' => {
+                builder.multi_line(true);
+            }
+            's' => {
+                builder.dot_matches_new_line(true);
+            }
+            'g' => {}
+            _ => {
+                return Err(EngineError {
+                    message: format!("{fn_name}() unsupported regex flag {}", flag),
+                });
+            }
+        }
+    }
+    builder.build().map_err(|err| EngineError {
+        message: format!("{fn_name}() invalid regex: {err}"),
+    })
+}
+
+fn text_array_from_options(items: &[Option<String>]) -> String {
+    let rendered = items
+        .iter()
+        .map(|item| item.clone().unwrap_or_else(|| "NULL".to_string()))
+        .collect::<Vec<_>>();
+    format!("{{{}}}", rendered.join(","))
+}
+
+fn eval_regexp_match(text: &str, pattern: &str, flags: &str) -> Result<ScalarValue, EngineError> {
+    let regex = build_regex(pattern, flags, "regexp_match")?;
+    let Some(caps) = regex.captures(text) else {
+        return Ok(ScalarValue::Null);
+    };
+    Ok(ScalarValue::Text(regex_captures_to_array(&caps)))
+}
+
+fn regex_captures_to_array(caps: &regex::Captures<'_>) -> String {
+    let mut items = Vec::new();
+    if caps.len() > 1 {
+        for idx in 1..caps.len() {
+            items.push(caps.get(idx).map(|m| m.as_str().to_string()));
+        }
+    } else {
+        items.push(caps.get(0).map(|m| m.as_str().to_string()));
+    }
+    text_array_from_options(&items)
+}
+
+fn eval_regexp_matches_set_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if args.len() != 2 && args.len() != 3 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects 2 or 3 arguments"),
+        });
+    }
+    if args.iter().take(2).any(|arg| matches!(arg, ScalarValue::Null)) {
+        return Ok((vec![fn_name.to_string()], Vec::new()));
+    }
+    let text = args[0].render();
+    let pattern = args[1].render();
+    let flags = if args.len() == 3 { args[2].render() } else { String::new() };
+    let global = flags.contains('g');
+    let regex = build_regex(&pattern, &flags, fn_name)?;
+    let mut rows = Vec::new();
+    if global {
+        for caps in regex.captures_iter(&text) {
+            rows.push(vec![ScalarValue::Text(regex_captures_to_array(&caps))]);
+        }
+    } else if let Some(caps) = regex.captures(&text) {
+        rows.push(vec![ScalarValue::Text(regex_captures_to_array(&caps))]);
+    }
+    Ok((vec![fn_name.to_string()], rows))
+}
+
+fn eval_regexp_split_to_array(text: &str, pattern: &str) -> Result<ScalarValue, EngineError> {
+    let regex = build_regex(pattern, "", "regexp_split_to_array")?;
+    let parts = regex
+        .split(text)
+        .map(|part| Some(part.to_string()))
+        .collect::<Vec<_>>();
+    Ok(ScalarValue::Text(text_array_from_options(&parts)))
+}
+
+fn eval_regexp_split_to_table_set_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if args.len() != 2 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects 2 arguments"),
+        });
+    }
+    if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+        return Ok((vec![fn_name.to_string()], Vec::new()));
+    }
+    let text = args[0].render();
+    let pattern = args[1].render();
+    let regex = build_regex(&pattern, "", fn_name)?;
+    let rows = regex
+        .split(&text)
+        .map(|part| vec![ScalarValue::Text(part.to_string())])
+        .collect();
+    Ok((vec![fn_name.to_string()], rows))
 }
 
 fn rand_f64() -> f64 {
@@ -11501,29 +11898,20 @@ fn rand_f64() -> f64 {
     (seed as f64) / (u32::MAX as f64)
 }
 
-fn eval_regexp_replace(source: &str, pattern: &str, replacement: &str, flags: &str) -> Result<ScalarValue, EngineError> {
+fn eval_regexp_replace(
+    source: &str,
+    pattern: &str,
+    replacement: &str,
+    flags: &str,
+) -> Result<ScalarValue, EngineError> {
     let global = flags.contains('g');
-    let case_insensitive = flags.contains('i');
-    let _regex_pattern = if case_insensitive {
-        format!("(?i){}", pattern)
+    let regex = build_regex(pattern, flags, "regexp_replace")?;
+    let out = if global {
+        regex.replace_all(source, replacement).to_string()
     } else {
-        pattern.to_string()
+        regex.replace(source, replacement).to_string()
     };
-    // Simple regex implementation using basic pattern matching
-    // For a full implementation, would need the regex crate
-    // For now, do basic string replacement
-    if pattern.contains('(') || pattern.contains('[') || pattern.contains('\\') || pattern.contains('.') || pattern.contains('*') || pattern.contains('+') || pattern.contains('?') || pattern.contains('^') || pattern.contains('$') {
-        // Pattern looks like a regex - return error suggesting regex crate
-        // For basic patterns, do literal replacement
-        return Err(EngineError {
-            message: format!("complex regex patterns not yet supported in regexp_replace"),
-        });
-    }
-    if global {
-        Ok(ScalarValue::Text(source.replace(pattern, replacement)))
-    } else {
-        Ok(ScalarValue::Text(source.replacen(pattern, replacement, 1)))
-    }
+    Ok(ScalarValue::Text(out))
 }
 
 fn eval_extremum(args: &[ScalarValue], greatest: bool) -> Result<ScalarValue, EngineError> {
@@ -13738,6 +14126,79 @@ fn right_chars(input: &str, count: i64) -> String {
     chars[start..].iter().collect()
 }
 
+fn find_substring_position(haystack: &str, needle: &str) -> i64 {
+    if needle.is_empty() {
+        return 1;
+    }
+    let Some(byte_idx) = haystack.find(needle) else {
+        return 0;
+    };
+    haystack[..byte_idx].chars().count() as i64 + 1
+}
+
+fn overlay_text(
+    input: &str,
+    replacement: &str,
+    start: i64,
+    count: Option<i64>,
+) -> Result<String, EngineError> {
+    let mut chars = input.chars().collect::<Vec<_>>();
+    let replace_chars = replacement.chars().collect::<Vec<_>>();
+    let start_idx = if start <= 1 { 0 } else { (start - 1) as usize };
+    if start_idx > chars.len() {
+        return Ok(input.to_string());
+    }
+    let count = count.unwrap_or(replace_chars.len() as i64);
+    if count < 0 {
+        return Err(EngineError {
+            message: "overlay() expects non-negative count".to_string(),
+        });
+    }
+    let end_idx = start_idx.saturating_add(count as usize).min(chars.len());
+    chars.splice(start_idx..end_idx, replace_chars);
+    Ok(chars.iter().collect())
+}
+
+fn ascii_code(input: &str) -> i64 {
+    input.chars().next().map(|c| c as i64).unwrap_or(0)
+}
+
+fn chr_from_code(code: i64) -> Result<String, EngineError> {
+    if !(0..=255).contains(&code) {
+        return Err(EngineError {
+            message: "chr() expects value between 0 and 255".to_string(),
+        });
+    }
+    let ch = char::from_u32(code as u32).ok_or_else(|| EngineError {
+        message: "chr() expects valid Unicode code point".to_string(),
+    })?;
+    Ok(ch.to_string())
+}
+
+fn quote_literal(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
+}
+
+fn quote_ident(text: &str) -> String {
+    format!("\"{}\"", text.replace('"', "\"\""))
+}
+
+fn quote_nullable(value: &ScalarValue) -> String {
+    if matches!(value, ScalarValue::Null) {
+        "NULL".to_string()
+    } else {
+        quote_literal(&value.render())
+    }
+}
+
+fn count_nulls(args: &[ScalarValue]) -> usize {
+    args.iter().filter(|arg| matches!(arg, ScalarValue::Null)).count()
+}
+
+fn count_nonnulls(args: &[ScalarValue]) -> usize {
+    args.len() - count_nulls(args)
+}
+
 fn trim_text(input: &str, trim_chars: Option<&str>, mode: TrimMode) -> String {
     match trim_chars {
         None => match mode {
@@ -13928,6 +14389,207 @@ fn current_date_string() -> Result<String, EngineError> {
     Ok(format_date(dt.date))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct IntervalValue {
+    months: i64,
+    days: i64,
+    seconds: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum JustifyMode {
+    Hours,
+    Days,
+    Full,
+}
+
+fn eval_age(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+    if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+        return Ok(ScalarValue::Null);
+    }
+    let (left, right) = if args.len() == 1 {
+        let current = current_utc_datetime()?;
+        let current_midnight = DateTimeValue {
+            date: current.date,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        };
+        (current_midnight, parse_datetime_scalar(&args[0])?)
+    } else {
+        (
+            parse_datetime_scalar(&args[0])?,
+            parse_datetime_scalar(&args[1])?,
+        )
+    };
+    let delta = datetime_to_epoch_seconds(left) - datetime_to_epoch_seconds(right);
+    let interval = interval_from_seconds(delta);
+    Ok(ScalarValue::Text(format_interval(interval)))
+}
+
+fn eval_to_timestamp(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
+    if matches!(value, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let seconds = parse_f64_scalar(value, "to_timestamp() expects numeric input")?;
+    let dt = datetime_from_epoch_seconds(seconds.trunc() as i64);
+    Ok(ScalarValue::Text(format_timestamp(dt)))
+}
+
+fn eval_to_timestamp_with_format(
+    text: &ScalarValue,
+    format: &ScalarValue,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(text, ScalarValue::Null) || matches!(format, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let dt = parse_datetime_with_format(&text.render(), &format.render())?;
+    Ok(ScalarValue::Text(format_timestamp(dt)))
+}
+
+fn eval_to_date_with_format(
+    text: &ScalarValue,
+    format: &ScalarValue,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(text, ScalarValue::Null) || matches!(format, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let date = parse_date_with_format(&text.render(), &format.render())?;
+    Ok(ScalarValue::Text(format_date(date)))
+}
+
+fn eval_make_interval(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+    if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+        return Ok(ScalarValue::Null);
+    }
+    let years = parse_i64_scalar(&args[0], "make_interval() expects years")?;
+    let months = parse_i64_scalar(&args[1], "make_interval() expects months")?;
+    let weeks = parse_i64_scalar(&args[2], "make_interval() expects weeks")?;
+    let days = parse_i64_scalar(&args[3], "make_interval() expects days")?;
+    let hours = parse_i64_scalar(&args[4], "make_interval() expects hours")?;
+    let mins = parse_i64_scalar(&args[5], "make_interval() expects mins")?;
+    let secs = parse_f64_scalar(&args[6], "make_interval() expects secs")?;
+
+    let interval = IntervalValue {
+        months: years * 12 + months,
+        days: weeks * 7 + days,
+        seconds: hours * 3_600 + mins * 60 + secs.trunc() as i64,
+    };
+    Ok(ScalarValue::Text(format_interval(interval)))
+}
+
+fn eval_justify_interval(
+    value: &ScalarValue,
+    mode: JustifyMode,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(value, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let mut interval = parse_interval_text(&value.render())?;
+    if matches!(mode, JustifyMode::Hours | JustifyMode::Full) {
+        let extra_days = interval.seconds.div_euclid(86_400);
+        interval.days += extra_days;
+        interval.seconds = interval.seconds.rem_euclid(86_400);
+    }
+    if matches!(mode, JustifyMode::Days | JustifyMode::Full) {
+        let extra_months = interval.days.div_euclid(30);
+        interval.months += extra_months;
+        interval.days = interval.days.rem_euclid(30);
+    }
+    Ok(ScalarValue::Text(format_interval(interval)))
+}
+
+fn eval_isfinite(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
+    if matches!(value, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let finite = match value {
+        ScalarValue::Text(text) => {
+            let normalized = text.trim().to_ascii_lowercase();
+            !matches!(normalized.as_str(), "infinity" | "-infinity" | "nan")
+        }
+        ScalarValue::Float(f) => f.is_finite(),
+        _ => true,
+    };
+    Ok(ScalarValue::Bool(finite))
+}
+
+fn eval_width_bucket(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+    if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+        return Ok(ScalarValue::Null);
+    }
+    let value = parse_f64_scalar(&args[0], "width_bucket() expects numeric value")?;
+    let min = parse_f64_scalar(&args[1], "width_bucket() expects numeric min")?;
+    let max = parse_f64_scalar(&args[2], "width_bucket() expects numeric max")?;
+    let count = parse_i64_scalar(&args[3], "width_bucket() expects integer count")?;
+    if count <= 0 {
+        return Err(EngineError {
+            message: "width_bucket() expects positive count".to_string(),
+        });
+    }
+    if min == max {
+        return Err(EngineError {
+            message: "width_bucket() requires min and max to differ".to_string(),
+        });
+    }
+    let buckets = count as f64;
+    let bucket = if min < max {
+        if value < min {
+            0
+        } else if value >= max {
+            count + 1
+        } else {
+            (((value - min) * buckets) / (max - min)).floor() as i64 + 1
+        }
+    } else {
+        if value > min {
+            0
+        } else if value <= max {
+            count + 1
+        } else {
+            (((min - value) * buckets) / (min - max)).floor() as i64 + 1
+        }
+    };
+    Ok(ScalarValue::Int(bucket))
+}
+
+fn eval_scale(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
+    if matches!(value, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let rendered = value.render();
+    let trimmed = rendered.trim();
+    let main = if let Some(idx) = trimmed.find('e').or_else(|| trimmed.find('E')) {
+        &trimmed[..idx]
+    } else {
+        trimmed
+    };
+    let scale = main
+        .split_once('.')
+        .map(|(_, frac)| frac.len() as i64)
+        .unwrap_or(0);
+    Ok(ScalarValue::Int(scale))
+}
+
+fn eval_factorial(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
+    if matches!(value, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let n = parse_i64_scalar(value, "factorial() expects integer")?;
+    if n < 0 {
+        return Err(EngineError {
+            message: "factorial() expects non-negative integer".to_string(),
+        });
+    }
+    let mut acc: i64 = 1;
+    for i in 1..=n {
+        acc = acc.checked_mul(i).ok_or_else(|| EngineError {
+            message: "factorial() overflowed".to_string(),
+        })?;
+    }
+    Ok(ScalarValue::Int(acc))
+}
+
 fn current_utc_datetime() -> Result<DateTimeValue, EngineError> {
     use std::time::{SystemTime, UNIX_EPOCH};
     let now = SystemTime::now();
@@ -14052,6 +14714,141 @@ fn parse_time_text(text: &str) -> Result<(u32, u32, u32), EngineError> {
     Ok((hour, minute, second))
 }
 
+fn parse_datetime_with_format(text: &str, format: &str) -> Result<DateTimeValue, EngineError> {
+    let (date, hour, minute, second) = parse_datetime_parts_with_format(text, format)?;
+    Ok(DateTimeValue {
+        date,
+        hour,
+        minute,
+        second,
+    })
+}
+
+fn parse_date_with_format(text: &str, format: &str) -> Result<DateValue, EngineError> {
+    let (date, _hour, _minute, _second) = parse_datetime_parts_with_format(text, format)?;
+    Ok(date)
+}
+
+fn parse_datetime_parts_with_format(
+    text: &str,
+    format: &str,
+) -> Result<(DateValue, u32, u32, u32), EngineError> {
+    let input = text.trim();
+    let fmt = format.trim().to_ascii_uppercase();
+    let mut in_idx = 0usize;
+    let mut fmt_idx = 0usize;
+    let bytes = input.as_bytes();
+
+    let mut year: Option<i32> = None;
+    let mut month: Option<u32> = None;
+    let mut day: Option<u32> = None;
+    let mut hour: u32 = 0;
+    let mut minute: u32 = 0;
+    let mut second: u32 = 0;
+
+    while fmt_idx < fmt.len() {
+        let remaining = &fmt[fmt_idx..];
+        if remaining.starts_with("YYYY") {
+            let value = parse_fixed_digits(bytes, &mut in_idx, 4, "year")? as i32;
+            year = Some(value);
+            fmt_idx += 4;
+            continue;
+        }
+        if remaining.starts_with("MM") {
+            let value = parse_fixed_digits(bytes, &mut in_idx, 2, "month")? as u32;
+            month = Some(value);
+            fmt_idx += 2;
+            continue;
+        }
+        if remaining.starts_with("DD") {
+            let value = parse_fixed_digits(bytes, &mut in_idx, 2, "day")? as u32;
+            day = Some(value);
+            fmt_idx += 2;
+            continue;
+        }
+        if remaining.starts_with("HH24") {
+            hour = parse_fixed_digits(bytes, &mut in_idx, 2, "hour")? as u32;
+            fmt_idx += 4;
+            continue;
+        }
+        if remaining.starts_with("MI") {
+            minute = parse_fixed_digits(bytes, &mut in_idx, 2, "minute")? as u32;
+            fmt_idx += 2;
+            continue;
+        }
+        if remaining.starts_with("SS") {
+            second = parse_fixed_digits(bytes, &mut in_idx, 2, "second")? as u32;
+            fmt_idx += 2;
+            continue;
+        }
+
+        let ch = fmt[fmt_idx..].chars().next().unwrap();
+        let ch_len = ch.len_utf8();
+        if in_idx >= bytes.len() || bytes[in_idx] != ch as u8 {
+            return Err(EngineError {
+                message: "to_timestamp/to_date format mismatch".to_string(),
+            });
+        }
+        in_idx += 1;
+        fmt_idx += ch_len;
+    }
+
+    if in_idx != bytes.len() {
+        return Err(EngineError {
+            message: "to_timestamp/to_date format mismatch".to_string(),
+        });
+    }
+
+    let date = date_from_parts(
+        year.ok_or_else(|| EngineError { message: "missing year".to_string() })?,
+        month.ok_or_else(|| EngineError { message: "missing month".to_string() })?,
+        day.ok_or_else(|| EngineError { message: "missing day".to_string() })?,
+    )?;
+
+    if hour > 23 || minute > 59 || second > 59 {
+        return Err(EngineError {
+            message: "invalid time component".to_string(),
+        });
+    }
+
+    Ok((date, hour, minute, second))
+}
+
+fn parse_fixed_digits(
+    bytes: &[u8],
+    idx: &mut usize,
+    count: usize,
+    label: &str,
+) -> Result<i64, EngineError> {
+    if *idx + count > bytes.len() {
+        return Err(EngineError {
+            message: format!("invalid {label} in format input"),
+        });
+    }
+    let slice = &bytes[*idx..*idx + count];
+    let text = std::str::from_utf8(slice).unwrap_or("");
+    let value = text.parse::<i64>().map_err(|_| EngineError {
+        message: format!("invalid {label} in format input"),
+    })?;
+    *idx += count;
+    Ok(value)
+}
+
+fn date_from_parts(year: i32, month: u32, day: u32) -> Result<DateValue, EngineError> {
+    if month == 0 || month > 12 {
+        return Err(EngineError {
+            message: "invalid date month".to_string(),
+        });
+    }
+    let max_day = days_in_month(year, month);
+    if day == 0 || day > max_day {
+        return Err(EngineError {
+            message: "invalid date day".to_string(),
+        });
+    }
+    Ok(DateValue { year, month, day })
+}
+
 fn format_date(date: DateValue) -> String {
     format!("{:04}-{:02}-{:02}", date.year, date.month, date.day)
 }
@@ -14116,6 +14913,71 @@ fn datetime_from_epoch_seconds(seconds: i64) -> DateTimeValue {
         minute: ((sec_of_day % 3_600) / 60) as u32,
         second: (sec_of_day % 60) as u32,
     }
+}
+
+fn interval_from_seconds(seconds: i64) -> IntervalValue {
+    let days = seconds.div_euclid(86_400);
+    let rem = seconds.rem_euclid(86_400);
+    IntervalValue {
+        months: 0,
+        days,
+        seconds: rem,
+    }
+}
+
+fn parse_interval_text(text: &str) -> Result<IntervalValue, EngineError> {
+    let parts = text.split_whitespace().collect::<Vec<_>>();
+    if parts.len() < 5 {
+        return Err(EngineError {
+            message: "invalid interval value".to_string(),
+        });
+    }
+    let months = parts[0].parse::<i64>().map_err(|_| EngineError {
+        message: "invalid interval months".to_string(),
+    })?;
+    let days = parts[2].parse::<i64>().map_err(|_| EngineError {
+        message: "invalid interval days".to_string(),
+    })?;
+    let time = parts[4];
+    let mut time_parts = time.split(':').collect::<Vec<_>>();
+    if time_parts.len() != 3 {
+        return Err(EngineError {
+            message: "invalid interval time".to_string(),
+        });
+    }
+    let hour = time_parts[0]
+        .parse::<i64>()
+        .map_err(|_| EngineError {
+            message: "invalid interval hour".to_string(),
+        })?;
+    let minute = time_parts[1]
+        .parse::<i64>()
+        .map_err(|_| EngineError {
+            message: "invalid interval minute".to_string(),
+        })?;
+    let second = time_parts[2]
+        .parse::<i64>()
+        .map_err(|_| EngineError {
+            message: "invalid interval second".to_string(),
+        })?;
+    let total_seconds = hour * 3_600 + minute * 60 + second;
+    Ok(IntervalValue {
+        months,
+        days,
+        seconds: total_seconds,
+    })
+}
+
+fn format_interval(interval: IntervalValue) -> String {
+    let sign = if interval.seconds < 0 { "-" } else { "" };
+    let seconds = interval.seconds.abs();
+    let hours = seconds / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    let secs = seconds % 60;
+    format!(
+        "{} mons {} days {}{:02}:{:02}:{:02}",
+        interval.months, interval.days, sign, hours, minutes, secs
+    )
 }
 
 fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
@@ -15121,6 +15983,129 @@ mod tests {
                 ScalarValue::Null,
                 ScalarValue::Null,
                 ScalarValue::Null,
+            ]]
+        );
+    }
+
+    #[test]
+    fn evaluates_additional_string_functions() {
+        let result = run("SELECT \
+                position('bar' IN 'foobar'), \
+                overlay('abcdef' PLACING 'zz' FROM 3 FOR 2), \
+                ascii('A'), \
+                chr(65), \
+                encode('foo', 'hex'), \
+                decode('666f6f', 'hex'), \
+                encode('foo', 'base64'), \
+                decode('Zm9v', 'base64'), \
+                md5('abc'), \
+                quote_literal('O''Reilly'), \
+                quote_ident('some\"ident'), \
+                quote_nullable(NULL), \
+                quote_nullable('hi'), \
+                regexp_match('abc123', '([a-z]+)([0-9]+)'), \
+                regexp_split_to_array('a-b-c', '-')");
+        assert_eq!(
+            result.rows,
+            vec![vec![
+                ScalarValue::Int(4),
+                ScalarValue::Text("abzzef".to_string()),
+                ScalarValue::Int(65),
+                ScalarValue::Text("A".to_string()),
+                ScalarValue::Text("666f6f".to_string()),
+                ScalarValue::Text("foo".to_string()),
+                ScalarValue::Text("Zm9v".to_string()),
+                ScalarValue::Text("foo".to_string()),
+                ScalarValue::Text("900150983cd24fb0d6963f7d28e17f72".to_string()),
+                ScalarValue::Text("'O''Reilly'".to_string()),
+                ScalarValue::Text("\"some\"\"ident\"".to_string()),
+                ScalarValue::Text("NULL".to_string()),
+                ScalarValue::Text("'hi'".to_string()),
+                ScalarValue::Text("{abc,123}".to_string()),
+                ScalarValue::Text("{a,b,c}".to_string()),
+            ]]
+        );
+    }
+
+    #[test]
+    fn evaluates_regexp_set_returning_functions() {
+        let result = run("SELECT * FROM regexp_matches('abc123 abc456', '([a-z]+)([0-9]+)', 'g')");
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![ScalarValue::Text("{abc,123}".to_string())],
+                vec![ScalarValue::Text("{abc,456}".to_string())],
+            ]
+        );
+
+        let result = run("SELECT * FROM regexp_split_to_table('a,b,c', ',')");
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![ScalarValue::Text("a".to_string())],
+                vec![ScalarValue::Text("b".to_string())],
+                vec![ScalarValue::Text("c".to_string())],
+            ]
+        );
+    }
+
+    #[test]
+    fn evaluates_additional_date_time_functions() {
+        let result = run("SELECT \
+                age(timestamp('2024-03-02 00:00:00'), timestamp('2024-03-01 00:00:00')), \
+                to_timestamp('2024-03-01 12:34:56', 'YYYY-MM-DD HH24:MI:SS'), \
+                to_timestamp(0), \
+                to_date('2024-03-01', 'YYYY-MM-DD'), \
+                make_interval(1, 2, 0, 3, 4, 5, 6), \
+                justify_hours(make_interval(0, 0, 0, 0, 25, 0, 0)), \
+                justify_days(make_interval(0, 0, 0, 45, 0, 0, 0)), \
+                justify_interval(make_interval(0, 0, 0, 35, 25, 0, 0)), \
+                isfinite('infinity'), \
+                isfinite(date('2024-03-01'))");
+        assert_eq!(
+            result.rows,
+            vec![vec![
+                ScalarValue::Text("0 mons 1 days 00:00:00".to_string()),
+                ScalarValue::Text("2024-03-01 12:34:56".to_string()),
+                ScalarValue::Text("1970-01-01 00:00:00".to_string()),
+                ScalarValue::Text("2024-03-01".to_string()),
+                ScalarValue::Text("14 mons 3 days 04:05:06".to_string()),
+                ScalarValue::Text("0 mons 1 days 01:00:00".to_string()),
+                ScalarValue::Text("1 mons 15 days 00:00:00".to_string()),
+                ScalarValue::Text("1 mons 6 days 01:00:00".to_string()),
+                ScalarValue::Bool(false),
+                ScalarValue::Bool(true),
+            ]]
+        );
+
+        let result = run("SELECT age(timestamp('2024-03-01 00:00:00')), clock_timestamp()");
+        assert_eq!(result.rows.len(), 1);
+        for value in &result.rows[0] {
+            let ScalarValue::Text(text) = value else {
+                panic!("expected text interval/timestamp value");
+            };
+            assert!(!text.is_empty());
+        }
+    }
+
+    #[test]
+    fn evaluates_math_and_conditional_functions() {
+        let result = run("SELECT \
+                trunc(1.2345, 2), \
+                width_bucket(5, 0, 10, 5), \
+                scale('123.4500'), \
+                factorial(5), \
+                num_nulls(1, NULL, 'x', NULL), \
+                num_nonnulls(1, NULL, 'x', NULL)");
+        assert_eq!(
+            result.rows,
+            vec![vec![
+                ScalarValue::Float(1.23),
+                ScalarValue::Int(3),
+                ScalarValue::Int(4),
+                ScalarValue::Int(120),
+                ScalarValue::Int(2),
+                ScalarValue::Int(2),
             ]]
         );
     }
