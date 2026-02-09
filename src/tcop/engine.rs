@@ -3427,11 +3427,12 @@ fn foreign_key_constraint_specs_from_ast(
 fn type_signature_from_ast(ty: TypeName) -> TypeSignature {
     match ty {
         TypeName::Bool => TypeSignature::Bool,
-        TypeName::Int8 => TypeSignature::Int8,
-        TypeName::Float8 => TypeSignature::Float8,
-        TypeName::Text => TypeSignature::Text,
+        TypeName::Int2 | TypeName::Int4 | TypeName::Int8 | TypeName::Serial | TypeName::BigSerial => TypeSignature::Int8,
+        TypeName::Float4 | TypeName::Float8 | TypeName::Numeric => TypeSignature::Float8,
+        TypeName::Text | TypeName::Varchar | TypeName::Char | TypeName::Bytea | TypeName::Uuid
+        | TypeName::Json | TypeName::Jsonb | TypeName::Interval => TypeSignature::Text,
         TypeName::Date => TypeSignature::Date,
-        TypeName::Timestamp => TypeSignature::Timestamp,
+        TypeName::Timestamp | TypeName::TimestampTz => TypeSignature::Timestamp,
     }
 }
 
@@ -6316,7 +6317,27 @@ fn execute_select(
     }
 
     if matches!(select.quantifier, Some(SelectQuantifier::Distinct)) {
-        rows = dedupe_rows(rows);
+        if !select.distinct_on.is_empty() {
+            // DISTINCT ON: keep first row for each distinct value of the ON expressions
+            // Evaluate the exprs against a scope built from the projected columns
+            let mut seen = HashSet::new();
+            let mut deduped = Vec::new();
+            for row in &rows {
+                let scope = scope_from_row(&columns, row, &[], &columns);
+                let mut key_parts = Vec::new();
+                for expr in &select.distinct_on {
+                    let val = eval_expr(expr, &scope, params)?;
+                    key_parts.push(val.render());
+                }
+                let key_str = key_parts.join("\0");
+                if seen.insert(key_str) {
+                    deduped.push(row.clone());
+                }
+            }
+            rows = deduped;
+        } else {
+            rows = dedupe_rows(rows);
+        }
     }
 
     Ok(QueryResult {
@@ -16829,5 +16850,40 @@ mod tests {
         let r = run("SELECT CAST(42 AS text), CAST('123' AS int8)");
         assert_eq!(r.rows[0][0], ScalarValue::Text("42".to_string()));
         assert_eq!(r.rows[0][1], ScalarValue::Int(123));
+    }
+
+    // 1.1 Extended type parsing
+    #[test]
+    fn parses_extended_types_in_create_table() {
+        let results = run_batch(&[
+            "CREATE TABLE typed (a smallint, b integer, c bigint, d real, e varchar, f bytea, g uuid, h json, i jsonb, j numeric, k serial)",
+            "INSERT INTO typed VALUES (1, 2, 3, 4.5, 'hello', 'binary', '550e8400-e29b-41d4-a716-446655440000', '{\"a\":1}', '{\"b\":2}', 3.14, 1)",
+            "SELECT * FROM typed",
+        ]);
+        assert_eq!(results[2].rows.len(), 1);
+    }
+
+    // 1.7 DISTINCT ON
+    #[test]
+    fn distinct_on_keeps_first_per_group() {
+        let results = run_batch(&[
+            "CREATE TABLE t (cat text, val int8)",
+            "INSERT INTO t VALUES ('a', 1), ('a', 2), ('b', 3), ('b', 4)",
+            "SELECT DISTINCT ON (cat) cat, val FROM t ORDER BY cat, val",
+        ]);
+        assert_eq!(results[2].rows.len(), 2);
+        assert_eq!(results[2].rows[0][0], ScalarValue::Text("a".to_string()));
+        assert_eq!(results[2].rows[0][1], ScalarValue::Int(1));
+        assert_eq!(results[2].rows[1][0], ScalarValue::Text("b".to_string()));
+        assert_eq!(results[2].rows[1][1], ScalarValue::Int(3));
+    }
+
+    // 1.7 VALUES as standalone query
+    #[test]
+    fn values_as_standalone_query() {
+        let r = run("VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+        assert_eq!(r.rows.len(), 3);
+        assert_eq!(r.rows[0][0], ScalarValue::Int(1));
+        assert_eq!(r.rows[2][1], ScalarValue::Text("c".to_string()));
     }
 }

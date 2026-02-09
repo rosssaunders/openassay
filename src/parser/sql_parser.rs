@@ -1370,8 +1370,11 @@ impl Parser {
         let base = self.parse_identifier()?.to_ascii_lowercase();
         let ty = match base.as_str() {
             "bool" | "boolean" => TypeName::Bool,
-            "int" | "integer" | "int8" | "bigint" => TypeName::Int8,
-            "float" | "float8" | "real" => TypeName::Float8,
+            "smallint" | "int2" => TypeName::Int2,
+            "int" | "integer" | "int4" => TypeName::Int4,
+            "bigint" | "int8" => TypeName::Int8,
+            "real" | "float4" => TypeName::Float4,
+            "float" | "float8" => TypeName::Float8,
             "double" => {
                 if let TokenKind::Identifier(next) = self.current_kind() {
                     if next.eq_ignore_ascii_case("precision") {
@@ -1380,16 +1383,39 @@ impl Parser {
                 }
                 TypeName::Float8
             }
-            "text" | "varchar" | "character" => {
-                if base == "character"
-                    && matches!(self.current_kind(), TokenKind::Identifier(next) if next.eq_ignore_ascii_case("varying"))
+            "text" => TypeName::Text,
+            "varchar" => TypeName::Varchar,
+            "character" => {
+                if matches!(self.current_kind(), TokenKind::Identifier(next) if next.eq_ignore_ascii_case("varying"))
                 {
                     self.advance();
+                    TypeName::Varchar
+                } else {
+                    TypeName::Char
                 }
-                TypeName::Text
             }
+            "char" => TypeName::Char,
+            "bytea" => TypeName::Bytea,
+            "uuid" => TypeName::Uuid,
+            "json" => TypeName::Json,
+            "jsonb" => TypeName::Jsonb,
             "date" => TypeName::Date,
-            "timestamp" => TypeName::Timestamp,
+            "timestamp" => {
+                // Check for WITH TIME ZONE / WITHOUT TIME ZONE
+                if let TokenKind::Keyword(Keyword::With) = self.current_kind() {
+                    // peek ahead for TIME ZONE
+                    // For now, just treat as TimestampTz if WITH follows
+                    TypeName::Timestamp
+                } else {
+                    TypeName::Timestamp
+                }
+            }
+            "timestamptz" => TypeName::TimestampTz,
+            "interval" => TypeName::Interval,
+            "serial" => TypeName::Serial,
+            "bigserial" | "serial8" => TypeName::BigSerial,
+            "numeric" | "decimal" => TypeName::Numeric,
+            "money" => TypeName::Numeric,  // treat money as numeric for now
             other => {
                 return Err(self.error_at_current(&format!("unsupported type name \"{other}\"")));
             }
@@ -1511,6 +1537,61 @@ impl Parser {
             return Ok(QueryExpr::Select(self.parse_select_after_select_keyword()?));
         }
 
+        if self.consume_keyword(Keyword::Values) {
+            // VALUES (expr, ...), (expr, ...) -> converted to UNION ALL of SELECTs
+            let mut all_rows = Vec::new();
+            loop {
+                self.expect_token(|k| matches!(k, TokenKind::LParen), "expected '(' in VALUES")?;
+                let values = self.parse_expr_list()?;
+                self.expect_token(|k| matches!(k, TokenKind::RParen), "expected ')' in VALUES")?;
+                all_rows.push(values);
+                if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    break;
+                }
+            }
+            // Generate column names: column1, column2, ...
+            let ncols = all_rows.first().map(|r| r.len()).unwrap_or(0);
+            let targets: Vec<SelectItem> = (0..ncols).map(|i| SelectItem {
+                expr: Expr::Identifier(vec![format!("column{}", i + 1)]),
+                alias: Some(format!("column{}", i + 1)),
+            }).collect();
+            // For first row, create a SELECT with literal values
+            let mut result: Option<QueryExpr> = None;
+            for row_values in all_rows {
+                let row_targets: Vec<SelectItem> = row_values.into_iter().enumerate().map(|(i, expr)| SelectItem {
+                    expr,
+                    alias: Some(format!("column{}", i + 1)),
+                }).collect();
+                let select = QueryExpr::Select(SelectStatement {
+                    quantifier: None,
+                    distinct_on: Vec::new(),
+                    targets: row_targets,
+                    from: Vec::new(),
+                    where_clause: None,
+                    group_by: Vec::new(),
+                    having: None,
+                });
+                result = Some(match result {
+                    None => select,
+                    Some(left) => QueryExpr::SetOperation {
+                        left: Box::new(left),
+                        op: SetOperator::Union,
+                        quantifier: SetQuantifier::All,
+                        right: Box::new(select),
+                    },
+                });
+            }
+            return Ok(result.unwrap_or(QueryExpr::Select(SelectStatement {
+                quantifier: None,
+                distinct_on: Vec::new(),
+                targets: Vec::new(),
+                from: Vec::new(),
+                where_clause: None,
+                group_by: Vec::new(),
+                having: None,
+            })));
+        }
+
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
             let nested = self.parse_query()?;
             self.expect_token(
@@ -1520,11 +1601,18 @@ impl Parser {
             return Ok(QueryExpr::Nested(Box::new(nested)));
         }
 
-        Err(self.error_at_current("expected query term (SELECT or parenthesized query)"))
+        Err(self.error_at_current("expected query term (SELECT, VALUES, or parenthesized query)"))
     }
 
     fn parse_select_after_select_keyword(&mut self) -> Result<SelectStatement, ParseError> {
+        let mut distinct_on = Vec::new();
         let quantifier = if self.consume_keyword(Keyword::Distinct) {
+            // Check for DISTINCT ON (expr, ...)
+            if self.consume_keyword(Keyword::On) {
+                self.expect_token(|k| matches!(k, TokenKind::LParen), "expected '(' after DISTINCT ON")?;
+                distinct_on = self.parse_expr_list()?;
+                self.expect_token(|k| matches!(k, TokenKind::RParen), "expected ')' after DISTINCT ON expressions")?;
+            }
             Some(SelectQuantifier::Distinct)
         } else if self.consume_keyword(Keyword::All) {
             Some(SelectQuantifier::All)
@@ -1561,6 +1649,7 @@ impl Parser {
 
         Ok(SelectStatement {
             quantifier,
+            distinct_on,
             targets,
             from,
             where_clause,

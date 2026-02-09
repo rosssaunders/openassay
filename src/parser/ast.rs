@@ -79,11 +79,25 @@ pub struct UnlistenStatement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeName {
     Bool,
-    Int8,
-    Float8,
+    Int2, // SMALLINT
+    Int4, // INTEGER
+    Int8, // BIGINT
+    Float4, // REAL
+    Float8, // DOUBLE PRECISION
     Text,
+    Varchar, // VARCHAR(n) - length stored separately in ColumnDefinition
+    Char, // CHAR(n)
+    Bytea,
+    Uuid,
+    Json,
+    Jsonb,
     Date,
     Timestamp,
+    TimestampTz,
+    Interval,
+    Serial,   // auto-incrementing INT4
+    BigSerial, // auto-incrementing INT8
+    Numeric,   // DECIMAL/NUMERIC
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -432,6 +446,7 @@ pub enum SelectQuantifier {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectStatement {
     pub quantifier: Option<SelectQuantifier>,
+    pub distinct_on: Vec<Expr>,
     pub targets: Vec<SelectItem>,
     pub from: Vec<TableExpression>,
     pub where_clause: Option<Expr>,
