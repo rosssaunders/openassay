@@ -1231,6 +1231,7 @@ async fn execute_create_table(
             args: vec![Expr::String(sequence_name.clone())],
             distinct: false,
             order_by: Vec::new(),
+            within_group: Vec::new(),
             filter: None,
             over: None,
         });
@@ -5016,6 +5017,7 @@ fn infer_common_type_oid(
 fn infer_function_return_oid(
     name: &[String],
     args: &[Expr],
+    within_group: &[OrderByExpr],
     scope: &TypeScope,
     ctes: &HashMap<String, Vec<PlannedOutputColumn>>,
 ) -> u32 {
@@ -5028,7 +5030,11 @@ fn infer_function_return_oid(
         | "strpos" | "position" | "ascii" | "pg_backend_pid" | "width_bucket"
         | "scale" | "factorial" | "num_nulls" | "num_nonnulls" => PG_INT8_OID,
         "extract" | "date_part" => PG_INT8_OID,
-        "avg" | "stddev" | "stddev_samp" | "stddev_pop" | "variance" | "var_samp" | "var_pop" => PG_FLOAT8_OID,
+        "avg" | "stddev" | "stddev_samp" | "stddev_pop" | "variance" | "var_samp" | "var_pop"
+        | "corr" | "covar_pop" | "covar_samp" | "regr_slope" | "regr_intercept" | "regr_r2"
+        | "regr_avgx" | "regr_avgy" | "regr_sxx" | "regr_sxy" | "regr_syy"
+        | "percentile_cont" => PG_FLOAT8_OID,
+        "regr_count" => PG_INT8_OID,
         "bool_and" | "bool_or" | "every" | "has_table_privilege" | "has_column_privilege"
         | "has_schema_privilege" | "pg_table_is_visible" | "pg_type_is_visible"
         | "isfinite" => PG_BOOL_OID,
@@ -5052,6 +5058,10 @@ fn infer_function_return_oid(
                 }
             })
             .unwrap_or(PG_INT8_OID),
+        "percentile_disc" | "mode" => within_group
+            .first()
+            .map(|entry| infer_expr_type_oid(&entry.expr, scope, ctes))
+            .unwrap_or(PG_TEXT_OID),
         "min" | "max" | "nullif" => args
             .first()
             .map(|expr| infer_expr_type_oid(expr, scope, ctes))
@@ -5082,7 +5092,12 @@ fn infer_expr_type_oid(
         Expr::Boolean(_) => PG_BOOL_OID,
         Expr::Null => PG_TEXT_OID,
         Expr::Parameter(_) => PG_TEXT_OID,
-        Expr::FunctionCall { name, args, .. } => infer_function_return_oid(name, args, scope, ctes),
+        Expr::FunctionCall {
+            name,
+            args,
+            within_group,
+            ..
+        } => infer_function_return_oid(name, args, within_group, scope, ctes),
         Expr::Cast { type_name, .. } => cast_type_name_to_oid(type_name),
         Expr::Wildcard => PG_TEXT_OID,
         Expr::Unary { op, expr } => match op {
@@ -5506,12 +5521,16 @@ fn expr_references_relation(expr: &Expr, relation_name: &str) -> bool {
         Expr::FunctionCall {
             args,
             order_by,
+            within_group,
             filter,
             ..
         } => {
             args.iter()
                 .any(|arg| expr_references_relation(arg, relation_name))
                 || order_by
+                    .iter()
+                    .any(|entry| expr_references_relation(&entry.expr, relation_name))
+                || within_group
                     .iter()
                     .any(|entry| expr_references_relation(&entry.expr, relation_name))
                 || filter
@@ -8174,6 +8193,7 @@ fn contains_aggregate_expr(expr: &Expr) -> bool {
             name,
             args,
             order_by,
+            within_group,
             filter,
             over,
             ..
@@ -8187,6 +8207,9 @@ fn contains_aggregate_expr(expr: &Expr) -> bool {
             }
             args.iter().any(contains_aggregate_expr)
                 || order_by
+                    .iter()
+                    .any(|entry| contains_aggregate_expr(&entry.expr))
+                || within_group
                     .iter()
                     .any(|entry| contains_aggregate_expr(&entry.expr))
                 || filter
@@ -8250,6 +8273,7 @@ fn contains_window_expr(expr: &Expr) -> bool {
         Expr::FunctionCall {
             args,
             order_by,
+            within_group,
             filter,
             over,
             ..
@@ -8257,6 +8281,9 @@ fn contains_window_expr(expr: &Expr) -> bool {
             over.is_some()
                 || args.iter().any(contains_window_expr)
                 || order_by.iter().any(|entry| contains_window_expr(&entry.expr))
+                || within_group
+                    .iter()
+                    .any(|entry| contains_window_expr(&entry.expr))
                 || filter.as_ref().is_some_and(|entry| contains_window_expr(entry))
                 || over.as_ref().is_some_and(|window| {
                     window.partition_by.iter().any(contains_window_expr)
@@ -8451,6 +8478,21 @@ fn is_aggregate_function(name: &str) -> bool {
             | "variance"
             | "var_samp"
             | "var_pop"
+            | "corr"
+            | "covar_pop"
+            | "covar_samp"
+            | "regr_slope"
+            | "regr_intercept"
+            | "regr_count"
+            | "regr_r2"
+            | "regr_avgx"
+            | "regr_avgy"
+            | "regr_sxx"
+            | "regr_sxy"
+            | "regr_syy"
+            | "percentile_cont"
+            | "percentile_disc"
+            | "mode"
     )
 }
 
@@ -8468,6 +8510,7 @@ fn eval_group_expr<'a>(
             args,
             distinct,
             order_by,
+            within_group,
             filter,
             over,
         } => {
@@ -8482,7 +8525,7 @@ fn eval_group_expr<'a>(
                 .map(|n| n.to_ascii_lowercase())
                 .unwrap_or_default();
             if fn_name == "grouping" {
-                if *distinct || !order_by.is_empty() || filter.is_some() {
+                if *distinct || !order_by.is_empty() || !within_group.is_empty() || filter.is_some() {
                     return Err(EngineError {
                         message: "grouping() does not accept aggregate modifiers".to_string(),
                     });
@@ -8510,13 +8553,14 @@ fn eval_group_expr<'a>(
                     args,
                     *distinct,
                     order_by,
+                    within_group,
                     filter.as_deref(),
                     group_rows,
                     params,
                 )
                 .await;
             }
-            if *distinct || !order_by.is_empty() || filter.is_some() {
+            if *distinct || !order_by.is_empty() || !within_group.is_empty() || filter.is_some() {
                 return Err(EngineError {
                     message: format!(
                         "{}() aggregate modifiers require grouped aggregate evaluation",
@@ -8676,6 +8720,47 @@ struct AggregateInputRow {
     order_keys: Vec<ScalarValue>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RegrStats {
+    count: i64,
+    sum_x: f64,
+    sum_y: f64,
+    sum_xx: f64,
+    sum_yy: f64,
+    sum_xy: f64,
+}
+
+fn compute_regr_stats(rows: &[AggregateInputRow], message: &str) -> Result<RegrStats, EngineError> {
+    let mut stats = RegrStats {
+        count: 0,
+        sum_x: 0.0,
+        sum_y: 0.0,
+        sum_xx: 0.0,
+        sum_yy: 0.0,
+        sum_xy: 0.0,
+    };
+    for row in rows {
+        let Some(y_value) = row.args.get(0) else {
+            continue;
+        };
+        let Some(x_value) = row.args.get(1) else {
+            continue;
+        };
+        if matches!(y_value, ScalarValue::Null) || matches!(x_value, ScalarValue::Null) {
+            continue;
+        }
+        let y = parse_f64_numeric_scalar(y_value, message)?;
+        let x = parse_f64_numeric_scalar(x_value, message)?;
+        stats.count += 1;
+        stats.sum_x += x;
+        stats.sum_y += y;
+        stats.sum_xx += x * x;
+        stats.sum_yy += y * y;
+        stats.sum_xy += x * y;
+    }
+    Ok(stats)
+}
+
 async fn build_aggregate_input_rows(
     args: &[Expr],
     order_by: &[OrderByExpr],
@@ -8724,10 +8809,23 @@ async fn eval_aggregate_function(
     args: &[Expr],
     distinct: bool,
     order_by: &[OrderByExpr],
+    within_group: &[OrderByExpr],
     filter: Option<&Expr>,
     group_rows: &[EvalScope],
     params: &[Option<String>],
 ) -> Result<ScalarValue, EngineError> {
+    let is_ordered_set = matches!(fn_name, "percentile_cont" | "percentile_disc" | "mode");
+    if !within_group.is_empty() && !is_ordered_set {
+        return Err(EngineError {
+            message: format!("{fn_name}() does not support WITHIN GROUP"),
+        });
+    }
+    if is_ordered_set && within_group.is_empty() {
+        return Err(EngineError {
+            message: format!("{fn_name}() requires WITHIN GROUP (ORDER BY ...)"),
+        });
+    }
+
     match fn_name {
         "count" => {
             if args.len() == 1 && matches!(args[0], Expr::Wildcard) {
@@ -9041,6 +9139,275 @@ async fn eval_aggregate_function(
             if values.is_empty() { return Ok(ScalarValue::Null); }
             let mean = values.iter().sum::<f64>() / values.len() as f64;
             Ok(ScalarValue::Float(values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64))
+        }
+        "corr"
+        | "covar_pop"
+        | "covar_samp"
+        | "regr_slope"
+        | "regr_intercept"
+        | "regr_count"
+        | "regr_r2"
+        | "regr_avgx"
+        | "regr_avgy"
+        | "regr_sxx"
+        | "regr_sxy"
+        | "regr_syy" => {
+            if args.len() != 2 {
+                return Err(EngineError {
+                    message: format!("{fn_name}() expects exactly two arguments"),
+                });
+            }
+            let mut rows = build_aggregate_input_rows(args, order_by, filter, group_rows, params).await?;
+            if distinct {
+                apply_aggregate_distinct(&mut rows);
+            }
+            sort_aggregate_rows(&mut rows, order_by);
+            let stats = compute_regr_stats(&rows, &format!("{fn_name}() expects numeric values"))?;
+            let count = stats.count;
+            if fn_name == "regr_count" {
+                return Ok(ScalarValue::Int(count));
+            }
+            if count == 0 {
+                return Ok(ScalarValue::Null);
+            }
+            let n = count as f64;
+            let avgx = stats.sum_x / n;
+            let avgy = stats.sum_y / n;
+            let sxx = stats.sum_xx - stats.sum_x * stats.sum_x / n;
+            let syy = stats.sum_yy - stats.sum_y * stats.sum_y / n;
+            let sxy = stats.sum_xy - stats.sum_x * stats.sum_y / n;
+            match fn_name {
+                "corr" => {
+                    if count < 2 || sxx <= 0.0 || syy <= 0.0 {
+                        Ok(ScalarValue::Null)
+                    } else {
+                        Ok(ScalarValue::Float(sxy / (sxx * syy).sqrt()))
+                    }
+                }
+                "covar_pop" => Ok(ScalarValue::Float(sxy / n)),
+                "covar_samp" => {
+                    if count < 2 {
+                        Ok(ScalarValue::Null)
+                    } else {
+                        Ok(ScalarValue::Float(sxy / (n - 1.0)))
+                    }
+                }
+                "regr_slope" => {
+                    if count < 2 || sxx <= 0.0 {
+                        Ok(ScalarValue::Null)
+                    } else {
+                        Ok(ScalarValue::Float(sxy / sxx))
+                    }
+                }
+                "regr_intercept" => {
+                    if count < 2 || sxx <= 0.0 {
+                        Ok(ScalarValue::Null)
+                    } else {
+                        let slope = sxy / sxx;
+                        Ok(ScalarValue::Float(avgy - slope * avgx))
+                    }
+                }
+                "regr_r2" => {
+                    if count < 2 || sxx <= 0.0 || syy <= 0.0 {
+                        Ok(ScalarValue::Null)
+                    } else {
+                        Ok(ScalarValue::Float((sxy * sxy) / (sxx * syy)))
+                    }
+                }
+                "regr_avgx" => Ok(ScalarValue::Float(avgx)),
+                "regr_avgy" => Ok(ScalarValue::Float(avgy)),
+                "regr_sxx" => Ok(ScalarValue::Float(sxx)),
+                "regr_sxy" => Ok(ScalarValue::Float(sxy)),
+                "regr_syy" => Ok(ScalarValue::Float(syy)),
+                _ => Err(EngineError {
+                    message: format!("unsupported aggregate function {}", fn_name),
+                }),
+            }
+        }
+        "percentile_cont" => {
+            if !order_by.is_empty() {
+                return Err(EngineError {
+                    message: "percentile_cont() does not accept aggregate ORDER BY".to_string(),
+                });
+            }
+            if distinct {
+                return Err(EngineError {
+                    message: "percentile_cont() does not accept DISTINCT".to_string(),
+                });
+            }
+            if args.len() != 1 {
+                return Err(EngineError {
+                    message: "percentile_cont() expects exactly one argument".to_string(),
+                });
+            }
+            if within_group.len() != 1 {
+                return Err(EngineError {
+                    message: "percentile_cont() requires a single ORDER BY expression".to_string(),
+                });
+            }
+            let mut rows =
+                build_aggregate_input_rows(args, within_group, filter, group_rows, params).await?;
+            sort_aggregate_rows(&mut rows, within_group);
+            let fraction_value = rows.iter().find_map(|row| match &row.args[0] {
+                ScalarValue::Null => None,
+                value => Some(value.clone()),
+            });
+            let Some(fraction_value) = fraction_value else {
+                return Ok(ScalarValue::Null);
+            };
+            let fraction = parse_f64_numeric_scalar(
+                &fraction_value,
+                "percentile_cont() expects numeric fraction",
+            )?;
+            if !(0.0..=1.0).contains(&fraction) {
+                return Err(EngineError {
+                    message: "percentile_cont() fraction must be between 0 and 1".to_string(),
+                });
+            }
+            let mut values = Vec::new();
+            for row in &rows {
+                let Some(value) = row.order_keys.get(0) else {
+                    continue;
+                };
+                if matches!(value, ScalarValue::Null) {
+                    continue;
+                }
+                let parsed = parse_f64_numeric_scalar(
+                    value,
+                    "percentile_cont() expects numeric values",
+                )?;
+                values.push(parsed);
+            }
+            if values.is_empty() {
+                return Ok(ScalarValue::Null);
+            }
+            if values.len() == 1 {
+                return Ok(ScalarValue::Float(values[0]));
+            }
+            let pos = fraction * (values.len() - 1) as f64;
+            let lower_idx = pos.floor() as usize;
+            let upper_idx = pos.ceil() as usize;
+            let lower = values[lower_idx];
+            let upper = values[upper_idx];
+            if lower_idx == upper_idx {
+                Ok(ScalarValue::Float(lower))
+            } else {
+                let weight = pos - lower_idx as f64;
+                Ok(ScalarValue::Float(lower + (upper - lower) * weight))
+            }
+        }
+        "percentile_disc" => {
+            if !order_by.is_empty() {
+                return Err(EngineError {
+                    message: "percentile_disc() does not accept aggregate ORDER BY".to_string(),
+                });
+            }
+            if distinct {
+                return Err(EngineError {
+                    message: "percentile_disc() does not accept DISTINCT".to_string(),
+                });
+            }
+            if args.len() != 1 {
+                return Err(EngineError {
+                    message: "percentile_disc() expects exactly one argument".to_string(),
+                });
+            }
+            if within_group.len() != 1 {
+                return Err(EngineError {
+                    message: "percentile_disc() requires a single ORDER BY expression".to_string(),
+                });
+            }
+            let mut rows =
+                build_aggregate_input_rows(args, within_group, filter, group_rows, params).await?;
+            sort_aggregate_rows(&mut rows, within_group);
+            let fraction_value = rows.iter().find_map(|row| match &row.args[0] {
+                ScalarValue::Null => None,
+                value => Some(value.clone()),
+            });
+            let Some(fraction_value) = fraction_value else {
+                return Ok(ScalarValue::Null);
+            };
+            let fraction = parse_f64_numeric_scalar(
+                &fraction_value,
+                "percentile_disc() expects numeric fraction",
+            )?;
+            if !(0.0..=1.0).contains(&fraction) {
+                return Err(EngineError {
+                    message: "percentile_disc() fraction must be between 0 and 1".to_string(),
+                });
+            }
+            let mut values = Vec::new();
+            for row in &rows {
+                let Some(value) = row.order_keys.get(0) else {
+                    continue;
+                };
+                if matches!(value, ScalarValue::Null) {
+                    continue;
+                }
+                values.push(value.clone());
+            }
+            if values.is_empty() {
+                return Ok(ScalarValue::Null);
+            }
+            let mut pos = (fraction * values.len() as f64).ceil() as usize;
+            if pos == 0 {
+                pos = 1;
+            }
+            Ok(values[pos - 1].clone())
+        }
+        "mode" => {
+            if !order_by.is_empty() {
+                return Err(EngineError {
+                    message: "mode() does not accept aggregate ORDER BY".to_string(),
+                });
+            }
+            if distinct {
+                return Err(EngineError {
+                    message: "mode() does not accept DISTINCT".to_string(),
+                });
+            }
+            if !args.is_empty() {
+                return Err(EngineError {
+                    message: "mode() expects no arguments".to_string(),
+                });
+            }
+            if within_group.len() != 1 {
+                return Err(EngineError {
+                    message: "mode() requires a single ORDER BY expression".to_string(),
+                });
+            }
+            let mut rows =
+                build_aggregate_input_rows(args, within_group, filter, group_rows, params).await?;
+            sort_aggregate_rows(&mut rows, within_group);
+            let mut best_value: Option<ScalarValue> = None;
+            let mut best_count = 0usize;
+            let mut current_value: Option<ScalarValue> = None;
+            let mut current_count = 0usize;
+            for row in rows {
+                let Some(value) = row.order_keys.get(0) else {
+                    continue;
+                };
+                if matches!(value, ScalarValue::Null) {
+                    continue;
+                }
+                match &current_value {
+                    Some(existing) if scalar_cmp(existing, value) == Ordering::Equal => {
+                        current_count += 1;
+                    }
+                    _ => {
+                        if current_count > best_count {
+                            best_count = current_count;
+                            best_value = current_value.clone();
+                        }
+                        current_value = Some(value.clone());
+                        current_count = 1;
+                    }
+                }
+            }
+            if current_count > best_count {
+                best_value = current_value;
+            }
+            Ok(best_value.unwrap_or(ScalarValue::Null))
         }
         "json_object_agg" | "jsonb_object_agg" => {
             if args.len() != 2 {
@@ -9780,6 +10147,7 @@ fn eval_expr<'a>(
             args,
             distinct,
             order_by,
+            within_group,
             filter,
             over,
         } => eval_function(
@@ -9787,6 +10155,7 @@ fn eval_expr<'a>(
             args,
             *distinct,
             order_by,
+            within_group,
             filter.as_deref(),
             over.as_deref(),
             scope,
@@ -9990,10 +10359,16 @@ fn eval_expr_with_window<'a>(
             args,
             distinct,
             order_by,
+            within_group,
             filter,
             over,
         } => {
             if let Some(window) = over.as_deref() {
+                if !within_group.is_empty() {
+                    return Err(EngineError {
+                        message: "WITHIN GROUP is not allowed for window functions".to_string(),
+                    });
+                }
                 eval_window_function(
                     name,
                     args,
@@ -10011,7 +10386,7 @@ fn eval_expr_with_window<'a>(
                     .last()
                     .map(|n| n.to_ascii_lowercase())
                     .unwrap_or_default();
-                if *distinct || !order_by.is_empty() || filter.is_some() {
+                if *distinct || !order_by.is_empty() || !within_group.is_empty() || filter.is_some() {
                     return Err(EngineError {
                         message: format!(
                             "{}() aggregate modifiers require grouped aggregate evaluation",
@@ -10246,6 +10621,7 @@ async fn eval_window_function(
                 args,
                 distinct,
                 order_by,
+                &[],
                 filter,
                 &scoped_rows,
                 params,
@@ -10926,6 +11302,7 @@ async fn eval_function(
     args: &[Expr],
     distinct: bool,
     order_by: &[OrderByExpr],
+    within_group: &[OrderByExpr],
     filter: Option<&Expr>,
     over: Option<&crate::parser::ast::WindowSpec>,
     scope: &EvalScope,
@@ -10935,7 +11312,7 @@ async fn eval_function(
         .last()
         .map(|n| n.to_ascii_lowercase())
         .unwrap_or_else(|| "".to_string());
-    if distinct || !order_by.is_empty() || filter.is_some() {
+    if distinct || !order_by.is_empty() || !within_group.is_empty() || filter.is_some() {
         return Err(EngineError {
             message: format!(
                 "{}() aggregate modifiers require grouped aggregate evaluation",
@@ -15280,6 +15657,16 @@ fn parse_f64_scalar(value: &ScalarValue, message: &str) -> Result<f64, EngineErr
     }
 }
 
+fn parse_f64_numeric_scalar(value: &ScalarValue, message: &str) -> Result<f64, EngineError> {
+    match value {
+        ScalarValue::Float(v) => Ok(*v),
+        ScalarValue::Int(v) => Ok(*v as f64),
+        _ => Err(EngineError {
+            message: message.to_string(),
+        }),
+    }
+}
+
 fn parse_bool_scalar(value: &ScalarValue, message: &str) -> Result<bool, EngineError> {
     try_parse_bool(value).ok_or_else(|| EngineError {
         message: message.to_string(),
@@ -19488,8 +19875,45 @@ mod tests {
         // variance and stddev should be non-null floats
         match &results[2].rows[0][0] {
             ScalarValue::Float(v) => assert!(*v > 0.0),
+            other => panic!("expected numeric, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn aggregate_statistical_and_ordered_set() {
+        let results = run_batch(&[
+            "CREATE TABLE stats_test (x FLOAT, y FLOAT)",
+            "INSERT INTO stats_test VALUES (1,2),(2,4),(3,5),(4,4),(5,5)",
+            "SELECT corr(y,x), covar_pop(y,x), covar_samp(y,x), regr_slope(y,x), \
+             regr_intercept(y,x), regr_r2(y,x), regr_count(y,x) FROM stats_test",
+            "SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY x) FROM stats_test",
+            "SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY x) FROM stats_test",
+            "CREATE TABLE mode_test (x INT)",
+            "INSERT INTO mode_test VALUES (1),(1),(2),(3)",
+            "SELECT mode() WITHIN GROUP (ORDER BY x) FROM mode_test",
+        ]);
+        let row = &results[2].rows[0];
+        let assert_float = |value: &ScalarValue, expected: f64| match value {
+            ScalarValue::Float(v) => assert!((v - expected).abs() < 1e-9),
+            other => panic!("expected float, got {:?}", other),
+        };
+        assert_float(&row[0], 0.7745966692414834);
+        assert_float(&row[1], 1.2);
+        assert_float(&row[2], 1.5);
+        assert_float(&row[3], 0.6);
+        assert_float(&row[4], 2.2);
+        assert_float(&row[5], 0.6);
+        assert_eq!(row[6], ScalarValue::Int(5));
+        match &results[3].rows[0][0] {
+            ScalarValue::Float(v) => assert!((*v - 3.0).abs() < 1e-9),
             other => panic!("expected float, got {:?}", other),
         }
+        match &results[4].rows[0][0] {
+            ScalarValue::Float(v) => assert!((*v - 3.0).abs() < 1e-9),
+            ScalarValue::Int(v) => assert_eq!(*v, 3),
+            other => panic!("expected float, got {:?}", other),
+        }
+        assert_eq!(results[7].rows[0][0], ScalarValue::Int(1));
     }
 
     // 1.3 Window functions

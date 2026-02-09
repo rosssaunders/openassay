@@ -575,6 +575,7 @@ pub enum Expr {
         args: Vec<Expr>,
         distinct: bool,
         order_by: Vec<OrderByExpr>,
+        within_group: Vec<OrderByExpr>,
         filter: Option<Box<Expr>>,
         over: Option<Box<WindowSpec>>,
     },

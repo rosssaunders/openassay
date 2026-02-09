@@ -374,6 +374,7 @@ fn collect_expr_relation_refs(expr: &Expr, ctes: &HashSet<String>, out: &mut Vec
         Expr::FunctionCall {
             args,
             order_by,
+            within_group,
             filter,
             ..
         } => {
@@ -381,6 +382,9 @@ fn collect_expr_relation_refs(expr: &Expr, ctes: &HashSet<String>, out: &mut Vec
                 collect_expr_relation_refs(arg, ctes, out);
             }
             for entry in order_by {
+                collect_expr_relation_refs(&entry.expr, ctes, out);
+            }
+            for entry in within_group {
                 collect_expr_relation_refs(&entry.expr, ctes, out);
             }
             if let Some(expr) = filter {

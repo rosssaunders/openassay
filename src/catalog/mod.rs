@@ -1661,6 +1661,7 @@ fn expr_references_sequence(expr: &Expr, sequence_name: &str) -> bool {
             name,
             args,
             order_by,
+            within_group,
             filter,
             ..
         } => {
@@ -1683,6 +1684,9 @@ fn expr_references_sequence(expr: &Expr, sequence_name: &str) -> bool {
             args.iter()
                 .any(|arg| expr_references_sequence(arg, sequence_name))
                 || order_by
+                    .iter()
+                    .any(|entry| expr_references_sequence(&entry.expr, sequence_name))
+                || within_group
                     .iter()
                     .any(|entry| expr_references_sequence(&entry.expr, sequence_name))
                 || filter

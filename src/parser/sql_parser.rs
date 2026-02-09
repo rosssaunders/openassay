@@ -1804,6 +1804,7 @@ impl Parser {
         let lateral = self.consume_keyword(Keyword::Lateral);
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
             if self.peek_keyword(Keyword::Select)
+                || self.peek_keyword(Keyword::Values)
                 || matches!(self.current_kind(), TokenKind::LParen)
             {
                 let query = self.parse_query()?;
@@ -2355,6 +2356,7 @@ impl Parser {
                             args,
                             distinct,
                             order_by,
+                            within_group: Vec::new(),
                             filter: None,
                             over: None,
                         });
@@ -2384,6 +2386,7 @@ impl Parser {
                             args,
                             distinct,
                             order_by,
+                            within_group: Vec::new(),
                             filter: None,
                             over: None,
                         });
@@ -2407,6 +2410,29 @@ impl Parser {
                     "expected ')' after function arguments",
                 )?;
             }
+            let within_group = if self.consume_keyword(Keyword::Within) {
+                self.expect_keyword(Keyword::Group, "expected GROUP after WITHIN")?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::LParen),
+                    "expected '(' after WITHIN GROUP",
+                )?;
+                self.expect_keyword(
+                    Keyword::Order,
+                    "expected ORDER after WITHIN GROUP (",
+                )?;
+                self.expect_keyword(
+                    Keyword::By,
+                    "expected BY after WITHIN GROUP ORDER",
+                )?;
+                let order_by = self.parse_order_by_list()?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after WITHIN GROUP ORDER BY",
+                )?;
+                order_by
+            } else {
+                Vec::new()
+            };
             let filter = if self.consume_keyword(Keyword::Filter) {
                 self.expect_token(
                     |k| matches!(k, TokenKind::LParen),
@@ -2432,6 +2458,7 @@ impl Parser {
                 args,
                 distinct,
                 order_by,
+                within_group,
                 filter,
                 over,
             });
