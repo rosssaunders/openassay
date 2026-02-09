@@ -592,6 +592,12 @@ pub enum Expr {
         op: BinaryOp,
         right: Box<Expr>,
     },
+    AnyAll {
+        left: Box<Expr>,
+        op: BinaryOp,
+        right: Box<Expr>,
+        quantifier: ComparisonQuantifier,
+    },
     Exists(Box<Query>),
     ScalarSubquery(Box<Query>),
     ArrayConstructor(Vec<Expr>),
@@ -636,6 +642,12 @@ pub enum Expr {
         when_then: Vec<(Expr, Expr)>,
         else_expr: Option<Box<Expr>>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComparisonQuantifier {
+    Any,
+    All,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

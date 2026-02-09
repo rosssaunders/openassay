@@ -22,7 +22,8 @@ use crate::catalog::{
 };
 use crate::parser::ast::{
     AlterSequenceAction, AlterSequenceStatement, AlterTableAction, AlterTableStatement,
-    AlterViewAction, AlterViewStatement, BinaryOp, ConflictTarget, CreateIndexStatement,
+    AlterViewAction, AlterViewStatement, BinaryOp, ComparisonQuantifier, ConflictTarget,
+    CreateIndexStatement,
     CreateSchemaStatement, CreateSequenceStatement, CreateTableStatement, CreateViewStatement,
     DeleteStatement, DropBehavior, DropIndexStatement, DropSchemaStatement, DropSequenceStatement,
     DropTableStatement, DropViewStatement, Expr, ForeignKeyAction, InsertSource, InsertStatement,
@@ -5147,6 +5148,7 @@ fn infer_expr_type_oid(
                 }
             }
         }
+        Expr::AnyAll { .. } => PG_BOOL_OID,
         Expr::Exists(_)
         | Expr::InList { .. }
         | Expr::InSubquery { .. }
@@ -8198,6 +8200,9 @@ fn contains_aggregate_expr(expr: &Expr) -> bool {
         Expr::Binary { left, right, .. } => {
             contains_aggregate_expr(left) || contains_aggregate_expr(right)
         }
+        Expr::AnyAll { left, right, .. } => {
+            contains_aggregate_expr(left) || contains_aggregate_expr(right)
+        }
         Expr::InList { expr, list, .. } => {
             contains_aggregate_expr(expr) || list.iter().any(contains_aggregate_expr)
         }
@@ -8270,6 +8275,9 @@ fn contains_window_expr(expr: &Expr) -> bool {
         Expr::Cast { expr, .. } => contains_window_expr(expr),
         Expr::Unary { expr, .. } => contains_window_expr(expr),
         Expr::Binary { left, right, .. } => contains_window_expr(left) || contains_window_expr(right),
+        Expr::AnyAll { left, right, .. } => {
+            contains_window_expr(left) || contains_window_expr(right)
+        }
         Expr::InList { expr, list, .. } => {
             contains_window_expr(expr) || list.iter().any(contains_window_expr)
         }
@@ -8541,6 +8549,16 @@ fn eval_group_expr<'a>(
             let lhs = eval_group_expr(left, group_rows, representative, params, grouping).await?;
             let rhs = eval_group_expr(right, group_rows, representative, params, grouping).await?;
             eval_binary(op.clone(), lhs, rhs)
+        }
+        Expr::AnyAll {
+            left,
+            op,
+            right,
+            quantifier,
+        } => {
+            let lhs = eval_group_expr(left, group_rows, representative, params, grouping).await?;
+            let rhs = eval_group_expr(right, group_rows, representative, params, grouping).await?;
+            eval_any_all(op.clone(), lhs, rhs, quantifier.clone())
         }
         Expr::Cast { expr, type_name } => {
             let value = eval_group_expr(expr, group_rows, representative, params, grouping).await?;
@@ -9624,6 +9642,16 @@ fn eval_expr<'a>(
             let rhs = eval_expr(right, scope, params).await?;
             eval_binary(op.clone(), lhs, rhs)
         }
+        Expr::AnyAll {
+            left,
+            op,
+            right,
+            quantifier,
+        } => {
+            let lhs = eval_expr(left, scope, params).await?;
+            let rhs = eval_expr(right, scope, params).await?;
+            eval_any_all(op.clone(), lhs, rhs, quantifier.clone())
+        }
         Expr::Exists(query) => {
             let result = execute_query_with_outer(query, params, Some(scope)).await?;
             Ok(ScalarValue::Bool(!result.rows.is_empty()))
@@ -9829,6 +9857,16 @@ fn eval_expr_with_window<'a>(
             let lhs = eval_expr_with_window(left, scope, row_idx, all_rows, params).await?;
             let rhs = eval_expr_with_window(right, scope, row_idx, all_rows, params).await?;
             eval_binary(op.clone(), lhs, rhs)
+        }
+        Expr::AnyAll {
+            left,
+            op,
+            right,
+            quantifier,
+        } => {
+            let lhs = eval_expr_with_window(left, scope, row_idx, all_rows, params).await?;
+            let rhs = eval_expr_with_window(right, scope, row_idx, all_rows, params).await?;
+            eval_any_all(op.clone(), lhs, rhs, quantifier.clone())
         }
         Expr::Exists(query) => {
             let result = execute_query_with_outer(query, params, Some(scope)).await?;
@@ -10858,6 +10896,90 @@ fn eval_comparison(
     )?)))
 }
 
+fn compare_any_all_predicate(
+    op: BinaryOp,
+    left: &ScalarValue,
+    right: &ScalarValue,
+) -> Result<Option<bool>, EngineError> {
+    if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
+        return Ok(None);
+    }
+    let ord = compare_values_for_predicate(left, right)?;
+    let result = match op {
+        BinaryOp::Eq => ord == Ordering::Equal,
+        BinaryOp::NotEq => ord != Ordering::Equal,
+        BinaryOp::Lt => ord == Ordering::Less,
+        BinaryOp::Lte => matches!(ord, Ordering::Less | Ordering::Equal),
+        BinaryOp::Gt => ord == Ordering::Greater,
+        BinaryOp::Gte => matches!(ord, Ordering::Greater | Ordering::Equal),
+        _ => {
+            return Err(EngineError {
+                message: "ANY/ALL expects comparison operator".to_string(),
+            })
+        }
+    };
+    Ok(Some(result))
+}
+
+fn eval_any_all(
+    op: BinaryOp,
+    left: ScalarValue,
+    right: ScalarValue,
+    quantifier: ComparisonQuantifier,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(right, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let items = match right {
+        ScalarValue::Array(values) => values,
+        _ => {
+            return Err(EngineError {
+                message: "ANY/ALL expects array argument".to_string(),
+            })
+        }
+    };
+    if items.is_empty() {
+        return Ok(ScalarValue::Bool(matches!(
+            quantifier,
+            ComparisonQuantifier::All
+        )));
+    }
+    let mut saw_null = false;
+    for item in items {
+        match compare_any_all_predicate(op.clone(), &left, &item)? {
+            Some(true) => {
+                if matches!(quantifier, ComparisonQuantifier::Any) {
+                    return Ok(ScalarValue::Bool(true));
+                }
+            }
+            Some(false) => {
+                if matches!(quantifier, ComparisonQuantifier::All) {
+                    return Ok(ScalarValue::Bool(false));
+                }
+            }
+            None => {
+                saw_null = true;
+            }
+        }
+    }
+    match quantifier {
+        ComparisonQuantifier::Any => {
+            if saw_null {
+                Ok(ScalarValue::Null)
+            } else {
+                Ok(ScalarValue::Bool(false))
+            }
+        }
+        ComparisonQuantifier::All => {
+            if saw_null {
+                Ok(ScalarValue::Null)
+            } else {
+                Ok(ScalarValue::Bool(true))
+            }
+        }
+    }
+}
+
 fn numeric_bin(
     left: ScalarValue,
     right: ScalarValue,
@@ -11667,33 +11789,285 @@ async fn eval_scalar_function(
                 Err(_) => Err(EngineError { message: format!("invalid input for to_number: {}", s) }),
             }
         },
+        "array_append" if args.len() == 2 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let mut values = match &args[0] {
+                ScalarValue::Array(values) => values.clone(),
+                _ => {
+                    return Err(EngineError {
+                        message: "array_append() expects array as first argument".to_string(),
+                    })
+                }
+            };
+            values.push(args[1].clone());
+            Ok(ScalarValue::Array(values))
+        }
+        "array_prepend" if args.len() == 2 => {
+            if matches!(args[1], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let mut values = match &args[1] {
+                ScalarValue::Array(values) => values.clone(),
+                _ => {
+                    return Err(EngineError {
+                        message: "array_prepend() expects array as second argument".to_string(),
+                    })
+                }
+            };
+            values.insert(0, args[0].clone());
+            Ok(ScalarValue::Array(values))
+        }
+        "array_cat" if args.len() == 2 => {
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
+            let mut left = match &args[0] {
+                ScalarValue::Array(values) => values.clone(),
+                _ => {
+                    return Err(EngineError {
+                        message: "array_cat() expects array arguments".to_string(),
+                    })
+                }
+            };
+            let right = match &args[1] {
+                ScalarValue::Array(values) => values.clone(),
+                _ => {
+                    return Err(EngineError {
+                        message: "array_cat() expects array arguments".to_string(),
+                    })
+                }
+            };
+            left.extend(right);
+            Ok(ScalarValue::Array(left))
+        }
+        "array_remove" if args.len() == 2 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let values = match &args[0] {
+                ScalarValue::Array(values) => values,
+                _ => {
+                    return Err(EngineError {
+                        message: "array_remove() expects array as first argument".to_string(),
+                    })
+                }
+            };
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                if !array_value_matches(&args[1], value)? {
+                    out.push(value.clone());
+                }
+            }
+            Ok(ScalarValue::Array(out))
+        }
+        "array_replace" if args.len() == 3 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let values = match &args[0] {
+                ScalarValue::Array(values) => values,
+                _ => {
+                    return Err(EngineError {
+                        message: "array_replace() expects array as first argument".to_string(),
+                    })
+                }
+            };
+            let mut out = Vec::with_capacity(values.len());
+            for value in values {
+                if array_value_matches(&args[1], value)? {
+                    out.push(args[2].clone());
+                } else {
+                    out.push(value.clone());
+                }
+            }
+            Ok(ScalarValue::Array(out))
+        }
+        "array_position" if args.len() == 2 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let values = match &args[0] {
+                ScalarValue::Array(values) => values,
+                _ => {
+                    return Err(EngineError {
+                        message: "array_position() expects array as first argument".to_string(),
+                    })
+                }
+            };
+            for (idx, value) in values.iter().enumerate() {
+                if array_value_matches(&args[1], value)? {
+                    return Ok(ScalarValue::Int((idx + 1) as i64));
+                }
+            }
+            Ok(ScalarValue::Null)
+        }
+        "array_positions" if args.len() == 2 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let values = match &args[0] {
+                ScalarValue::Array(values) => values,
+                _ => {
+                    return Err(EngineError {
+                        message: "array_positions() expects array as first argument".to_string(),
+                    })
+                }
+            };
+            let mut positions = Vec::new();
+            for (idx, value) in values.iter().enumerate() {
+                if array_value_matches(&args[1], value)? {
+                    positions.push(ScalarValue::Int((idx + 1) as i64));
+                }
+            }
+            Ok(ScalarValue::Array(positions))
+        }
+        "array_length" if args.len() == 2 => {
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
+            let values = match &args[0] {
+                ScalarValue::Array(values) => values,
+                _ => {
+                    return Err(EngineError {
+                        message: "array_length() expects array as first argument".to_string(),
+                    })
+                }
+            };
+            let dim = parse_i64_scalar(&args[1], "array_length() expects integer dimension")?;
+            if dim != 1 {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Int(values.len() as i64))
+        }
+        "array_dims" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let values = match &args[0] {
+                ScalarValue::Array(values) => values,
+                _ => {
+                    return Err(EngineError {
+                        message: "array_dims() expects array argument".to_string(),
+                    })
+                }
+            };
+            if values.is_empty() {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Text(format!("[1:{}]", values.len())))
+        }
+        "array_ndims" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            match &args[0] {
+                ScalarValue::Array(_) => Ok(ScalarValue::Int(1)),
+                _ => Err(EngineError {
+                    message: "array_ndims() expects array argument".to_string(),
+                }),
+            }
+        }
+        "array_fill" if args.len() == 2 => {
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
+            let lengths = match &args[1] {
+                ScalarValue::Array(values) => values,
+                _ => {
+                    return Err(EngineError {
+                        message: "array_fill() expects array of lengths".to_string(),
+                    })
+                }
+            };
+            if lengths.len() != 1 {
+                return Err(EngineError {
+                    message: "array_fill() currently supports one-dimensional arrays".to_string(),
+                });
+            }
+            let length = parse_i64_scalar(&lengths[0], "array_fill() expects integer length")?;
+            if length < 0 {
+                return Err(EngineError {
+                    message: "array_fill() length must be non-negative".to_string(),
+                });
+            }
+            let mut out = Vec::with_capacity(length as usize);
+            for _ in 0..length {
+                out.push(args[0].clone());
+            }
+            Ok(ScalarValue::Array(out))
+        }
+        "array_upper" if args.len() == 2 => {
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
+            let values = match &args[0] {
+                ScalarValue::Array(values) => values,
+                _ => {
+                    return Err(EngineError {
+                        message: "array_upper() expects array as first argument".to_string(),
+                    })
+                }
+            };
+            let dim = parse_i64_scalar(&args[1], "array_upper() expects integer dimension")?;
+            if dim != 1 || values.is_empty() {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Int(values.len() as i64))
+        }
+        "array_lower" if args.len() == 2 => {
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
+            let values = match &args[0] {
+                ScalarValue::Array(values) => values,
+                _ => {
+                    return Err(EngineError {
+                        message: "array_lower() expects array as first argument".to_string(),
+                    })
+                }
+            };
+            let dim = parse_i64_scalar(&args[1], "array_lower() expects integer dimension")?;
+            if dim != 1 || values.is_empty() {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Int(1))
+        }
+        "cardinality" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            match &args[0] {
+                ScalarValue::Array(values) => Ok(ScalarValue::Int(values.len() as i64)),
+                _ => Err(EngineError {
+                    message: "cardinality() expects array argument".to_string(),
+                }),
+            }
+        }
         "string_to_array" if args.len() == 2 || args.len() == 3 => {
             if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
             let input = args[0].render();
             let delimiter = if matches!(args[1], ScalarValue::Null) {
-                return Ok(ScalarValue::Text(format!("{{{}}}", input)));
+                return Ok(ScalarValue::Array(vec![ScalarValue::Text(input)]));
             } else { args[1].render() };
             let null_str = args.get(2).and_then(|a| if matches!(a, ScalarValue::Null) { None } else { Some(a.render()) });
-            let parts: Vec<String> = input.split(&delimiter).map(|p| {
-                if null_str.as_deref() == Some(p) { "NULL".to_string() } else { p.to_string() }
+            let parts = if delimiter.is_empty() {
+                input.chars().map(|c| c.to_string()).collect::<Vec<_>>()
+            } else {
+                input.split(&delimiter).map(|p| p.to_string()).collect::<Vec<_>>()
+            };
+            let values = parts.into_iter().map(|part| {
+                if null_str.as_deref() == Some(part.as_str()) {
+                    ScalarValue::Null
+                } else {
+                    ScalarValue::Text(part)
+                }
             }).collect();
-            Ok(ScalarValue::Text(format!("{{{}}}", parts.join(","))))
+            Ok(ScalarValue::Array(values))
         },
         "array_to_string" if args.len() == 2 || args.len() == 3 => {
             if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
-            let arr_text = args[0].render();
             let delimiter = args[1].render();
-            // Simple parse of {a,b,c} format
-            let inner = arr_text.trim_start_matches('{').trim_end_matches('}');
-            if inner.is_empty() { return Ok(ScalarValue::Text(String::new())); }
-            let parts: Vec<&str> = inner.split(',').collect();
             let null_replacement = args.get(2).map(|a| a.render());
-            let result: Vec<String> = parts.iter().filter_map(|p| {
-                let p = p.trim();
-                if p == "NULL" {
-                    null_replacement.clone()
-                } else {
-                    Some(p.to_string())
+            let values = match &args[0] {
+                ScalarValue::Array(values) => values.clone(),
+                ScalarValue::Text(text) => {
+                    let inner = text.trim_start_matches('{').trim_end_matches('}');
+                    if inner.is_empty() {
+                        return Ok(ScalarValue::Text(String::new()));
+                    }
+                    inner.split(',').map(|part| {
+                        let trimmed = part.trim();
+                        if trimmed == "NULL" {
+                            ScalarValue::Null
+                        } else {
+                            ScalarValue::Text(trimmed.to_string())
+                        }
+                    }).collect::<Vec<_>>()
+                }
+                _ => {
+                    return Err(EngineError {
+                        message: "array_to_string() expects array argument".to_string(),
+                    })
+                }
+            };
+            let result: Vec<String> = values.iter().filter_map(|value| {
+                match value {
+                    ScalarValue::Null => null_replacement.clone(),
+                    _ => Some(value.render()),
                 }
             }).collect();
             Ok(ScalarValue::Text(result.join(&delimiter)))
@@ -11701,6 +12075,14 @@ async fn eval_scalar_function(
         _ => Err(EngineError {
             message: format!("unsupported function call {}", fn_name),
         }),
+    }
+}
+
+fn array_value_matches(target: &ScalarValue, candidate: &ScalarValue) -> Result<bool, EngineError> {
+    match (target, candidate) {
+        (ScalarValue::Null, ScalarValue::Null) => Ok(true),
+        (ScalarValue::Null, _) | (_, ScalarValue::Null) => Ok(false),
+        _ => Ok(compare_values_for_predicate(target, candidate)? == Ordering::Equal),
     }
 }
 
@@ -19575,9 +19957,146 @@ mod tests {
     #[test]
     fn string_to_array_and_array_to_string() {
         let r = run("SELECT string_to_array('a,b,c', ',')");
-        assert_eq!(r.rows[0][0], ScalarValue::Text("{a,b,c}".to_string()));
+        assert_eq!(
+            r.rows[0][0],
+            ScalarValue::Array(vec![
+                ScalarValue::Text("a".to_string()),
+                ScalarValue::Text("b".to_string()),
+                ScalarValue::Text("c".to_string())
+            ])
+        );
         let r2 = run("SELECT array_to_string(string_to_array('a,b,c', ','), '|')");
         assert_eq!(r2.rows[0][0], ScalarValue::Text("a|b|c".to_string()));
+    }
+
+    #[test]
+    fn array_functions_basic() {
+        let results = run_batch(&[
+            "SELECT array_append(ARRAY[1,2], 3)",
+            "SELECT array_prepend(0, ARRAY[1,2])",
+            "SELECT array_cat(ARRAY[1], ARRAY[2,3])",
+            "SELECT array_remove(ARRAY[1,2,2,3], 2)",
+            "SELECT array_replace(ARRAY[1,2,2,3], 2, 9)",
+            "SELECT array_position(ARRAY[1,2,3], 2)",
+            "SELECT array_position(ARRAY[1,2,3], 5)",
+            "SELECT array_positions(ARRAY[1,2,2,3], 2)",
+            "SELECT array_positions(ARRAY[1,2,3], 9)",
+            "SELECT array_length(ARRAY[1,2,3], 1)",
+            "SELECT array_dims(ARRAY[1,2,3])",
+            "SELECT array_ndims(ARRAY[1,2,3])",
+            "SELECT array_fill(5, ARRAY[3])",
+            "SELECT array_upper(ARRAY[1,2,3], 1)",
+            "SELECT array_lower(ARRAY[1,2,3], 1)",
+            "SELECT cardinality(ARRAY[1,2,3])",
+            "SELECT array_to_string(ARRAY[1,NULL,3], ',', 'x')",
+            "SELECT string_to_array('a,NULL,b', ',', 'NULL')",
+            "SELECT array_dims(ARRAY[])",
+            "SELECT array_upper(ARRAY[], 1)",
+            "SELECT array_lower(ARRAY[], 1)",
+        ]);
+
+        assert_eq!(
+            results[0].rows[0][0],
+            ScalarValue::Array(vec![
+                ScalarValue::Int(1),
+                ScalarValue::Int(2),
+                ScalarValue::Int(3)
+            ])
+        );
+        assert_eq!(
+            results[1].rows[0][0],
+            ScalarValue::Array(vec![
+                ScalarValue::Int(0),
+                ScalarValue::Int(1),
+                ScalarValue::Int(2)
+            ])
+        );
+        assert_eq!(
+            results[2].rows[0][0],
+            ScalarValue::Array(vec![
+                ScalarValue::Int(1),
+                ScalarValue::Int(2),
+                ScalarValue::Int(3)
+            ])
+        );
+        assert_eq!(
+            results[3].rows[0][0],
+            ScalarValue::Array(vec![ScalarValue::Int(1), ScalarValue::Int(3)])
+        );
+        assert_eq!(
+            results[4].rows[0][0],
+            ScalarValue::Array(vec![
+                ScalarValue::Int(1),
+                ScalarValue::Int(9),
+                ScalarValue::Int(9),
+                ScalarValue::Int(3)
+            ])
+        );
+        assert_eq!(results[5].rows[0][0], ScalarValue::Int(2));
+        assert_eq!(results[6].rows[0][0], ScalarValue::Null);
+        assert_eq!(
+            results[7].rows[0][0],
+            ScalarValue::Array(vec![ScalarValue::Int(2), ScalarValue::Int(3)])
+        );
+        assert_eq!(results[8].rows[0][0], ScalarValue::Array(Vec::new()));
+        assert_eq!(results[9].rows[0][0], ScalarValue::Int(3));
+        assert_eq!(
+            results[10].rows[0][0],
+            ScalarValue::Text("[1:3]".to_string())
+        );
+        assert_eq!(results[11].rows[0][0], ScalarValue::Int(1));
+        assert_eq!(
+            results[12].rows[0][0],
+            ScalarValue::Array(vec![
+                ScalarValue::Int(5),
+                ScalarValue::Int(5),
+                ScalarValue::Int(5)
+            ])
+        );
+        assert_eq!(results[13].rows[0][0], ScalarValue::Int(3));
+        assert_eq!(results[14].rows[0][0], ScalarValue::Int(1));
+        assert_eq!(results[15].rows[0][0], ScalarValue::Int(3));
+        assert_eq!(
+            results[16].rows[0][0],
+            ScalarValue::Text("1,x,3".to_string())
+        );
+        assert_eq!(
+            results[17].rows[0][0],
+            ScalarValue::Array(vec![
+                ScalarValue::Text("a".to_string()),
+                ScalarValue::Null,
+                ScalarValue::Text("b".to_string())
+            ])
+        );
+        assert_eq!(results[18].rows[0][0], ScalarValue::Null);
+        assert_eq!(results[19].rows[0][0], ScalarValue::Null);
+        assert_eq!(results[20].rows[0][0], ScalarValue::Null);
+    }
+
+    #[test]
+    fn array_any_all_predicates() {
+        let results = run_batch(&[
+            "SELECT 2 = ANY(ARRAY[1,2,3])",
+            "SELECT 4 = ANY(ARRAY[1,2,3])",
+            "SELECT 4 = ALL(ARRAY[4,4])",
+            "SELECT 4 = ALL(ARRAY[4,5])",
+            "SELECT 2 < ALL(ARRAY[3,4])",
+            "SELECT 2 < ANY(ARRAY[1,3])",
+            "SELECT 2 <> ANY(ARRAY[2,2,2])",
+            "SELECT 2 <> ALL(ARRAY[3,4])",
+            "SELECT 1 = ANY(ARRAY[NULL])",
+            "SELECT 1 = ALL(ARRAY[NULL])",
+        ]);
+        assert_eq!(results[0].rows[0][0], ScalarValue::Bool(true));
+        assert_eq!(results[1].rows[0][0], ScalarValue::Bool(false));
+        assert_eq!(results[2].rows[0][0], ScalarValue::Bool(true));
+        assert_eq!(results[3].rows[0][0], ScalarValue::Bool(false));
+        assert_eq!(results[4].rows[0][0], ScalarValue::Bool(true));
+        assert_eq!(results[5].rows[0][0], ScalarValue::Bool(true));
+        assert_eq!(results[6].rows[0][0], ScalarValue::Bool(false));
+        assert_eq!(results[7].rows[0][0], ScalarValue::Bool(true));
+        assert_eq!(results[8].rows[0][0], ScalarValue::Null);
+        assert_eq!(results[9].rows[0][0], ScalarValue::Null);
     }
 
     // 1.6.9 Type conversion

@@ -2,7 +2,8 @@ use std::fmt;
 
 use crate::parser::ast::{
     AlterSequenceAction, AlterSequenceStatement, AlterTableAction, AlterTableStatement,
-    AlterViewAction, AlterViewStatement, Assignment, BinaryOp, ColumnDefinition, CommonTableExpr,
+    AlterViewAction, AlterViewStatement, Assignment, BinaryOp, ComparisonQuantifier,
+    ColumnDefinition, CommonTableExpr,
     ConflictTarget, CreateIndexStatement, CreateSchemaStatement, CreateSequenceStatement,
     CreateTableStatement, CreateViewStatement, DeleteStatement, DropBehavior, DropIndexStatement,
     DropSchemaStatement, DropSequenceStatement, DropTableStatement, DropViewStatement, Expr,
@@ -2163,6 +2164,40 @@ impl Parser {
             }
 
             self.advance();
+            if matches!(
+                op,
+                BinaryOp::Eq
+                    | BinaryOp::NotEq
+                    | BinaryOp::Lt
+                    | BinaryOp::Lte
+                    | BinaryOp::Gt
+                    | BinaryOp::Gte
+            ) && (self.peek_keyword(Keyword::Any) || self.peek_keyword(Keyword::All))
+            {
+                let quantifier = if self.consume_keyword(Keyword::Any) {
+                    ComparisonQuantifier::Any
+                } else {
+                    self.expect_keyword(Keyword::All, "expected ANY or ALL")?;
+                    ComparisonQuantifier::All
+                };
+                self.expect_token(
+                    |k| matches!(k, TokenKind::LParen),
+                    "expected '(' after ANY/ALL",
+                )?;
+                let rhs = self.parse_expr()?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after ANY/ALL expression",
+                )?;
+                lhs = Expr::AnyAll {
+                    left: Box::new(lhs),
+                    op,
+                    right: Box::new(rhs),
+                    quantifier,
+                };
+                continue;
+            }
+
             let rhs = self.parse_expr_bp(r_bp)?;
             lhs = Expr::Binary {
                 left: Box::new(lhs),
