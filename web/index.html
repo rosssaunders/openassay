@@ -70,6 +70,39 @@
         border-color: var(--accent);
       }
 
+      .toolbar button.active {
+        border-color: var(--accent);
+        background: #1a2e1a;
+        color: var(--accent);
+      }
+
+      .examples {
+        display: flex;
+        gap: 0.5rem;
+      }
+
+      .examples button {
+        border: 1px solid var(--panel-border);
+        border-radius: 6px;
+        background: #111827;
+        color: var(--muted);
+        cursor: pointer;
+        padding: 0.35rem 0.65rem;
+        font-size: 0.8rem;
+        font-family: inherit;
+      }
+
+      .examples button:hover {
+        border-color: var(--accent);
+        color: var(--text);
+      }
+
+      .examples button.active {
+        border-color: var(--accent);
+        background: #1a2e1a;
+        color: var(--accent);
+      }
+
       .status {
         color: var(--muted);
         font-size: 0.85rem;
@@ -132,6 +165,12 @@
         <button id="import-snapshot" type="button">Import Snapshot</button>
         <button id="reset-state" type="button">Reset DB</button>
         <span class="status" id="status">Monaco: loading</span>
+      </div>
+      <div class="examples">
+        <span style="color: var(--muted); font-size: 0.8rem; align-self: center;">Examples:</span>
+        <button id="ex-deribit" class="active" type="button">Deribit HTTP</button>
+        <button id="ex-websocket" type="button">WebSocket</button>
+        <button id="ex-window" type="button">Window Functions</button>
       </div>
       <div id="editor"></div>
       <section class="output">
@@ -524,28 +563,109 @@
         }
       }, 8000);
 
+      const examples = {
+        "ex-deribit": [
+          "-- Fetch cryptocurrency data from Deribit via HTTP",
+          "WITH payload AS (",
+          "  SELECT http_get('https://test.deribit.com/api/v2/public/get_currencies') AS body",
+          "), currencies AS (",
+          "  SELECT item",
+          "  FROM payload",
+          "    , json_array_elements(json_extract_path(body, 'result')) AS src(item)",
+          ")",
+          "SELECT",
+          "  json_extract_path_text(item, 'currency') AS currency,",
+          "  json_extract_path_text(item, 'coin_type') AS coin_type,",
+          "  json_extract_path_text(item, 'min_confirmations') AS min_confirmations,",
+          "  json_extract_path_text(item, 'fee_precision') AS fee_precision,",
+          "  json_extract_path_text(item, 'withdrawal_fee') AS withdrawal_fee",
+          "FROM currencies",
+          "ORDER BY currency;",
+        ].join("\n"),
+        "ex-websocket": [
+          "-- WebSocket Extension Demo",
+          "-- Step 1: Load the extension",
+          "CREATE EXTENSION ws;",
+          "",
+          "-- Step 2: Create a table to store incoming trades",
+          "CREATE TABLE trades (",
+          "  id SERIAL PRIMARY KEY,",
+          "  symbol TEXT,",
+          "  price TEXT,",
+          "  qty TEXT,",
+          "  received_at TIMESTAMP DEFAULT now()",
+          ");",
+          "",
+          "-- Step 3: Create a callback function to process messages",
+          "CREATE FUNCTION handle_trade(conn_id INTEGER, msg JSONB)",
+          "RETURNS VOID AS $$",
+          "  INSERT INTO trades (symbol, price, qty)",
+          "  SELECT",
+          "    msg->>'s',",
+          "    msg->>'p',",
+          "    msg->>'q'",
+          "$$;",
+          "",
+          "-- Step 4: Open a WebSocket connection",
+          "-- (connects to Binance trade stream for BTC/USDT)",
+          "SELECT ws.connect(",
+          "  'wss://stream.binance.com:9443/ws/btcusdt@trade',",
+          "  on_message := 'handle_trade'",
+          ") AS connection_id;",
+          "",
+          "-- Step 5: Check open connections",
+          "SELECT * FROM ws.connections;",
+          "",
+          "-- Step 6: Poll for buffered messages",
+          "-- (run this after a few seconds to see incoming data)",
+          "-- SELECT * FROM ws.messages(1);",
+        ].join("\n"),
+        "ex-window": [
+          "-- Window Functions Demo",
+          "CREATE TABLE sales (",
+          "  region TEXT,",
+          "  product TEXT,",
+          "  amount INTEGER",
+          ");",
+          "",
+          "INSERT INTO sales VALUES",
+          "  ('North', 'Widget', 500),",
+          "  ('North', 'Gadget', 300),",
+          "  ('North', 'Widget', 200),",
+          "  ('South', 'Widget', 400),",
+          "  ('South', 'Gadget', 600),",
+          "  ('South', 'Widget', 150),",
+          "  ('East',  'Widget', 350),",
+          "  ('East',  'Gadget', 450);",
+          "",
+          "SELECT",
+          "  region,",
+          "  product,",
+          "  amount,",
+          "  SUM(amount) OVER (PARTITION BY region) AS region_total,",
+          "  RANK() OVER (PARTITION BY region ORDER BY amount DESC) AS rank_in_region,",
+          "  ROW_NUMBER() OVER (ORDER BY amount DESC) AS overall_rank,",
+          "  LAG(amount) OVER (ORDER BY amount DESC) AS prev_amount,",
+          "  ROUND(100.0 * amount / SUM(amount) OVER (), 1) AS pct_of_total",
+          "FROM sales",
+          "ORDER BY region, amount DESC;",
+        ].join("\n"),
+      };
+
+      function setExample(id) {
+        if (!editor || !examples[id]) return;
+        editor.setValue(examples[id]);
+        document.querySelectorAll(".examples button").forEach(function (btn) {
+          btn.classList.toggle("active", btn.id === id);
+        });
+      }
+
       require(["vs/editor/editor.main"], function () {
         monacoReady = true;
         refreshStatus();
 
         editor = monaco.editor.create(document.getElementById("editor"), {
-          value: [
-            "WITH payload AS (",
-            "  SELECT http_get('https://test.deribit.com/api/v2/public/get_currencies') AS body",
-            "), currencies AS (",
-            "  SELECT item",
-            "  FROM payload",
-            "    , json_array_elements(json_extract_path(body, 'result')) AS src(item)",
-            ")",
-            "SELECT",
-            "  json_extract_path_text(item, 'currency') AS currency,",
-            "  json_extract_path_text(item, 'coin_type') AS coin_type,",
-            "  json_extract_path_text(item, 'min_confirmations') AS min_confirmations,",
-            "  json_extract_path_text(item, 'fee_precision') AS fee_precision,",
-            "  json_extract_path_text(item, 'withdrawal_fee') AS withdrawal_fee",
-            "FROM currencies",
-            "ORDER BY currency;",
-          ].join("\n"),
+          value: examples["ex-deribit"],
           language: "sql",
           theme: "vs-dark",
           minimap: { enabled: false },
@@ -572,6 +692,9 @@
         exportBtn.addEventListener("click", exportSnapshot);
         importBtn.addEventListener("click", importSnapshot);
         resetBtn.addEventListener("click", resetState);
+        document.getElementById("ex-deribit").addEventListener("click", function () { setExample("ex-deribit"); });
+        document.getElementById("ex-websocket").addEventListener("click", function () { setExample("ex-websocket"); });
+        document.getElementById("ex-window").addEventListener("click", function () { setExample("ex-window"); });
       });
     </script>
   </body>
