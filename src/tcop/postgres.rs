@@ -2828,9 +2828,33 @@ fn split_simple_query_statements(query: &str) -> Vec<String> {
     let mut i = 0usize;
     let mut in_single = false;
     let mut in_double = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
 
     while i < chars.len() {
         let ch = chars[i];
+
+        // Handle line comments (-- ...)
+        if in_line_comment {
+            if ch == '\n' {
+                in_line_comment = false;
+                current.push(' ');
+            }
+            i += 1;
+            continue;
+        }
+
+        // Handle block comments (/* ... */)
+        if in_block_comment {
+            if ch == '*' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                in_block_comment = false;
+                current.push(' ');
+                i += 2;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
 
         if in_single {
             current.push(ch);
@@ -2857,6 +2881,18 @@ fn split_simple_query_statements(query: &str) -> Vec<String> {
                 }
             }
             i += 1;
+            continue;
+        }
+
+        // Detect comment starts
+        if ch == '-' && i + 1 < chars.len() && chars[i + 1] == '-' {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+        if ch == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            in_block_comment = true;
+            i += 2;
             continue;
         }
 
