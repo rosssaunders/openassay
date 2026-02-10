@@ -2,6 +2,7 @@ pub mod access;
 pub mod browser;
 pub mod commands;
 pub mod catalog;
+pub mod executor;
 pub mod parser;
 pub mod protocol;
 pub mod security;
