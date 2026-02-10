@@ -1,10 +1,7 @@
 use crate::tcop::engine::EngineStateSnapshot;
 
-pub mod snapshot;
-pub mod visibility;
-
-use snapshot::TransactionSnapshots;
-use visibility::VisibilityMode;
+use super::snapshot::TransactionSnapshots;
+use super::visibility::VisibilityMode;
 
 #[derive(Debug, Clone)]
 struct SavepointFrame {

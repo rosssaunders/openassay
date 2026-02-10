@@ -22,8 +22,8 @@ use crate::tcop::engine::{
     copy_table_binary_snapshot, copy_table_column_oids, execute_planned_query, plan_statement,
     restore_state, snapshot_state, type_oid_size,
 };
-use crate::txn::TransactionContext;
-use crate::txn::visibility::VisibilityMode;
+use crate::access::transam::visibility::VisibilityMode;
+use crate::access::transam::xact::TransactionContext;
 
 pub type PgType = u32;
 
