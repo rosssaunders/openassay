@@ -1578,7 +1578,7 @@ fn numeric_div(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Eng
     }
 }
 
-fn numeric_mod(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, EngineError> {
+pub(crate) fn numeric_mod(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, EngineError> {
     if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -2637,7 +2637,7 @@ fn array_value_matches(target: &ScalarValue, candidate: &ScalarValue) -> Result<
     }
 }
 
-fn coerce_to_f64(v: &ScalarValue, context: &str) -> Result<f64, EngineError> {
+pub(crate) fn coerce_to_f64(v: &ScalarValue, context: &str) -> Result<f64, EngineError> {
     match v {
         ScalarValue::Int(i) => Ok(*i as f64),
         ScalarValue::Float(f) => Ok(*f),
@@ -2645,7 +2645,7 @@ fn coerce_to_f64(v: &ScalarValue, context: &str) -> Result<f64, EngineError> {
     }
 }
 
-fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
+pub(crate) fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
     a = a.abs();
     b = b.abs();
     while b != 0 {
@@ -2656,7 +2656,7 @@ fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
     a
 }
 
-fn initcap_string(s: &str) -> String {
+pub(crate) fn initcap_string(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut capitalize_next = true;
     for c in s.chars() {
@@ -2779,7 +2779,7 @@ fn md5_digest(input: &[u8]) -> [u8; 16] {
     out
 }
 
-fn encode_bytes(input: &[u8], format: &str) -> Result<String, EngineError> {
+pub(crate) fn encode_bytes(input: &[u8], format: &str) -> Result<String, EngineError> {
     let format = format.trim().to_ascii_lowercase();
     match format.as_str() {
         "hex" => Ok(input.iter().map(|b| format!("{:02x}", b)).collect()),
@@ -2794,7 +2794,7 @@ fn encode_bytes(input: &[u8], format: &str) -> Result<String, EngineError> {
     }
 }
 
-fn decode_bytes(input: &str, format: &str) -> Result<Vec<u8>, EngineError> {
+pub(crate) fn decode_bytes(input: &str, format: &str) -> Result<Vec<u8>, EngineError> {
     let format = format.trim().to_ascii_lowercase();
     match format.as_str() {
         "hex" => decode_hex_bytes(input),
@@ -3071,7 +3071,7 @@ pub(crate) fn scalar_to_json_value(value: &ScalarValue) -> Result<JsonValue, Eng
     }
 }
 
-fn json_build_object_value(args: &[ScalarValue]) -> Result<JsonValue, EngineError> {
+pub(crate) fn json_build_object_value(args: &[ScalarValue]) -> Result<JsonValue, EngineError> {
     let mut object = JsonMap::new();
     for idx in (0..args.len()).step_by(2) {
         let key = match &args[idx] {
@@ -3088,7 +3088,7 @@ fn json_build_object_value(args: &[ScalarValue]) -> Result<JsonValue, EngineErro
     Ok(JsonValue::Object(object))
 }
 
-fn json_build_array_value(args: &[ScalarValue]) -> Result<JsonValue, EngineError> {
+pub(crate) fn json_build_array_value(args: &[ScalarValue]) -> Result<JsonValue, EngineError> {
     let mut items = Vec::with_capacity(args.len());
     for arg in args {
         items.push(scalar_to_json_value(arg)?);
@@ -3134,7 +3134,7 @@ fn maybe_pretty_json(value: &JsonValue, pretty: bool) -> Result<String, EngineEr
     }
 }
 
-fn eval_row_to_json(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_row_to_json(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
     if matches!(args[0], ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -3161,7 +3161,7 @@ fn eval_row_to_json(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, 
     Ok(ScalarValue::Text(maybe_pretty_json(&object, pretty)?))
 }
 
-fn eval_array_to_json(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_array_to_json(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
     if matches!(args[0], ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -3235,7 +3235,7 @@ fn parse_json_object_pairs_from_array(
     Ok(pairs)
 }
 
-fn eval_json_object(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_json_object(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
     if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
         return Ok(ScalarValue::Null);
     }
@@ -3355,7 +3355,7 @@ pub(crate) fn json_value_text_output(value: &JsonValue) -> ScalarValue {
     }
 }
 
-fn eval_json_extract_path(
+pub(crate) fn eval_json_extract_path(
     args: &[ScalarValue],
     text_mode: bool,
     fn_name: &str,
@@ -3377,7 +3377,7 @@ fn eval_json_extract_path(
     }
 }
 
-fn eval_json_array_length(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_json_array_length(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, EngineError> {
     if matches!(value, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -3390,7 +3390,7 @@ fn eval_json_array_length(value: &ScalarValue, fn_name: &str) -> Result<ScalarVa
     Ok(ScalarValue::Int(items.len() as i64))
 }
 
-fn eval_json_typeof(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_json_typeof(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, EngineError> {
     if matches!(value, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -3428,7 +3428,7 @@ fn strip_null_object_fields(value: &mut JsonValue) {
     }
 }
 
-fn eval_json_strip_nulls(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_json_strip_nulls(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, EngineError> {
     if matches!(value, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -3437,7 +3437,7 @@ fn eval_json_strip_nulls(value: &ScalarValue, fn_name: &str) -> Result<ScalarVal
     Ok(ScalarValue::Text(parsed.to_string()))
 }
 
-fn eval_json_pretty(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_json_pretty(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, EngineError> {
     if matches!(value, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -3448,7 +3448,7 @@ fn eval_json_pretty(value: &ScalarValue, fn_name: &str) -> Result<ScalarValue, E
     Ok(ScalarValue::Text(pretty))
 }
 
-fn eval_jsonb_exists(target: &ScalarValue, key: &ScalarValue) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_jsonb_exists(target: &ScalarValue, key: &ScalarValue) -> Result<ScalarValue, EngineError> {
     if matches!(target, ScalarValue::Null) || matches!(key, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -3457,7 +3457,7 @@ fn eval_jsonb_exists(target: &ScalarValue, key: &ScalarValue) -> Result<ScalarVa
     Ok(ScalarValue::Bool(json_has_key(&parsed, &key)))
 }
 
-fn eval_jsonb_exists_any_all(
+pub(crate) fn eval_jsonb_exists_any_all(
     target: &ScalarValue,
     keys: &ScalarValue,
     any_mode: bool,
@@ -3680,7 +3680,7 @@ fn json_insert_path(
     }
 }
 
-fn eval_jsonb_set(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_jsonb_set(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     if args[..3].iter().any(|arg| matches!(arg, ScalarValue::Null)) {
         return Ok(ScalarValue::Null);
     }
@@ -3709,7 +3709,7 @@ fn eval_jsonb_set(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     Ok(ScalarValue::Text(target.to_string()))
 }
 
-fn eval_jsonb_insert(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_jsonb_insert(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     if args[..3].iter().any(|arg| matches!(arg, ScalarValue::Null)) {
         return Ok(ScalarValue::Null);
     }
@@ -3738,7 +3738,7 @@ fn eval_jsonb_insert(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     Ok(ScalarValue::Text(target.to_string()))
 }
 
-fn eval_jsonb_set_lax(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_jsonb_set_lax(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     if matches!(args[0], ScalarValue::Null) || matches!(args[1], ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -4644,7 +4644,7 @@ pub(crate) fn jsonb_path_query_values(
     }
 }
 
-fn eval_jsonb_path_exists(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_jsonb_path_exists(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
     if args.len() < 2 {
         return Err(EngineError {
             message: format!("{fn_name}() expects at least two arguments"),
@@ -4657,7 +4657,7 @@ fn eval_jsonb_path_exists(args: &[ScalarValue], fn_name: &str) -> Result<ScalarV
     Ok(ScalarValue::Bool(!values.is_empty()))
 }
 
-fn eval_jsonb_path_match(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_jsonb_path_match(args: &[ScalarValue], fn_name: &str) -> Result<ScalarValue, EngineError> {
     if args.len() < 2 {
         return Err(EngineError {
             message: format!("{fn_name}() expects at least two arguments"),
@@ -4678,7 +4678,7 @@ fn eval_jsonb_path_match(args: &[ScalarValue], fn_name: &str) -> Result<ScalarVa
     }
 }
 
-fn eval_jsonb_path_query_array(
+pub(crate) fn eval_jsonb_path_query_array(
     args: &[ScalarValue],
     fn_name: &str,
 ) -> Result<ScalarValue, EngineError> {
@@ -4694,7 +4694,7 @@ fn eval_jsonb_path_query_array(
     Ok(ScalarValue::Text(JsonValue::Array(values).to_string()))
 }
 
-fn eval_jsonb_path_query_first(
+pub(crate) fn eval_jsonb_path_query_first(
     args: &[ScalarValue],
     fn_name: &str,
 ) -> Result<ScalarValue, EngineError> {
@@ -4714,7 +4714,7 @@ fn eval_jsonb_path_query_first(
     }
 }
 
-fn eval_json_get_operator(
+pub(crate) fn eval_json_get_operator(
     left: ScalarValue,
     right: ScalarValue,
     text_mode: bool,
@@ -4734,7 +4734,7 @@ fn eval_json_get_operator(
     }
 }
 
-fn eval_json_path_operator(
+pub(crate) fn eval_json_path_operator(
     left: ScalarValue,
     right: ScalarValue,
     text_mode: bool,
@@ -4780,7 +4780,7 @@ fn json_concat(lhs: JsonValue, rhs: JsonValue) -> JsonValue {
     }
 }
 
-fn eval_json_concat_operator(
+pub(crate) fn eval_json_concat_operator(
     left: ScalarValue,
     right: ScalarValue,
 ) -> Result<ScalarValue, EngineError> {
@@ -4821,7 +4821,7 @@ fn json_contains(lhs: &JsonValue, rhs: &JsonValue) -> bool {
     }
 }
 
-fn eval_json_contains_operator(
+pub(crate) fn eval_json_contains_operator(
     left: ScalarValue,
     right: ScalarValue,
 ) -> Result<ScalarValue, EngineError> {
@@ -4833,7 +4833,7 @@ fn eval_json_contains_operator(
     Ok(ScalarValue::Bool(json_contains(&lhs, &rhs)))
 }
 
-fn eval_json_contained_by_operator(
+pub(crate) fn eval_json_contained_by_operator(
     left: ScalarValue,
     right: ScalarValue,
 ) -> Result<ScalarValue, EngineError> {
@@ -4898,7 +4898,7 @@ fn json_remove_path(target: &mut JsonValue, path: &[String]) -> bool {
     }
 }
 
-fn eval_json_delete_operator(
+pub(crate) fn eval_json_delete_operator(
     left: ScalarValue,
     right: ScalarValue,
 ) -> Result<ScalarValue, EngineError> {
@@ -4940,7 +4940,7 @@ fn eval_json_delete_operator(
     Ok(ScalarValue::Text(target.to_string()))
 }
 
-fn eval_json_delete_path_operator(
+pub(crate) fn eval_json_delete_path_operator(
     left: ScalarValue,
     right: ScalarValue,
 ) -> Result<ScalarValue, EngineError> {
@@ -4965,7 +4965,7 @@ fn json_has_key(target: &JsonValue, key: &str) -> bool {
     }
 }
 
-fn eval_json_has_key_operator(
+pub(crate) fn eval_json_has_key_operator(
     left: ScalarValue,
     right: ScalarValue,
 ) -> Result<ScalarValue, EngineError> {
@@ -4990,7 +4990,7 @@ fn parse_json_key_list_operand(
     Ok(keys)
 }
 
-fn eval_json_has_any_all_operator(
+pub(crate) fn eval_json_has_any_all_operator(
     left: ScalarValue,
     right: ScalarValue,
     any_mode: bool,
@@ -5078,12 +5078,12 @@ async fn eval_http_get_builtin(url_value: &ScalarValue) -> Result<ScalarValue, E
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum NumericOperand {
+pub(crate) enum NumericOperand {
     Int(i64),
     Float(f64),
 }
 
-fn parse_numeric_operand(value: &ScalarValue) -> Result<NumericOperand, EngineError> {
+pub(crate) fn parse_numeric_operand(value: &ScalarValue) -> Result<NumericOperand, EngineError> {
     match value {
         ScalarValue::Int(v) => Ok(NumericOperand::Int(*v)),
         ScalarValue::Float(v) => Ok(NumericOperand::Float(*v)),
@@ -5187,13 +5187,13 @@ fn parse_nullable_bool(value: &ScalarValue, message: &str) -> Result<Option<bool
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrimMode {
+pub(crate) enum TrimMode {
     Left,
     Right,
     Both,
 }
 
-fn substring_chars(input: &str, start: i64, length: Option<i64>) -> Result<String, EngineError> {
+pub(crate) fn substring_chars(input: &str, start: i64, length: Option<i64>) -> Result<String, EngineError> {
     if let Some(length) = length
         && length < 0
     {
@@ -5217,7 +5217,7 @@ fn substring_chars(input: &str, start: i64, length: Option<i64>) -> Result<Strin
     Ok(chars[start_idx..end_idx].iter().collect())
 }
 
-fn left_chars(input: &str, count: i64) -> String {
+pub(crate) fn left_chars(input: &str, count: i64) -> String {
     let chars = input.chars().collect::<Vec<_>>();
     if count >= 0 {
         return chars[..(count as usize).min(chars.len())].iter().collect();
@@ -5226,7 +5226,7 @@ fn left_chars(input: &str, count: i64) -> String {
     chars[..keep].iter().collect()
 }
 
-fn right_chars(input: &str, count: i64) -> String {
+pub(crate) fn right_chars(input: &str, count: i64) -> String {
     let chars = input.chars().collect::<Vec<_>>();
     if count >= 0 {
         let keep = (count as usize).min(chars.len());
@@ -5237,7 +5237,7 @@ fn right_chars(input: &str, count: i64) -> String {
     chars[start..].iter().collect()
 }
 
-fn find_substring_position(haystack: &str, needle: &str) -> i64 {
+pub(crate) fn find_substring_position(haystack: &str, needle: &str) -> i64 {
     if needle.is_empty() {
         return 1;
     }
@@ -5247,7 +5247,7 @@ fn find_substring_position(haystack: &str, needle: &str) -> i64 {
     haystack[..byte_idx].chars().count() as i64 + 1
 }
 
-fn overlay_text(
+pub(crate) fn overlay_text(
     input: &str,
     replacement: &str,
     start: i64,
@@ -5270,11 +5270,11 @@ fn overlay_text(
     Ok(chars.iter().collect())
 }
 
-fn ascii_code(input: &str) -> i64 {
+pub(crate) fn ascii_code(input: &str) -> i64 {
     input.chars().next().map(|c| c as i64).unwrap_or(0)
 }
 
-fn chr_from_code(code: i64) -> Result<String, EngineError> {
+pub(crate) fn chr_from_code(code: i64) -> Result<String, EngineError> {
     if !(0..=255).contains(&code) {
         return Err(EngineError {
             message: "chr() expects value between 0 and 255".to_string(),
@@ -5310,7 +5310,7 @@ fn count_nonnulls(args: &[ScalarValue]) -> usize {
     args.len() - count_nulls(args)
 }
 
-fn trim_text(input: &str, trim_chars: Option<&str>, mode: TrimMode) -> String {
+pub(crate) fn trim_text(input: &str, trim_chars: Option<&str>, mode: TrimMode) -> String {
     match trim_chars {
         None => match mode {
             TrimMode::Left => input.trim_start().to_string(),
@@ -5387,7 +5387,7 @@ pub(crate) struct DateTimeValue {
     pub(crate) second: u32,
 }
 
-fn eval_date_function(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_date_function(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
     if matches!(value, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -5395,7 +5395,7 @@ fn eval_date_function(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
     Ok(ScalarValue::Text(format_date(datetime.date)))
 }
 
-fn eval_timestamp_function(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_timestamp_function(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
     if matches!(value, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -5403,7 +5403,7 @@ fn eval_timestamp_function(value: &ScalarValue) -> Result<ScalarValue, EngineErr
     Ok(ScalarValue::Text(format_timestamp(datetime)))
 }
 
-fn eval_extract_or_date_part(
+pub(crate) fn eval_extract_or_date_part(
     field: &ScalarValue,
     source: &ScalarValue,
 ) -> Result<ScalarValue, EngineError> {
@@ -5431,7 +5431,7 @@ fn eval_extract_or_date_part(
     Ok(value)
 }
 
-fn eval_date_trunc(field: &ScalarValue, source: &ScalarValue) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_date_trunc(field: &ScalarValue, source: &ScalarValue) -> Result<ScalarValue, EngineError> {
     if matches!(field, ScalarValue::Null) || matches!(source, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -5473,7 +5473,7 @@ fn eval_date_trunc(field: &ScalarValue, source: &ScalarValue) -> Result<ScalarVa
     Ok(ScalarValue::Text(format_timestamp(datetime)))
 }
 
-fn eval_date_add_sub(
+pub(crate) fn eval_date_add_sub(
     date_value: &ScalarValue,
     day_delta: &ScalarValue,
     add: bool,
@@ -5490,12 +5490,12 @@ fn eval_date_add_sub(
     Ok(ScalarValue::Text(format_date(shifted)))
 }
 
-fn current_timestamp_string() -> Result<String, EngineError> {
+pub(crate) fn current_timestamp_string() -> Result<String, EngineError> {
     let dt = current_utc_datetime()?;
     Ok(format_timestamp(dt))
 }
 
-fn current_date_string() -> Result<String, EngineError> {
+pub(crate) fn current_date_string() -> Result<String, EngineError> {
     let dt = current_utc_datetime()?;
     Ok(format_date(dt.date))
 }
@@ -5508,13 +5508,13 @@ struct IntervalValue {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum JustifyMode {
+pub(crate) enum JustifyMode {
     Hours,
     Days,
     Full,
 }
 
-fn eval_age(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_age(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
         return Ok(ScalarValue::Null);
     }
@@ -5538,7 +5538,7 @@ fn eval_age(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     Ok(ScalarValue::Text(format_interval(interval)))
 }
 
-fn eval_to_timestamp(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_to_timestamp(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
     if matches!(value, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
@@ -5547,7 +5547,7 @@ fn eval_to_timestamp(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
     Ok(ScalarValue::Text(format_timestamp(dt)))
 }
 
-fn eval_to_timestamp_with_format(
+pub(crate) fn eval_to_timestamp_with_format(
     text: &ScalarValue,
     format: &ScalarValue,
 ) -> Result<ScalarValue, EngineError> {
@@ -5558,7 +5558,7 @@ fn eval_to_timestamp_with_format(
     Ok(ScalarValue::Text(format_timestamp(dt)))
 }
 
-fn eval_to_date_with_format(
+pub(crate) fn eval_to_date_with_format(
     text: &ScalarValue,
     format: &ScalarValue,
 ) -> Result<ScalarValue, EngineError> {
@@ -5569,7 +5569,7 @@ fn eval_to_date_with_format(
     Ok(ScalarValue::Text(format_date(date)))
 }
 
-fn eval_make_interval(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_make_interval(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
         return Ok(ScalarValue::Null);
     }
@@ -5589,7 +5589,7 @@ fn eval_make_interval(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> 
     Ok(ScalarValue::Text(format_interval(interval)))
 }
 
-fn eval_justify_interval(
+pub(crate) fn eval_justify_interval(
     value: &ScalarValue,
     mode: JustifyMode,
 ) -> Result<ScalarValue, EngineError> {
@@ -5610,7 +5610,7 @@ fn eval_justify_interval(
     Ok(ScalarValue::Text(format_interval(interval)))
 }
 
-fn eval_isfinite(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_isfinite(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
     if matches!(value, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
