@@ -13,9 +13,13 @@ use crate::parser::ast::{
 };
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{
-    EngineError, QueryResult, WsConnection, drain_native_ws_messages, execute_planned_query,
-    native_ws_handles, plan_statement, with_ext_read, with_ext_write, ws_native,
+    EngineError, QueryResult, WsConnection, execute_planned_query,
+    plan_statement, with_ext_read, with_ext_write,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::tcop::engine::{drain_native_ws_messages, native_ws_handles, ws_native};
+#[cfg(target_arch = "wasm32")]
+use crate::tcop::engine::{drain_wasm_ws_messages, sync_wasm_ws_state, ws_wasm};
 use crate::utils::adt::datetime::{
     datetime_to_epoch_seconds, days_from_civil, format_date, format_timestamp,
     parse_datetime_scalar, parse_temporal_operand, temporal_add_days,

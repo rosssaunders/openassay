@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>postrust SQL</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1.1/hosted/office.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      padding: 12px;
+      background: #f5f5f5;
+      color: #333;
+      font-size: 13px;
+    }
+    h1 {
+      font-size: 16px;
+      margin-bottom: 8px;
+      color: #0078d4;
+    }
+    .section { margin-bottom: 12px; }
+    .section label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 4px;
+      font-size: 12px;
+      color: #666;
+    }
+    select, input, button {
+      width: 100%;
+      padding: 6px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    select { background: white; }
+    button {
+      background: #0078d4;
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-weight: 600;
+      padding: 8px;
+      margin-top: 4px;
+    }
+    button:hover { background: #106ebe; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    button.secondary {
+      background: #e0e0e0;
+      color: #333;
+    }
+    button.secondary:hover { background: #d0d0d0; }
+    #sql-input {
+      width: 100%;
+      height: 120px;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+      font-size: 12px;
+      padding: 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      resize: vertical;
+    }
+    #status {
+      font-size: 11px;
+      color: #666;
+      margin-top: 4px;
+      min-height: 16px;
+    }
+    #status.error { color: #d32f2f; }
+    #status.success { color: #2e7d32; }
+    #results {
+      margin-top: 8px;
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    th {
+      background: #0078d4;
+      color: white;
+      padding: 4px 8px;
+      text-align: left;
+      font-weight: 600;
+    }
+    td {
+      padding: 4px 8px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    tr:nth-child(even) { background: #f9f9f9; }
+    .tables-list {
+      font-size: 11px;
+      color: #666;
+      margin-top: 4px;
+    }
+    .tables-list span {
+      background: #e8f0fe;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin: 2px;
+      display: inline-block;
+      color: #0078d4;
+    }
+    .row-count { color: #999; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1>🐘 postrust SQL</h1>
+  <p style="font-size:11px;color:#888;margin-bottom:12px;">
+    Run PostgreSQL queries over your Excel data
+  </p>
+
+  <div class="section">
+    <label>📊 Import Data</label>
+    <button id="btn-import-selection" class="secondary">Import Selected Range</button>
+    <button id="btn-import-tables" class="secondary" style="margin-top:4px;">Import All Tables</button>
+    <div id="imported-tables" class="tables-list"></div>
+  </div>
+
+  <div class="section">
+    <label>🔍 SQL Query</label>
+    <textarea id="sql-input" placeholder="SELECT * FROM sheet1 WHERE amount > 100&#10;&#10;-- Tables are named after sheet/table names"></textarea>
+    <button id="btn-run">▶ Run Query</button>
+    <button id="btn-to-sheet" class="secondary" style="margin-top:4px;" disabled>📋 Results → New Sheet</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="results"></div>
+
+  <script type="module">
+    import init, { execute_sql_json } from './pkg/postgrust.js';
+
+    let wasmReady = false;
+    let lastResult = null;
+    const importedTables = new Map(); // name -> {columns, rowCount}
+
+    // Status helpers
+    const status = document.getElementById('status');
+    const setStatus = (msg, type = '') => {
+      status.textContent = msg;
+      status.className = type;
+    };
+
+    // Initialize WASM
+    async function initWasm() {
+      setStatus('Loading SQL engine...');
+      try {
+        await init();
+        wasmReady = true;
+        setStatus('SQL engine ready ✓', 'success');
+      } catch (err) {
+        setStatus(`Failed to load engine: ${err.message}`, 'error');
+      }
+    }
+
+    // Run SQL via WASM
+    async function runSQL(sql) {
+      if (!wasmReady) throw new Error('Engine not ready');
+      const resultJson = await execute_sql_json(sql);
+      return JSON.parse(resultJson);
+    }
+
+    // Sanitize name for SQL table
+    function sanitizeName(name) {
+      return name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^[0-9]/, '_$&');
+    }
+
+    // Import a range from Excel into postrust
+    async function importRange(name, values) {
+      if (!values || values.length < 2) {
+        throw new Error('Need at least a header row and one data row');
+      }
+
+      const headers = values[0].map((h, i) =>
+        sanitizeName(String(h || `col_${i + 1}`))
+      );
+      const rows = values.slice(1);
+
+      // Infer types from first few data rows
+      const types = headers.map((_, colIdx) => {
+        for (const row of rows.slice(0, 10)) {
+          const val = row[colIdx];
+          if (val === null || val === undefined || val === '') continue;
+          if (typeof val === 'number') {
+            return Number.isInteger(val) ? 'BIGINT' : 'DOUBLE PRECISION';
+          }
+          if (typeof val === 'boolean') return 'BOOLEAN';
+          if (val instanceof Date) return 'TIMESTAMP';
+        }
+        return 'TEXT';
+      });
+
+      const tableName = sanitizeName(name);
+
+      // Drop if exists
+      try { await runSQL(`DROP TABLE IF EXISTS "${tableName}"`); } catch {}
+
+      // Create table
+      const colDefs = headers.map((h, i) => `"${h}" ${types[i]}`).join(', ');
+      await runSQL(`CREATE TABLE "${tableName}" (${colDefs})`);
+
+      // Insert rows in batches
+      const batchSize = 100;
+      for (let i = 0; i < rows.length; i += batchSize) {
+        const batch = rows.slice(i, i + batchSize);
+        const valueClauses = batch.map(row => {
+          const vals = row.map((v, colIdx) => {
+            if (v === null || v === undefined || v === '') return 'NULL';
+            if (typeof v === 'number') return String(v);
+            if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+            // Escape single quotes
+            const escaped = String(v).replace(/'/g, "''");
+            return `'${escaped}'`;
+          });
+          return `(${vals.join(', ')})`;
+        }).join(', ');
+
+        await runSQL(`INSERT INTO "${tableName}" VALUES ${valueClauses}`);
+      }
+
+      importedTables.set(tableName, {
+        columns: headers,
+        rowCount: rows.length,
+      });
+
+      updateTablesList();
+      return { tableName, columns: headers, rowCount: rows.length };
+    }
+
+    function updateTablesList() {
+      const el = document.getElementById('imported-tables');
+      if (importedTables.size === 0) {
+        el.innerHTML = '';
+        return;
+      }
+      el.innerHTML = Array.from(importedTables.entries())
+        .map(([name, info]) =>
+          `<span>${name} <span class="row-count">(${info.rowCount} rows)</span></span>`
+        ).join(' ');
+    }
+
+    // Import selected range
+    document.getElementById('btn-import-selection').addEventListener('click', async () => {
+      try {
+        setStatus('Importing selection...');
+        await Excel.run(async (context) => {
+          const range = context.workbook.getSelectedRange();
+          range.load(['values', 'address', 'worksheet']);
+          await context.sync();
+
+          const sheetName = range.worksheet.name || 'selection';
+          const result = await importRange(sheetName, range.values);
+          setStatus(
+            `Imported ${result.rowCount} rows as "${result.tableName}" ✓`,
+            'success'
+          );
+        });
+      } catch (err) {
+        setStatus(`Import error: ${err.message}`, 'error');
+      }
+    });
+
+    // Import all Excel tables
+    document.getElementById('btn-import-tables').addEventListener('click', async () => {
+      try {
+        setStatus('Importing all tables...');
+        await Excel.run(async (context) => {
+          const tables = context.workbook.tables;
+          tables.load('items');
+          await context.sync();
+
+          if (tables.items.length === 0) {
+            // Fall back to importing all sheets
+            const sheets = context.workbook.worksheets;
+            sheets.load('items');
+            await context.sync();
+
+            for (const sheet of sheets.items) {
+              const range = sheet.getUsedRange();
+              range.load('values');
+              await context.sync();
+              if (range.values && range.values.length > 1) {
+                await importRange(sheet.name, range.values);
+              }
+            }
+            setStatus(
+              `Imported ${importedTables.size} sheets ✓`,
+              'success'
+            );
+            return;
+          }
+
+          for (const table of tables.items) {
+            const headerRange = table.getHeaderRowRange();
+            const bodyRange = table.getDataBodyRange();
+            headerRange.load('values');
+            bodyRange.load('values');
+            await context.sync();
+            const allValues = [headerRange.values[0], ...bodyRange.values];
+            await importRange(table.name, allValues);
+          }
+          setStatus(
+            `Imported ${tables.items.length} tables ✓`,
+            'success'
+          );
+        });
+      } catch (err) {
+        setStatus(`Import error: ${err.message}`, 'error');
+      }
+    });
+
+    // Run query
+    document.getElementById('btn-run').addEventListener('click', async () => {
+      const sql = document.getElementById('sql-input').value.trim();
+      if (!sql) return;
+
+      try {
+        setStatus('Running query...');
+        const t0 = performance.now();
+        const result = await runSQL(sql);
+        const elapsed = ((performance.now() - t0) / 1000).toFixed(3);
+        lastResult = result;
+
+        if (result.error) {
+          setStatus(`Error: ${result.error}`, 'error');
+          document.getElementById('results').innerHTML = '';
+          return;
+        }
+
+        const rows = result.rows || [];
+        const columns = result.columns || [];
+
+        setStatus(
+          `${rows.length} row${rows.length !== 1 ? 's' : ''} · ${elapsed}s · ${result.command_tag || 'OK'}`,
+          'success'
+        );
+
+        if (columns.length === 0) {
+          document.getElementById('results').innerHTML = '<p style="color:#666">No results</p>';
+          document.getElementById('btn-to-sheet').disabled = true;
+          return;
+        }
+
+        // Render table
+        let html = '<table><thead><tr>';
+        html += columns.map(c => `<th>${c}</th>`).join('');
+        html += '</tr></thead><tbody>';
+        for (const row of rows.slice(0, 500)) {
+          html += '<tr>';
+          html += row.map(v => `<td>${v === null ? '<i style="color:#999">NULL</i>' : v}</td>`).join('');
+          html += '</tr>';
+        }
+        if (rows.length > 500) {
+          html += `<tr><td colspan="${columns.length}" style="text-align:center;color:#999">... ${rows.length - 500} more rows</td></tr>`;
+        }
+        html += '</tbody></table>';
+        document.getElementById('results').innerHTML = html;
+        document.getElementById('btn-to-sheet').disabled = false;
+
+      } catch (err) {
+        setStatus(`Error: ${err.message}`, 'error');
+      }
+    });
+
+    // Export results to new sheet
+    document.getElementById('btn-to-sheet').addEventListener('click', async () => {
+      if (!lastResult || !lastResult.rows) return;
+      try {
+        setStatus('Writing to new sheet...');
+        await Excel.run(async (context) => {
+          const sheet = context.workbook.worksheets.add('Query Results');
+          const columns = lastResult.columns;
+          const rows = lastResult.rows;
+
+          // Write headers
+          const headerRange = sheet.getRangeByIndexes(0, 0, 1, columns.length);
+          headerRange.values = [columns];
+          headerRange.format.font.bold = true;
+
+          // Write data
+          if (rows.length > 0) {
+            const dataRange = sheet.getRangeByIndexes(1, 0, rows.length, columns.length);
+            dataRange.values = rows.map(row =>
+              row.map(v => v === null ? '' : v)
+            );
+          }
+
+          sheet.getUsedRange().format.autofitColumns();
+          sheet.activate();
+          await context.sync();
+          setStatus(`Exported ${rows.length} rows to "Query Results" ✓`, 'success');
+        });
+      } catch (err) {
+        setStatus(`Export error: ${err.message}`, 'error');
+      }
+    });
+
+    // Ctrl+Enter to run
+    document.getElementById('sql-input').addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        document.getElementById('btn-run').click();
+      }
+    });
+
+    // Initialize
+    Office.onReady(async () => {
+      await initWasm();
+    });
+  </script>
+</body>
+</html>

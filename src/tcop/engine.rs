@@ -475,7 +475,7 @@ pub(crate) fn drain_native_ws_messages(conn_id: i64) {
 /// buffered and must be polled via ws.recv() or ws.messages(). This is because we
 /// cannot re-enter the SQL engine from a JS closure callback.
 #[cfg(target_arch = "wasm32")]
-mod ws_wasm {
+pub(crate) mod ws_wasm {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
@@ -593,7 +593,7 @@ mod ws_wasm {
 
 /// Drain incoming messages from WASM WebSocket connections into the inbound_queue
 #[cfg(target_arch = "wasm32")]
-fn drain_wasm_ws_messages(conn_id: i64) {
+pub(crate) fn drain_wasm_ws_messages(conn_id: i64) {
     let msgs = ws_wasm::with_handle(conn_id, |handle| ws_wasm::drain_incoming(handle));
     if let Some(msgs) = msgs {
         if !msgs.is_empty() {
@@ -609,7 +609,7 @@ fn drain_wasm_ws_messages(conn_id: i64) {
 
 /// Update connection state from WASM WebSocket handle
 #[cfg(target_arch = "wasm32")]
-fn sync_wasm_ws_state(conn_id: i64) {
+pub(crate) fn sync_wasm_ws_state(conn_id: i64) {
     let new_state = ws_wasm::with_handle(conn_id, |handle| ws_wasm::get_state(handle));
     if let Some(state) = new_state {
         with_ext_write(|ext| {

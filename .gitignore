@@ -2,3 +2,5 @@
 /postgres-src/
 /web/pkg/
 tests/integration/node_modules/
+excel-addin/pkg/
+excel-addin/.certs/
