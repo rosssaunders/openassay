@@ -148,13 +148,17 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
 - Writable CTEs not explicitly tested but CTE infrastructure supports them.
 - **Not done:** Triggers (no trigger subsystem exists).
 
-### Step 14 — Type/Function/Operator Parity: 🟡 Partially Done
-- **Done:** 165+ built-in functions across string, math, date/time, JSON/JSONB, aggregate, window categories.
+### Step 14 — Type/Function/Operator Parity: ✅ Done
+- **Done:** 170+ built-in functions across string, math, date/time, JSON/JSONB, aggregate, window categories.
 - **Done:** Array functions (array_agg, array_to_string, string_to_array, unnest, array constructors, ANY/ALL).
 - **Done:** JSON operators (->>, ->, #>, #>>, @>, <@, ?, ?|, ?&, ||, -, delete_key).
 - **Done:** Regex functions (regexp_replace, regexp_matches via SRF).
-- **Done:** Statistical aggregates (stddev_pop/samp, var_pop/samp), ordered-set aggregates.
-- **Missing:** Some functions listed in roadmap: encode/decode, md5, sha256, overlay, position, ascii, chr, quote_literal, quote_ident, age(), clock_timestamp(), to_timestamp(), timezone(), make_interval, width_bucket, percentile_cont/disc, mode(), corr, covar_*, regr_* family, pg_typeof, pg_column_size.
+- **Done:** Statistical aggregates (stddev_pop/samp, var_pop/samp), ordered-set aggregates (percentile_cont/disc, mode).
+- **Done:** Regression aggregates (corr, covar_pop/samp, regr_* family).
+- **Done:** String: encode/decode, md5, sha256, overlay, position, ascii, chr, quote_literal, quote_ident.
+- **Done:** Date/time: age(), clock_timestamp(), to_timestamp(), timezone(), make_interval.
+- **Done:** Math: width_bucket.
+- **Done:** System: pg_typeof, pg_column_size.
 
 ### Step 15 — Security (Roles/Grants/RLS): ✅ Done
 - `src/security/roles.rs` — role management.
@@ -202,7 +206,7 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
 | 11 | Executor Node Parity | ✅ Done |
 | 12 | Full DDL Surface | ✅ Done (missing: partitioning, triggers, rules, CREATE TYPE/DOMAIN) |
 | 13 | DML Semantic Parity | ✅ Done (missing: triggers) |
-| 14 | Type/Function/Operator Parity | 🟡 Partial — 165+ functions done, some gaps remain |
+| 14 | Type/Function/Operator Parity | ✅ Done — 170+ functions including all listed targets |
 | 15 | Security (Roles/Grants/RLS) | ✅ Done (GRANT/REVOKE parsed via string matching) |
 | 16 | Protocol and Client Compat | ✅ Done |
 | 17 | Regression and Hardening | 🟡 Partial — 365 tests, no CI/fuzzing/benchmarks |

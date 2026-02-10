@@ -370,3 +370,13 @@ fn trim_chars_from_text(input: &str, trim_chars: &str, mode: TrimMode) -> String
     chars[start..end].iter().collect()
 }
 
+pub(crate) fn sha256_hex(input: &str) -> String {
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    let result = hasher.finalize();
+    // Return as \\x prefixed hex string (bytea output format)
+    let hex: String = result.iter().map(|b| format!("{:02x}", b)).collect();
+    format!("\\x{}", hex)
+}
+

@@ -4392,3 +4392,56 @@
             assert!(result.is_err());
         });
     }
+
+    #[test]
+    fn evaluates_sha256_function() {
+        let result = run("SELECT sha256('abc')");
+        assert_eq!(result.rows.len(), 1);
+        match &result.rows[0][0] {
+            ScalarValue::Text(s) => {
+                assert!(s.starts_with("\\x"));
+                assert_eq!(s.len(), 66); // \\x + 64 hex chars
+                assert_eq!(
+                    s,
+                    "\\xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                );
+            }
+            other => panic!("expected Text, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn evaluates_pg_typeof_function() {
+        let result = run("SELECT pg_typeof(42), pg_typeof(3.14), pg_typeof('hello'), pg_typeof(true), pg_typeof(NULL)");
+        assert_eq!(
+            result.rows,
+            vec![vec![
+                ScalarValue::Text("bigint".to_string()),
+                ScalarValue::Text("double precision".to_string()),
+                ScalarValue::Text("text".to_string()),
+                ScalarValue::Text("boolean".to_string()),
+                ScalarValue::Text("unknown".to_string()),
+            ]]
+        );
+    }
+
+    #[test]
+    fn evaluates_pg_column_size_function() {
+        let result = run("SELECT pg_column_size(42), pg_column_size('hello')");
+        assert_eq!(
+            result.rows,
+            vec![vec![
+                ScalarValue::Int(8),
+                ScalarValue::Int(9), // 5 chars + 4 byte header
+            ]]
+        );
+    }
+
+    #[test]
+    fn evaluates_timezone_function() {
+        let result = run("SELECT timezone('UTC', '2024-01-01 12:00:00')");
+        assert_eq!(
+            result.rows,
+            vec![vec![ScalarValue::Text("2024-01-01 12:00:00".to_string())]]
+        );
+    }

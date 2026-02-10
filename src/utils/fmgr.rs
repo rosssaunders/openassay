@@ -37,7 +37,7 @@ use crate::utils::adt::misc::{
 use crate::utils::adt::string_functions::{
     ascii_code, chr_from_code, decode_bytes, encode_bytes, find_substring_position,
     initcap_string, left_chars, md5_hex, overlay_text, pad_string, right_chars,
-    substring_chars, trim_text, TrimMode,
+    sha256_hex, substring_chars, trim_text, TrimMode,
 };
 
 pub(crate) async fn eval_scalar_function(
@@ -386,6 +386,11 @@ pub(crate) async fn eval_scalar_function(
             eval_justify_interval(&args[0], JustifyMode::Full)
         }
         "isfinite" if args.len() == 1 => eval_isfinite(&args[0]),
+        "timezone" if args.len() == 2 => {
+            // timezone(zone, timestamp) — simplified: just return the timestamp as-is
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
+            Ok(args[1].clone())
+        },
         "coalesce" if !args.is_empty() => {
             for value in args {
                 if !matches!(value, ScalarValue::Null) {
@@ -617,6 +622,10 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
             Ok(ScalarValue::Text(md5_hex(&args[0].render())))
         },
+        "sha256" | "digest" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            Ok(ScalarValue::Text(sha256_hex(&args[0].render())))
+        },
         "regexp_match" if args.len() == 2 => {
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
             eval_regexp_match(&args[0].render(), &args[1].render(), "")
@@ -655,6 +664,41 @@ pub(crate) async fn eval_scalar_function(
         },
         "pg_backend_pid" if args.is_empty() => {
             Ok(ScalarValue::Int(std::process::id() as i64))
+        },
+        "pg_typeof" if args.len() == 1 => {
+            let type_name = match &args[0] {
+                ScalarValue::Null => "unknown",
+                ScalarValue::Bool(_) => "boolean",
+                ScalarValue::Int(_) => "bigint",
+                ScalarValue::Float(_) => "double precision",
+                ScalarValue::Text(_) => "text",
+                ScalarValue::Array(_) => "text[]",
+            };
+            Ok(ScalarValue::Text(type_name.to_string()))
+        },
+        "pg_column_size" if args.len() == 1 => {
+            let size = match &args[0] {
+                ScalarValue::Null => 0i64,
+                ScalarValue::Bool(_) => 1,
+                ScalarValue::Int(_) => 8,
+                ScalarValue::Float(_) => 8,
+                ScalarValue::Text(s) => s.len() as i64 + 4, // 4-byte length prefix
+                ScalarValue::Array(a) => {
+                    let mut total = 20i64; // array header
+                    for v in a {
+                        total += match v {
+                            ScalarValue::Null => 0,
+                            ScalarValue::Bool(_) => 1,
+                            ScalarValue::Int(_) => 8,
+                            ScalarValue::Float(_) => 8,
+                            ScalarValue::Text(s) => s.len() as i64 + 4,
+                            ScalarValue::Array(_) => 8, // rough estimate
+                        };
+                    }
+                    total
+                }
+            };
+            Ok(ScalarValue::Int(size))
         },
         "pg_get_userbyid" if args.len() == 1 => {
             Ok(ScalarValue::Text("postrust".to_string()))
