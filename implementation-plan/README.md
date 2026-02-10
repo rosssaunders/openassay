@@ -93,7 +93,7 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
   - Transaction statements, SET/SHOW
   - TRUNCATE, DROP INDEX, DROP SEQUENCE
   - 100+ parser unit tests
-- **Not yet parsed:** Partitioning DDL, triggers, rules, PREPARE/EXECUTE/DEALLOCATE, COPY (parsed via string matching in postgres.rs), GRANT/REVOKE (parsed via string matching in postgres.rs), CREATE TYPE, CREATE DOMAIN, COMMENT ON, VACUUM/ANALYZE.
+- **Not yet parsed:** Partitioning DDL, triggers, rules, PREPARE/EXECUTE/DEALLOCATE, CREATE TYPE, CREATE DOMAIN, COMMENT ON, VACUUM/ANALYZE.
 
 ### Step 08 — Parse Analysis and Type System: ✅ Done
 - **Done:** Type coercion at DML boundaries (`coerce_value_for_column`), mixed-type numeric/comparison coercion, implicit cast rules for common types.
@@ -172,7 +172,7 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
 - `src/security/rls.rs` — row-level security policies with USING and WITH CHECK.
 - Current user context, SET ROLE support.
 - Tests: grant/revoke, RLS filtering, security in transactions.
-- **Note:** GRANT/REVOKE parsing is done via string matching in postgres.rs, not through the formal parser/AST. CREATE/ALTER/DROP ROLE also parsed via string matching.
+- **Note:** GRANT/REVOKE and CREATE/ALTER/DROP ROLE now parse through the formal parser/AST (no string matching in postgres.rs).
 
 ### Step 16 — Protocol and Client Compat: ✅ Done
 - `src/protocol/messages.rs` — full message encoding/decoding.

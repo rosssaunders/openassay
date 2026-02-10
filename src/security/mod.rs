@@ -12,7 +12,7 @@ pub mod roles;
 
 pub use acl::TablePrivilege;
 pub use rls::{RlsCommand, RlsPolicy};
-pub use roles::CreateRoleOptions;
+pub use roles::{AlterRoleOptions, CreateRoleOptions};
 
 #[derive(Debug, Clone, Default)]
 pub struct SecurityState {
@@ -164,6 +164,21 @@ pub fn create_role(
             return Err("permission denied to create role".to_string());
         }
         state.roles.create_role(&role_name, options)
+    })
+}
+
+pub fn alter_role(
+    actor_role: &str,
+    role_name: &str,
+    options: AlterRoleOptions,
+) -> Result<(), String> {
+    let actor = normalize_identifier(actor_role);
+    let role_name = normalize_identifier(role_name);
+    with_security_write(|state| {
+        if !state.roles.is_superuser(&actor) {
+            return Err("permission denied to alter role".to_string());
+        }
+        state.roles.alter_role(&role_name, options)
     })
 }
 

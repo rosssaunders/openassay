@@ -143,6 +143,16 @@ pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError>
                 "ALTER VIEW".to_string()
             },
         ),
+        Statement::CreateRole(_)
+        | Statement::AlterRole(_)
+        | Statement::DropRole(_)
+        | Statement::Grant(_)
+        | Statement::Revoke(_)
+        | Statement::Copy(_) => {
+            return Err(EngineError {
+                message: "utility statement is not supported by planner".to_string(),
+            });
+        }
         Statement::Insert(insert) => {
             let columns = derive_dml_returning_columns(&insert.table_name, &insert.returning)?;
             let oids =

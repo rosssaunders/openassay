@@ -31,6 +31,12 @@ pub enum Statement {
     CreateExtension(CreateExtensionStatement),
     DropExtension(DropExtensionStatement),
     CreateFunction(CreateFunctionStatement),
+    CreateRole(CreateRoleStatement),
+    AlterRole(AlterRoleStatement),
+    DropRole(DropRoleStatement),
+    Grant(GrantStatement),
+    Revoke(RevokeStatement),
+    Copy(CopyStatement),
     Transaction(TransactionStatement),
 }
 
@@ -88,6 +94,128 @@ pub struct NotifyStatement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnlistenStatement {
     pub channel: Option<String>, // None means UNLISTEN *
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateRoleStatement {
+    pub name: String,
+    pub options: Vec<RoleOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterRoleStatement {
+    pub name: String,
+    pub options: Vec<RoleOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropRoleStatement {
+    pub name: String,
+    pub if_exists: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoleOption {
+    Superuser(bool),
+    Login(bool),
+    Password(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TablePrivilegeKind {
+    Select,
+    Insert,
+    Update,
+    Delete,
+    Truncate,
+}
+
+impl TablePrivilegeKind {
+    pub fn from_keyword(keyword: &str) -> Option<Self> {
+        match keyword {
+            "SELECT" => Some(Self::Select),
+            "INSERT" => Some(Self::Insert),
+            "UPDATE" => Some(Self::Update),
+            "DELETE" => Some(Self::Delete),
+            "TRUNCATE" => Some(Self::Truncate),
+            _ => None,
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[
+            Self::Select,
+            Self::Insert,
+            Self::Update,
+            Self::Delete,
+            Self::Truncate,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantRoleStatement {
+    pub role_name: String,
+    pub member: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantTablePrivilegesStatement {
+    pub privileges: Vec<TablePrivilegeKind>,
+    pub table_name: Vec<String>,
+    pub roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GrantStatement {
+    Role(GrantRoleStatement),
+    TablePrivileges(GrantTablePrivilegesStatement),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokeRoleStatement {
+    pub role_name: String,
+    pub member: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokeTablePrivilegesStatement {
+    pub privileges: Vec<TablePrivilegeKind>,
+    pub table_name: Vec<String>,
+    pub roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevokeStatement {
+    Role(RevokeRoleStatement),
+    TablePrivileges(RevokeTablePrivilegesStatement),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyDirection {
+    To,
+    From,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyFormat {
+    Text,
+    Csv,
+    Binary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyOptions {
+    pub format: Option<CopyFormat>,
+    pub delimiter: Option<String>,
+    pub null_marker: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyStatement {
+    pub table_name: Vec<String>,
+    pub direction: CopyDirection,
+    pub options: CopyOptions,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

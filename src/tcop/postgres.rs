@@ -13,10 +13,16 @@ use rand::RngCore;
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
-use crate::parser::ast::{Expr, QueryExpr, Statement};
+use crate::parser::ast::{
+    AlterRoleStatement, CopyDirection as AstCopyDirection, CopyFormat as AstCopyFormat,
+    CopyOptions as AstCopyOptions, CopyStatement, CreateRoleStatement, DropRoleStatement, Expr,
+    GrantStatement, QueryExpr, RevokeStatement, RoleOption, Statement, TablePrivilegeKind,
+};
 use crate::parser::lexer::{TokenKind, lex_sql};
 use crate::parser::sql_parser::parse_statement;
-use crate::security::{self, CreateRoleOptions, RlsCommand, RlsPolicy, TablePrivilege};
+use crate::security::{
+    self, AlterRoleOptions, CreateRoleOptions, RlsCommand, RlsPolicy, TablePrivilege,
+};
 use crate::tcop::engine::{
     EngineError, PlannedQuery, QueryResult, ScalarValue, copy_insert_rows,
     copy_table_binary_snapshot, copy_table_column_oids, execute_planned_query, plan_statement,
@@ -345,6 +351,10 @@ enum SecurityCommand {
         role_name: String,
         options: CreateRoleOptions,
     },
+    AlterRole {
+        role_name: String,
+        options: AlterRoleOptions,
+    },
     DropRole {
         role_name: String,
         if_exists: bool,
@@ -394,6 +404,7 @@ impl SecurityCommand {
     fn command_tag(&self) -> &'static str {
         match self {
             Self::CreateRole { .. } => "CREATE ROLE",
+            Self::AlterRole { .. } => "ALTER ROLE",
             Self::DropRole { .. } => "DROP ROLE",
             Self::GrantRole { .. } | Self::GrantTablePrivileges { .. } => "GRANT",
             Self::RevokeRole { .. } | Self::RevokeTablePrivileges { .. } => "REVOKE",
@@ -1367,14 +1378,35 @@ impl PostgresSession {
             return Ok(PlannedOperation::Security(security_cmd));
         }
 
-        if let Some(copy_cmd) = parse_copy_command(trimmed)? {
-            return Ok(PlannedOperation::Copy(copy_cmd));
-        }
-
         if starts_like_engine_statement(trimmed) {
             let statement = parse_statement(trimmed).map_err(|err| SessionError {
-                message: format!("parse error: {}", err),
+                message: if is_parser_security_command(trimmed) {
+                    err.message
+                } else {
+                    format!("parse error: {}", err)
+                },
             })?;
+            let statement = match statement {
+                Statement::CreateRole(statement) => {
+                    return Ok(PlannedOperation::Security(create_role_command(statement)));
+                }
+                Statement::AlterRole(statement) => {
+                    return Ok(PlannedOperation::Security(alter_role_command(statement)));
+                }
+                Statement::DropRole(statement) => {
+                    return Ok(PlannedOperation::Security(drop_role_command(statement)));
+                }
+                Statement::Grant(statement) => {
+                    return Ok(PlannedOperation::Security(grant_command(statement)?));
+                }
+                Statement::Revoke(statement) => {
+                    return Ok(PlannedOperation::Security(revoke_command(statement)?));
+                }
+                Statement::Copy(statement) => {
+                    return Ok(PlannedOperation::Copy(copy_command(statement)?));
+                }
+                statement => statement,
+            };
             if self.tx_state.in_explicit_block()
                 && let Some(message) = top_level_only_statement_error(&statement)
             {
@@ -1609,6 +1641,10 @@ impl PostgresSession {
         match command {
             SecurityCommand::CreateRole { role_name, options } => {
                 security::create_role(&self.current_role, role_name, options.clone())
+                    .map_err(|message| SessionError { message })
+            }
+            SecurityCommand::AlterRole { role_name, options } => {
+                security::alter_role(&self.current_role, role_name, options.clone())
                     .map_err(|message| SessionError { message })
             }
             SecurityCommand::DropRole {
@@ -2008,6 +2044,9 @@ fn starts_like_engine_statement(query: &str) -> bool {
         || first == "LISTEN"
         || first == "NOTIFY"
         || first == "UNLISTEN"
+        || first == "COPY"
+        || first == "GRANT"
+        || first == "REVOKE"
         || query.starts_with('(')
 }
 
@@ -2062,236 +2101,12 @@ fn parse_transaction_command(query: &str) -> Result<Option<TransactionCommand>, 
     }
 }
 
-fn parse_copy_command(query: &str) -> Result<Option<CopyCommand>, SessionError> {
-    let trimmed = query.trim().trim_end_matches(';').trim();
-    if !starts_with_keyword(trimmed, "COPY ") {
-        return Ok(None);
-    }
-
-    let upper = trimmed.to_ascii_uppercase();
-    if let Some(to_pos) = upper.find(" TO ") {
-        let table_name = security::parse_qualified_name(trimmed["COPY ".len()..to_pos].trim());
-        let target = trimmed[to_pos + " TO ".len()..].trim();
-        let (format, delimiter, null_marker) =
-            parse_copy_target_spec(target, CopyDirection::ToStdout)?;
-        return Ok(Some(CopyCommand {
-            table_name,
-            direction: CopyDirection::ToStdout,
-            format,
-            delimiter,
-            null_marker,
-        }));
-    }
-
-    if let Some(from_pos) = upper.find(" FROM ") {
-        let table_name = security::parse_qualified_name(trimmed["COPY ".len()..from_pos].trim());
-        let target = trimmed[from_pos + " FROM ".len()..].trim();
-        let (format, delimiter, null_marker) =
-            parse_copy_target_spec(target, CopyDirection::FromStdin)?;
-        return Ok(Some(CopyCommand {
-            table_name,
-            direction: CopyDirection::FromStdin,
-            format,
-            delimiter,
-            null_marker,
-        }));
-    }
-
-    Err(SessionError {
-        message: "unsupported COPY command (expected COPY <table> TO/FROM STDOUT/STDIN ...)"
-            .to_string(),
-    })
-}
-
-fn parse_copy_target_spec(
-    target: &str,
-    direction: CopyDirection,
-) -> Result<(CopyFormat, char, String), SessionError> {
-    let (prefix, rest) = match direction {
-        CopyDirection::ToStdout => ("STDOUT", "TO"),
-        CopyDirection::FromStdin => ("STDIN", "FROM"),
-    };
-    if !starts_with_keyword(target, prefix) {
-        return Err(SessionError {
-            message: format!("COPY {} requires {}", rest, prefix),
-        });
-    }
-    let mut remainder = target[prefix.len()..].trim();
-
-    let mut format = CopyFormat::Text;
-    let mut delimiter: Option<char> = None;
-    let mut null_marker: Option<String> = None;
-
-    if !remainder.is_empty() {
-        if let Some(inner) = remainder
-            .strip_prefix('(')
-            .and_then(|value| value.strip_suffix(')'))
-        {
-            for token in split_copy_option_tokens(inner) {
-                parse_copy_option_token(&token, &mut format, &mut delimiter, &mut null_marker)?;
-            }
-            remainder = "";
-        } else {
-            match remainder.to_ascii_uppercase().as_str() {
-                "BINARY" => format = CopyFormat::Binary,
-                "CSV" => format = CopyFormat::Csv,
-                "TEXT" => format = CopyFormat::Text,
-                other => {
-                    return Err(SessionError {
-                        message: format!("unsupported COPY target option {}", other),
-                    });
-                }
-            }
-            remainder = "";
-        }
-    }
-
-    if !remainder.is_empty() {
-        return Err(SessionError {
-            message: "unsupported COPY target syntax".to_string(),
-        });
-    }
-
-    let delimiter = delimiter.unwrap_or(match format {
-        CopyFormat::Csv => ',',
-        _ => '\t',
-    });
-    let null_marker = null_marker.unwrap_or(match format {
-        CopyFormat::Csv => "".to_string(),
-        _ => "\\N".to_string(),
-    });
-
-    Ok((format, delimiter, null_marker))
-}
-
-fn split_copy_option_tokens(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut in_quote = false;
-    let chars = text.chars().peekable();
-    for ch in chars {
-        if ch == '\'' {
-            in_quote = !in_quote;
-            current.push(ch);
-            continue;
-        }
-        if ch == ',' && !in_quote {
-            let token = current.trim();
-            if !token.is_empty() {
-                tokens.push(token.to_string());
-            }
-            current.clear();
-            continue;
-        }
-        current.push(ch);
-    }
-    let token = current.trim();
-    if !token.is_empty() {
-        tokens.push(token.to_string());
-    }
-    tokens
-}
-
-fn parse_copy_option_token(
-    token: &str,
-    format: &mut CopyFormat,
-    delimiter: &mut Option<char>,
-    null_marker: &mut Option<String>,
-) -> Result<(), SessionError> {
-    let upper = token.to_ascii_uppercase();
-    if upper == "BINARY" {
-        *format = CopyFormat::Binary;
-        return Ok(());
-    }
-    if upper == "CSV" {
-        *format = CopyFormat::Csv;
-        return Ok(());
-    }
-    if upper == "TEXT" {
-        *format = CopyFormat::Text;
-        return Ok(());
-    }
-    if let Some(rest) = strip_prefix_keyword(token, "FORMAT ") {
-        *format = match rest.trim().to_ascii_uppercase().as_str() {
-            "BINARY" => CopyFormat::Binary,
-            "CSV" => CopyFormat::Csv,
-            "TEXT" => CopyFormat::Text,
-            other => {
-                return Err(SessionError {
-                    message: format!("unsupported COPY FORMAT option {}", other),
-                });
-            }
-        };
-        return Ok(());
-    }
-    if let Some(rest) = strip_prefix_keyword(token, "DELIMITER ") {
-        let parsed = parse_copy_quoted_value(rest.trim(), "DELIMITER")?;
-        let mut chars = parsed.chars();
-        let ch = chars.next().ok_or_else(|| SessionError {
-            message: "COPY DELIMITER cannot be empty".to_string(),
-        })?;
-        if chars.next().is_some() {
-            return Err(SessionError {
-                message: "COPY DELIMITER must be a single character".to_string(),
-            });
-        }
-        *delimiter = Some(ch);
-        return Ok(());
-    }
-    if let Some(rest) = strip_prefix_keyword(token, "NULL ") {
-        *null_marker = Some(parse_copy_quoted_value(rest.trim(), "NULL")?);
-        return Ok(());
-    }
-    Err(SessionError {
-        message: format!("unsupported COPY option {}", token),
-    })
-}
-
-fn parse_copy_quoted_value(text: &str, option_name: &str) -> Result<String, SessionError> {
-    let Some(inner) = text
-        .strip_prefix('\'')
-        .and_then(|value| value.strip_suffix('\''))
-    else {
-        return Err(SessionError {
-            message: format!("COPY {} requires a single-quoted string", option_name),
-        });
-    };
-    let mut out = String::new();
-    let mut chars = inner.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\'' {
-            if chars.peek() == Some(&'\'') {
-                chars.next();
-                out.push('\'');
-                continue;
-            }
-            return Err(SessionError {
-                message: format!("COPY {} string literal is invalid", option_name),
-            });
-        }
-        out.push(ch);
-    }
-    Ok(out)
-}
-
 fn parse_security_command(query: &str) -> Result<Option<SecurityCommand>, SessionError> {
     let trimmed = query.trim().trim_end_matches(';').trim();
     if trimmed.is_empty() {
         return Ok(None);
     }
 
-    if starts_with_keyword(trimmed, "CREATE ROLE ") {
-        return parse_create_role_command(trimmed).map(Some);
-    }
-    if starts_with_keyword(trimmed, "DROP ROLE ") {
-        return parse_drop_role_command(trimmed).map(Some);
-    }
-    if starts_with_keyword(trimmed, "GRANT ") {
-        return parse_grant_command(trimmed).map(Some);
-    }
-    if starts_with_keyword(trimmed, "REVOKE ") {
-        return parse_revoke_command(trimmed).map(Some);
-    }
     if starts_with_keyword(trimmed, "SET ROLE ") {
         return parse_set_role_command(trimmed).map(Some);
     }
@@ -2313,230 +2128,187 @@ fn parse_security_command(query: &str) -> Result<Option<SecurityCommand>, Sessio
     Ok(None)
 }
 
-fn parse_create_role_command(query: &str) -> Result<SecurityCommand, SessionError> {
-    let tokens = query.split_whitespace().collect::<Vec<_>>();
-    if tokens.len() < 3 {
-        return Err(SessionError {
-            message: "CREATE ROLE requires a role name".to_string(),
-        });
-    }
-    let role_name = security::normalize_identifier(tokens[2]);
-    let mut options = CreateRoleOptions::default();
+fn is_parser_security_command(query: &str) -> bool {
+    starts_with_keyword(query, "COPY")
+        || starts_with_keyword(query, "GRANT")
+        || starts_with_keyword(query, "REVOKE")
+        || starts_with_keyword(query, "CREATE ROLE")
+        || starts_with_keyword(query, "ALTER ROLE")
+        || starts_with_keyword(query, "DROP ROLE")
+}
 
-    let mut idx = 3usize;
-    while idx < tokens.len() {
-        let token = tokens[idx];
-        if token.eq_ignore_ascii_case("SUPERUSER") {
-            options.superuser = true;
-            idx += 1;
-            continue;
-        }
-        if token.eq_ignore_ascii_case("NOSUPERUSER") {
-            options.superuser = false;
-            idx += 1;
-            continue;
-        }
-        if token.eq_ignore_ascii_case("LOGIN") {
-            options.login = true;
-            idx += 1;
-            continue;
-        }
-        if token.eq_ignore_ascii_case("NOLOGIN") {
-            options.login = false;
-            idx += 1;
-            continue;
-        }
-        if token.eq_ignore_ascii_case("PASSWORD") {
-            idx += 1;
-            if idx >= tokens.len() {
+fn create_role_command(statement: CreateRoleStatement) -> SecurityCommand {
+    let options = create_role_options(&statement.options);
+    SecurityCommand::CreateRole {
+        role_name: security::normalize_identifier(&statement.name),
+        options,
+    }
+}
+
+fn alter_role_command(statement: AlterRoleStatement) -> SecurityCommand {
+    let options = alter_role_options(&statement.options);
+    SecurityCommand::AlterRole {
+        role_name: security::normalize_identifier(&statement.name),
+        options,
+    }
+}
+
+fn drop_role_command(statement: DropRoleStatement) -> SecurityCommand {
+    SecurityCommand::DropRole {
+        role_name: security::normalize_identifier(&statement.name),
+        if_exists: statement.if_exists,
+    }
+}
+
+fn grant_command(statement: GrantStatement) -> Result<SecurityCommand, SessionError> {
+    match statement {
+        GrantStatement::Role(role) => Ok(SecurityCommand::GrantRole {
+            role_name: security::normalize_identifier(&role.role_name),
+            member: security::normalize_identifier(&role.member),
+        }),
+        GrantStatement::TablePrivileges(grant) => {
+            let roles = normalize_role_list(grant.roles);
+            if roles.is_empty() {
                 return Err(SessionError {
-                    message: "CREATE ROLE PASSWORD requires a value".to_string(),
+                    message: "GRANT requires at least one target role".to_string(),
                 });
             }
-            options.password = Some(parse_sql_string_literal(tokens[idx])?);
-            idx += 1;
-            continue;
+            Ok(SecurityCommand::GrantTablePrivileges {
+                table_name: normalize_identifier_parts(grant.table_name),
+                roles,
+                privileges: map_table_privileges(grant.privileges)?,
+            })
         }
-        return Err(SessionError {
-            message: format!("unsupported CREATE ROLE option {}", token),
-        });
     }
-
-    Ok(SecurityCommand::CreateRole { role_name, options })
 }
 
-fn parse_drop_role_command(query: &str) -> Result<SecurityCommand, SessionError> {
-    let tokens = query.split_whitespace().collect::<Vec<_>>();
-    if tokens.len() < 3 {
-        return Err(SessionError {
-            message: "DROP ROLE requires a role name".to_string(),
-        });
+fn revoke_command(statement: RevokeStatement) -> Result<SecurityCommand, SessionError> {
+    match statement {
+        RevokeStatement::Role(role) => Ok(SecurityCommand::RevokeRole {
+            role_name: security::normalize_identifier(&role.role_name),
+            member: security::normalize_identifier(&role.member),
+        }),
+        RevokeStatement::TablePrivileges(revoke) => {
+            let roles = normalize_role_list(revoke.roles);
+            if roles.is_empty() {
+                return Err(SessionError {
+                    message: "REVOKE requires at least one target role".to_string(),
+                });
+            }
+            Ok(SecurityCommand::RevokeTablePrivileges {
+                table_name: normalize_identifier_parts(revoke.table_name),
+                roles,
+                privileges: map_table_privileges(revoke.privileges)?,
+            })
+        }
     }
-    let mut if_exists = false;
-    let role_index = if tokens.len() >= 5
-        && tokens[2].eq_ignore_ascii_case("IF")
-        && tokens[3].eq_ignore_ascii_case("EXISTS")
-    {
-        if_exists = true;
-        4
-    } else {
-        2
+}
+
+fn copy_command(statement: CopyStatement) -> Result<CopyCommand, SessionError> {
+    let AstCopyOptions {
+        format,
+        delimiter,
+        null_marker,
+    } = statement.options;
+    let format = match format.unwrap_or(AstCopyFormat::Text) {
+        AstCopyFormat::Text => CopyFormat::Text,
+        AstCopyFormat::Csv => CopyFormat::Csv,
+        AstCopyFormat::Binary => CopyFormat::Binary,
     };
-    let role_name = tokens.get(role_index).ok_or_else(|| SessionError {
-        message: "DROP ROLE requires a role name".to_string(),
-    })?;
-
-    Ok(SecurityCommand::DropRole {
-        role_name: security::normalize_identifier(role_name),
-        if_exists,
-    })
-}
-
-fn parse_grant_command(query: &str) -> Result<SecurityCommand, SessionError> {
-    if contains_keyword(query, " ON ") {
-        return parse_grant_table_privileges_command(query);
-    }
-
-    let upper = query.to_ascii_uppercase();
-    let to_pos = upper.find(" TO ").ok_or_else(|| SessionError {
-        message: "GRANT role requires TO clause".to_string(),
-    })?;
-    let role_name = query["GRANT ".len()..to_pos].trim();
-    let member = query[to_pos + " TO ".len()..].trim();
-    if role_name.is_empty() || member.is_empty() {
-        return Err(SessionError {
-            message: "GRANT role requires role and member names".to_string(),
-        });
-    }
-
-    Ok(SecurityCommand::GrantRole {
-        role_name: security::normalize_identifier(role_name),
-        member: security::normalize_identifier(member),
-    })
-}
-
-fn parse_revoke_command(query: &str) -> Result<SecurityCommand, SessionError> {
-    if contains_keyword(query, " ON ") {
-        return parse_revoke_table_privileges_command(query);
-    }
-
-    let upper = query.to_ascii_uppercase();
-    let from_pos = upper.find(" FROM ").ok_or_else(|| SessionError {
-        message: "REVOKE role requires FROM clause".to_string(),
-    })?;
-    let role_name = query["REVOKE ".len()..from_pos].trim();
-    let member = query[from_pos + " FROM ".len()..].trim();
-    if role_name.is_empty() || member.is_empty() {
-        return Err(SessionError {
-            message: "REVOKE role requires role and member names".to_string(),
-        });
-    }
-
-    Ok(SecurityCommand::RevokeRole {
-        role_name: security::normalize_identifier(role_name),
-        member: security::normalize_identifier(member),
-    })
-}
-
-fn parse_grant_table_privileges_command(query: &str) -> Result<SecurityCommand, SessionError> {
-    let upper = query.to_ascii_uppercase();
-    let on_pos = upper.find(" ON ").ok_or_else(|| SessionError {
-        message: "GRANT requires ON TABLE clause".to_string(),
-    })?;
-    let to_pos = upper.rfind(" TO ").ok_or_else(|| SessionError {
-        message: "GRANT requires TO clause".to_string(),
-    })?;
-    if to_pos <= on_pos {
-        return Err(SessionError {
-            message: "GRANT clause order is invalid".to_string(),
-        });
-    }
-
-    let privilege_text = query["GRANT ".len()..on_pos].trim();
-    let mut table_text = query[on_pos + " ON ".len()..to_pos].trim();
-    if starts_with_keyword(table_text, "TABLE ") {
-        table_text = &table_text["TABLE ".len()..];
-    }
-    let role_text = query[to_pos + " TO ".len()..].trim();
-
-    let privileges = parse_privilege_list(privilege_text)?;
-    let roles = parse_identifier_list(role_text);
-    if roles.is_empty() {
-        return Err(SessionError {
-            message: "GRANT requires at least one target role".to_string(),
-        });
-    }
-
-    Ok(SecurityCommand::GrantTablePrivileges {
-        table_name: security::parse_qualified_name(table_text),
-        roles,
-        privileges,
-    })
-}
-
-fn parse_revoke_table_privileges_command(query: &str) -> Result<SecurityCommand, SessionError> {
-    let upper = query.to_ascii_uppercase();
-    let on_pos = upper.find(" ON ").ok_or_else(|| SessionError {
-        message: "REVOKE requires ON TABLE clause".to_string(),
-    })?;
-    let from_pos = upper.rfind(" FROM ").ok_or_else(|| SessionError {
-        message: "REVOKE requires FROM clause".to_string(),
-    })?;
-    if from_pos <= on_pos {
-        return Err(SessionError {
-            message: "REVOKE clause order is invalid".to_string(),
-        });
-    }
-
-    let privilege_text = query["REVOKE ".len()..on_pos].trim();
-    let mut table_text = query[on_pos + " ON ".len()..from_pos].trim();
-    if starts_with_keyword(table_text, "TABLE ") {
-        table_text = &table_text["TABLE ".len()..];
-    }
-    let role_text = query[from_pos + " FROM ".len()..].trim();
-
-    let privileges = parse_privilege_list(privilege_text)?;
-    let roles = parse_identifier_list(role_text);
-    if roles.is_empty() {
-        return Err(SessionError {
-            message: "REVOKE requires at least one target role".to_string(),
-        });
-    }
-
-    Ok(SecurityCommand::RevokeTablePrivileges {
-        table_name: security::parse_qualified_name(table_text),
-        roles,
-        privileges,
-    })
-}
-
-fn parse_privilege_list(input: &str) -> Result<Vec<TablePrivilege>, SessionError> {
-    let mut privileges = Vec::new();
-    for item in input.split(',') {
-        let raw = item.trim();
-        if raw.is_empty() {
-            continue;
-        }
-        let upper = raw.to_ascii_uppercase();
-        if upper == "ALL" || upper == "ALL PRIVILEGES" {
-            privileges.extend_from_slice(TablePrivilege::all());
-            continue;
-        }
-        let Some(privilege) = TablePrivilege::from_keyword(upper.trim()) else {
+    let delimiter = if let Some(delimiter) = delimiter {
+        let mut chars = delimiter.chars();
+        let ch = chars.next().ok_or_else(|| SessionError {
+            message: "COPY DELIMITER cannot be empty".to_string(),
+        })?;
+        if chars.next().is_some() {
             return Err(SessionError {
-                message: format!("unsupported privilege {}", raw),
+                message: "COPY DELIMITER must be a single character".to_string(),
             });
-        };
-        privileges.push(privilege);
+        }
+        ch
+    } else {
+        match format {
+            CopyFormat::Csv => ',',
+            _ => '\t',
+        }
+    };
+    let null_marker = null_marker.unwrap_or(match format {
+        CopyFormat::Csv => "".to_string(),
+        _ => "\\N".to_string(),
+    });
+    Ok(CopyCommand {
+        table_name: normalize_identifier_parts(statement.table_name),
+        direction: match statement.direction {
+            AstCopyDirection::To => CopyDirection::ToStdout,
+            AstCopyDirection::From => CopyDirection::FromStdin,
+        },
+        format,
+        delimiter,
+        null_marker,
+    })
+}
+
+fn create_role_options(options: &[RoleOption]) -> CreateRoleOptions {
+    let mut out = CreateRoleOptions::default();
+    for option in options {
+        match option {
+            RoleOption::Superuser(value) => out.superuser = *value,
+            RoleOption::Login(value) => out.login = *value,
+            RoleOption::Password(value) => out.password = Some(value.clone()),
+        }
     }
-    privileges.sort_by_key(|privilege| *privilege as u8);
-    privileges.dedup();
+    out
+}
+
+fn alter_role_options(options: &[RoleOption]) -> AlterRoleOptions {
+    let mut out = AlterRoleOptions::default();
+    for option in options {
+        match option {
+            RoleOption::Superuser(value) => out.superuser = Some(*value),
+            RoleOption::Login(value) => out.login = Some(*value),
+            RoleOption::Password(value) => out.password = Some(value.clone()),
+        }
+    }
+    out
+}
+
+fn map_table_privileges(
+    privileges: Vec<TablePrivilegeKind>,
+) -> Result<Vec<TablePrivilege>, SessionError> {
     if privileges.is_empty() {
         return Err(SessionError {
             message: "no privileges specified".to_string(),
         });
     }
-    Ok(privileges)
+    let mut mapped = privileges
+        .into_iter()
+        .map(|privilege| match privilege {
+            TablePrivilegeKind::Select => TablePrivilege::Select,
+            TablePrivilegeKind::Insert => TablePrivilege::Insert,
+            TablePrivilegeKind::Update => TablePrivilege::Update,
+            TablePrivilegeKind::Delete => TablePrivilege::Delete,
+            TablePrivilegeKind::Truncate => TablePrivilege::Truncate,
+        })
+        .collect::<Vec<_>>();
+    mapped.sort_by_key(|privilege| *privilege as u8);
+    mapped.dedup();
+    Ok(mapped)
+}
+
+fn normalize_identifier_parts(parts: Vec<String>) -> Vec<String> {
+    parts
+        .into_iter()
+        .map(|part| security::normalize_identifier(&part))
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+fn normalize_role_list(roles: Vec<String>) -> Vec<String> {
+    roles
+        .into_iter()
+        .map(|role| security::normalize_identifier(&role))
+        .filter(|role| !role.is_empty())
+        .collect()
 }
 
 fn parse_set_role_command(query: &str) -> Result<SecurityCommand, SessionError> {
@@ -2711,16 +2483,6 @@ fn parse_identifier_list(raw: &str) -> Vec<String> {
         .map(security::normalize_identifier)
         .filter(|name| !name.is_empty())
         .collect()
-}
-
-fn parse_sql_string_literal(raw: &str) -> Result<String, SessionError> {
-    let trimmed = raw.trim();
-    if !trimmed.starts_with('\'') || !trimmed.ends_with('\'') || trimmed.len() < 2 {
-        return Err(SessionError {
-            message: format!("expected SQL string literal, got {}", raw),
-        });
-    }
-    Ok(trimmed[1..trimmed.len() - 1].replace("''", "'"))
 }
 
 fn starts_with_keyword(haystack: &str, keyword: &str) -> bool {

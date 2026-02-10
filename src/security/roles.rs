@@ -15,6 +15,13 @@ pub struct CreateRoleOptions {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AlterRoleOptions {
+    pub superuser: Option<bool>,
+    pub login: Option<bool>,
+    pub password: Option<String>,
+}
+
 impl Default for CreateRoleOptions {
     fn default() -> Self {
         Self {
@@ -94,6 +101,22 @@ impl RoleRegistry {
         self.granted_roles.remove(role);
         for grants in self.granted_roles.values_mut() {
             grants.remove(role);
+        }
+        Ok(())
+    }
+
+    pub fn alter_role(&mut self, role: &str, options: AlterRoleOptions) -> Result<(), String> {
+        let Some(entry) = self.roles.get_mut(role) else {
+            return Err(format!("role \"{}\" does not exist", role));
+        };
+        if let Some(value) = options.superuser {
+            entry.superuser = value;
+        }
+        if let Some(value) = options.login {
+            entry.login = value;
+        }
+        if let Some(value) = options.password {
+            entry.password = Some(value);
         }
         Ok(())
     }

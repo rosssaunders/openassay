@@ -69,6 +69,8 @@ This makes Postrust uniquely suited for **data analytics against live APIs** —
 | Row-level security (RLS) policies | ✅ |
 | COPY TO/FROM (text and CSV) | ✅ |
 
+Parser coverage includes COPY plus CREATE/ALTER/DROP ROLE and GRANT/REVOKE, so these statements now flow through the formal AST pipeline.
+
 ### ✅ Built-in functions (170+ implemented)
 
 **String:** `length`, `lower`, `upper`, `trim`, `btrim`, `ltrim`, `rtrim`, `substring`, `substr`, `left`, `right`, `replace`, `reverse`, `repeat`, `lpad`, `rpad`, `initcap`, `concat`, `concat_ws`, `split_part`, `strpos`, `translate`, `format`, `regexp_replace`

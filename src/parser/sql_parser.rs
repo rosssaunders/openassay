@@ -18,6 +18,11 @@ use crate::parser::ast::{
     CreateExtensionStatement, DropExtensionStatement,
     CreateFunctionStatement, FunctionParam, FunctionReturnType, GroupByExpr,
     TransactionStatement,
+    CopyDirection, CopyFormat, CopyOptions, CopyStatement,
+    CreateRoleStatement, AlterRoleStatement, DropRoleStatement, RoleOption,
+    GrantRoleStatement, GrantStatement, GrantTablePrivilegesStatement,
+    RevokeRoleStatement, RevokeStatement, RevokeTablePrivilegesStatement,
+    TablePrivilegeKind,
 };
 use crate::parser::lexer::{Keyword, LexError, Token, TokenKind, lex_sql};
 
@@ -146,6 +151,18 @@ impl Parser {
         {
             return self.parse_transaction_statement();
         }
+        if self.peek_ident("copy") {
+            self.advance();
+            return self.parse_copy_statement();
+        }
+        if self.peek_ident("grant") {
+            self.advance();
+            return self.parse_grant_statement();
+        }
+        if self.peek_ident("revoke") {
+            self.advance();
+            return self.parse_revoke_statement();
+        }
 
         let query = self.parse_query()?;
         Ok(Statement::Query(query))
@@ -272,6 +289,11 @@ impl Parser {
         }
         if materialized {
             return Err(self.error_at_current("expected VIEW after CREATE MATERIALIZED"));
+        }
+        if self.consume_ident("role") {
+            let name = self.parse_role_identifier_with_message("CREATE ROLE requires a role name")?;
+            let options = self.parse_role_options("CREATE ROLE")?;
+            return Ok(Statement::CreateRole(CreateRoleStatement { name, options }));
         }
         if self.consume_keyword(Keyword::Schema) {
             let if_not_exists = if self.consume_keyword(Keyword::If) {
@@ -717,6 +739,9 @@ impl Parser {
 
     fn parse_drop_statement(&mut self) -> Result<Statement, ParseError> {
         let materialized = self.consume_keyword(Keyword::Materialized);
+        if !materialized && self.consume_ident("role") {
+            return self.parse_drop_role_statement();
+        }
         if self.consume_keyword(Keyword::View) {
             let if_exists = if self.consume_keyword(Keyword::If) {
                 self.expect_keyword(Keyword::Exists, "expected EXISTS after IF in DROP VIEW")?;
@@ -824,6 +849,206 @@ impl Parser {
         Err(self.error_at_current("expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or EXTENSION after DROP"))
     }
 
+    fn parse_copy_statement(&mut self) -> Result<Statement, ParseError> {
+        if self.peek_keyword(Keyword::To) || self.peek_keyword(Keyword::From) {
+            return Err(self.error_at_current(
+                "unsupported COPY command (expected COPY <table> TO/FROM STDOUT/STDIN ...)",
+            ));
+        }
+        let table_name = self.parse_qualified_name()?;
+        let direction = if self.consume_keyword(Keyword::To) {
+            CopyDirection::To
+        } else if self.consume_keyword(Keyword::From) {
+            CopyDirection::From
+        } else {
+            return Err(self.error_at_current(
+                "unsupported COPY command (expected COPY <table> TO/FROM STDOUT/STDIN ...)",
+            ));
+        };
+        let target = self
+            .take_keyword_or_identifier()
+            .ok_or_else(|| {
+                let message = match direction {
+                    CopyDirection::To => "COPY TO requires STDOUT",
+                    CopyDirection::From => "COPY FROM requires STDIN",
+                };
+                self.error_at_current(message)
+            })?;
+        let target_lower = target.to_ascii_lowercase();
+        match direction {
+            CopyDirection::To if target_lower != "stdout" => {
+                return Err(self.error_at_current("COPY TO requires STDOUT"));
+            }
+            CopyDirection::From if target_lower != "stdin" => {
+                return Err(self.error_at_current("COPY FROM requires STDIN"));
+            }
+            _ => {}
+        }
+        let mut options = CopyOptions {
+            format: None,
+            delimiter: None,
+            null_marker: None,
+        };
+        if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+            if !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+                loop {
+                    self.parse_copy_option_item(&mut options)?;
+                    if self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                        continue;
+                    }
+                    self.expect_token(|k| matches!(k, TokenKind::RParen), "expected ')' after COPY options")?;
+                    break;
+                }
+            }
+        } else if !matches!(self.current_kind(), TokenKind::Eof | TokenKind::Semicolon) {
+            let format = self.parse_copy_format_value("unsupported COPY target option")?;
+            options.format = Some(format);
+        }
+        if !matches!(self.current_kind(), TokenKind::Eof | TokenKind::Semicolon) {
+            return Err(self.error_at_current("unsupported COPY target syntax"));
+        }
+        Ok(Statement::Copy(CopyStatement {
+            table_name,
+            direction,
+            options,
+        }))
+    }
+
+    fn parse_grant_statement(&mut self) -> Result<Statement, ParseError> {
+        let mut on_pos = None;
+        let mut to_pos = None;
+        for (idx, token) in self.tokens[self.idx..].iter().enumerate() {
+            match token.kind {
+                TokenKind::Keyword(Keyword::On) => {
+                    if on_pos.is_none() {
+                        on_pos = Some(idx);
+                    }
+                }
+                TokenKind::Keyword(Keyword::To) => {
+                    to_pos = Some(idx);
+                }
+                TokenKind::Eof | TokenKind::Semicolon => break,
+                _ => {}
+            }
+        }
+        if let (Some(on_idx), Some(to_idx)) = (on_pos, to_pos)
+            && to_idx <= on_idx
+        {
+            return Err(self.error_at_current("GRANT clause order is invalid"));
+        }
+        let stmt = if on_pos.is_some() {
+            self.parse_grant_table_privileges_statement()?
+        } else {
+            self.parse_grant_role_statement()?
+        };
+        Ok(Statement::Grant(stmt))
+    }
+
+    fn parse_revoke_statement(&mut self) -> Result<Statement, ParseError> {
+        let mut on_pos = None;
+        let mut from_pos = None;
+        for (idx, token) in self.tokens[self.idx..].iter().enumerate() {
+            match token.kind {
+                TokenKind::Keyword(Keyword::On) => {
+                    if on_pos.is_none() {
+                        on_pos = Some(idx);
+                    }
+                }
+                TokenKind::Keyword(Keyword::From) => {
+                    from_pos = Some(idx);
+                }
+                TokenKind::Eof | TokenKind::Semicolon => break,
+                _ => {}
+            }
+        }
+        if let (Some(on_idx), Some(from_idx)) = (on_pos, from_pos)
+            && from_idx <= on_idx
+        {
+            return Err(self.error_at_current("REVOKE clause order is invalid"));
+        }
+        let stmt = if on_pos.is_some() {
+            self.parse_revoke_table_privileges_statement()?
+        } else {
+            self.parse_revoke_role_statement()?
+        };
+        Ok(Statement::Revoke(stmt))
+    }
+
+    fn parse_grant_role_statement(&mut self) -> Result<GrantStatement, ParseError> {
+        let role_name =
+            self.parse_role_identifier_with_message("GRANT role requires role and member names")?;
+        if !self.consume_keyword(Keyword::To) {
+            return Err(self.error_at_current("GRANT role requires TO clause"));
+        }
+        let member =
+            self.parse_role_identifier_with_message("GRANT role requires role and member names")?;
+        Ok(GrantStatement::Role(GrantRoleStatement { role_name, member }))
+    }
+
+    fn parse_grant_table_privileges_statement(&mut self) -> Result<GrantStatement, ParseError> {
+        let privileges = self.parse_privilege_list("GRANT")?;
+        if !self.consume_keyword(Keyword::On) {
+            return Err(self.error_at_current("GRANT requires ON TABLE clause"));
+        }
+        self.consume_keyword(Keyword::Table);
+        let table_name = self.parse_qualified_name()?;
+        if !self.consume_keyword(Keyword::To) {
+            return Err(self.error_at_current("GRANT requires TO clause"));
+        }
+        let roles = self.parse_role_list("GRANT requires at least one target role")?;
+        Ok(GrantStatement::TablePrivileges(GrantTablePrivilegesStatement {
+            privileges,
+            table_name,
+            roles,
+        }))
+    }
+
+    fn parse_revoke_role_statement(&mut self) -> Result<RevokeStatement, ParseError> {
+        let role_name =
+            self.parse_role_identifier_with_message("REVOKE role requires role and member names")?;
+        if !self.consume_keyword(Keyword::From) {
+            return Err(self.error_at_current("REVOKE role requires FROM clause"));
+        }
+        let member =
+            self.parse_role_identifier_with_message("REVOKE role requires role and member names")?;
+        Ok(RevokeStatement::Role(RevokeRoleStatement { role_name, member }))
+    }
+
+    fn parse_revoke_table_privileges_statement(&mut self) -> Result<RevokeStatement, ParseError> {
+        let privileges = self.parse_privilege_list("REVOKE")?;
+        if !self.consume_keyword(Keyword::On) {
+            return Err(self.error_at_current("REVOKE requires ON TABLE clause"));
+        }
+        self.consume_keyword(Keyword::Table);
+        let table_name = self.parse_qualified_name()?;
+        if !self.consume_keyword(Keyword::From) {
+            return Err(self.error_at_current("REVOKE requires FROM clause"));
+        }
+        let roles = self.parse_role_list("REVOKE requires at least one target role")?;
+        Ok(RevokeStatement::TablePrivileges(RevokeTablePrivilegesStatement {
+            privileges,
+            table_name,
+            roles,
+        }))
+    }
+
+    fn parse_alter_role_statement(&mut self) -> Result<Statement, ParseError> {
+        let name = self.parse_role_identifier_with_message("ALTER ROLE requires a role name")?;
+        let options = self.parse_role_options("ALTER ROLE")?;
+        Ok(Statement::AlterRole(AlterRoleStatement { name, options }))
+    }
+
+    fn parse_drop_role_statement(&mut self) -> Result<Statement, ParseError> {
+        let if_exists = if self.consume_keyword(Keyword::If) {
+            self.expect_keyword(Keyword::Exists, "expected EXISTS after IF in DROP ROLE")?;
+            true
+        } else {
+            false
+        };
+        let name = self.parse_role_identifier_with_message("DROP ROLE requires a role name")?;
+        Ok(Statement::DropRole(DropRoleStatement { name, if_exists }))
+    }
+
     fn parse_truncate_statement(&mut self) -> Result<Statement, ParseError> {
         self.consume_keyword(Keyword::Table);
         let mut table_names = vec![self.parse_qualified_name()?];
@@ -848,6 +1073,9 @@ impl Parser {
     }
 
     fn parse_alter_statement(&mut self) -> Result<Statement, ParseError> {
+        if self.consume_ident("role") {
+            return self.parse_alter_role_statement();
+        }
         if self.consume_keyword(Keyword::Table) {
             return self.parse_alter_table_statement();
         }
@@ -2848,6 +3076,207 @@ impl Parser {
         }
     }
 
+    fn take_keyword_or_identifier(&mut self) -> Option<String> {
+        match self.current_kind() {
+            TokenKind::Identifier(value) => {
+                let out = value.clone();
+                self.advance();
+                Some(out)
+            }
+            TokenKind::Keyword(kw) => {
+                let out = format!("{:?}", kw).to_lowercase();
+                self.advance();
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    fn take_keyword_or_identifier_upper(&mut self) -> Option<String> {
+        match self.current_kind() {
+            TokenKind::Identifier(value) => {
+                let out = value.to_ascii_uppercase();
+                self.advance();
+                Some(out)
+            }
+            TokenKind::Keyword(kw) => {
+                let out = format!("{:?}", kw).to_ascii_uppercase();
+                self.advance();
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
+    fn parse_role_identifier_with_message(
+        &mut self,
+        message: &'static str,
+    ) -> Result<String, ParseError> {
+        let Some(name) = self.take_keyword_or_identifier() else {
+            return Err(self.error_at_current(message));
+        };
+        Ok(name)
+    }
+
+    fn parse_role_list(&mut self, message: &'static str) -> Result<Vec<String>, ParseError> {
+        let mut roles = Vec::new();
+        roles.push(self.parse_role_identifier_with_message(message)?);
+        while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+            roles.push(self.parse_role_identifier_with_message(message)?);
+        }
+        Ok(roles)
+    }
+
+    fn parse_privilege_list(
+        &mut self,
+        command: &'static str,
+    ) -> Result<Vec<TablePrivilegeKind>, ParseError> {
+        let mut privileges = Vec::new();
+        loop {
+            if self.peek_keyword(Keyword::On) {
+                break;
+            }
+            if matches!(self.current_kind(), TokenKind::Eof | TokenKind::Semicolon) {
+                return Err(self.error_at_current(&format!(
+                    "{command} requires ON TABLE clause"
+                )));
+            }
+            let Some(token) = self.take_keyword_or_identifier_upper() else {
+                return Err(self.error_at_current("expected privilege name"));
+            };
+            if token == "ALL" {
+                self.consume_ident("privileges");
+                privileges.extend(TablePrivilegeKind::all());
+            } else if let Some(privilege) = TablePrivilegeKind::from_keyword(&token) {
+                privileges.push(privilege);
+            } else {
+                return Err(self.error_at_current(&format!("unsupported privilege {}", token)));
+            }
+            if self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                continue;
+            }
+            if self.peek_keyword(Keyword::On) {
+                break;
+            }
+        }
+        if privileges.is_empty() {
+            return Err(self.error_at_current("no privileges specified"));
+        }
+        Ok(privileges)
+    }
+
+    fn parse_role_options(&mut self, command: &'static str) -> Result<Vec<RoleOption>, ParseError> {
+        let mut options = Vec::new();
+        while !matches!(self.current_kind(), TokenKind::Eof | TokenKind::Semicolon) {
+            let token = match self.current_kind() {
+                TokenKind::Identifier(value) => value.clone(),
+                TokenKind::Keyword(kw) => format!("{:?}", kw).to_lowercase(),
+                _ => {
+                    let raw = format!("{:?}", self.current_kind());
+                    return Err(self.error_at_current(&format!(
+                        "unsupported {command} option {raw}"
+                    )));
+                }
+            };
+            self.advance();
+            match token.as_str() {
+                "superuser" => options.push(RoleOption::Superuser(true)),
+                "nosuperuser" => options.push(RoleOption::Superuser(false)),
+                "login" => options.push(RoleOption::Login(true)),
+                "nologin" => options.push(RoleOption::Login(false)),
+                "password" => match self.current_kind() {
+                    TokenKind::String(value) => {
+                        let password = value.clone();
+                        self.advance();
+                        options.push(RoleOption::Password(password));
+                    }
+                    _ => {
+                        return Err(self.error_at_current(&format!(
+                            "{command} PASSWORD requires a value"
+                        )));
+                    }
+                },
+                _ => {
+                    return Err(self.error_at_current(&format!(
+                        "unsupported {command} option {}",
+                        token.to_ascii_uppercase()
+                    )));
+                }
+            }
+        }
+        Ok(options)
+    }
+
+    fn parse_copy_option_item(&mut self, options: &mut CopyOptions) -> Result<(), ParseError> {
+        let Some(token) = self.take_keyword_or_identifier_upper() else {
+            return Err(self.error_at_current("unsupported COPY option"));
+        };
+        match token.as_str() {
+            "BINARY" => options.format = Some(CopyFormat::Binary),
+            "CSV" => options.format = Some(CopyFormat::Csv),
+            "TEXT" => options.format = Some(CopyFormat::Text),
+            "FORMAT" => {
+                let format = self.parse_copy_format_value("unsupported COPY FORMAT option")?;
+                options.format = Some(format);
+            }
+            "DELIMITER" => {
+                let delimiter = self.parse_copy_string_literal("DELIMITER")?;
+                let mut chars = delimiter.chars();
+                let ch = chars.next().ok_or_else(|| {
+                    self.error_at_current("COPY DELIMITER cannot be empty")
+                })?;
+                if chars.next().is_some() {
+                    return Err(self.error_at_current(
+                        "COPY DELIMITER must be a single character",
+                    ));
+                }
+                options.delimiter = Some(ch.to_string());
+            }
+            "NULL" => {
+                let null_marker = self.parse_copy_string_literal("NULL")?;
+                options.null_marker = Some(null_marker);
+            }
+            other => {
+                return Err(self.error_at_current(&format!("unsupported COPY option {}", other)));
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_copy_format_value(
+        &mut self,
+        message_prefix: &'static str,
+    ) -> Result<CopyFormat, ParseError> {
+        let Some(token) = self.take_keyword_or_identifier_upper() else {
+            return Err(self.error_at_current(&format!("{message_prefix} ")));
+        };
+        match token.as_str() {
+            "BINARY" => Ok(CopyFormat::Binary),
+            "CSV" => Ok(CopyFormat::Csv),
+            "TEXT" => Ok(CopyFormat::Text),
+            _ => Err(self.error_at_current(&format!(
+                "{message_prefix} {}",
+                token
+            ))),
+        }
+    }
+
+    fn parse_copy_string_literal(
+        &mut self,
+        option_name: &'static str,
+    ) -> Result<String, ParseError> {
+        match self.current_kind() {
+            TokenKind::String(value) => {
+                let out = value.clone();
+                self.advance();
+                Ok(out)
+            }
+            _ => Err(self.error_at_current(&format!(
+                "COPY {option_name} requires a single-quoted string"
+            ))),
+        }
+    }
+
     fn current_set_op(&self) -> Option<(SetOperator, u8, u8)> {
         match self.current_kind() {
             TokenKind::Keyword(Keyword::Union) => Some((SetOperator::Union, 1, 2)),
@@ -2923,6 +3352,14 @@ impl Parser {
 
     fn peek_keyword(&self, keyword: Keyword) -> bool {
         matches!(self.current_kind(), TokenKind::Keyword(kv) if *kv == keyword)
+    }
+
+    fn consume_ident(&mut self, value: &str) -> bool {
+        self.consume_if(|k| matches!(k, TokenKind::Identifier(ident) if ident.eq_ignore_ascii_case(value)))
+    }
+
+    fn peek_ident(&self, value: &str) -> bool {
+        matches!(self.current_kind(), TokenKind::Identifier(ident) if ident.eq_ignore_ascii_case(value))
     }
 
     fn consume_if<F>(&mut self, predicate: F) -> bool
