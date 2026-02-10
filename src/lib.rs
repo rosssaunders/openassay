@@ -7,6 +7,8 @@ pub mod executor;
 pub mod parser;
 pub mod planner;
 pub mod protocol;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod replication;
 pub mod security;
 pub mod storage;
 pub mod tcop;
