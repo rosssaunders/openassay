@@ -11,6 +11,7 @@ pub mod dependency;
 pub mod oid;
 pub mod schema;
 pub mod search_path;
+pub mod system_catalogs;
 pub mod table;
 
 use oid::{Oid, OidGenerator};
