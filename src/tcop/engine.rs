@@ -12,6 +12,7 @@ use crate::commands::sequence::{
     normalize_sequence_name_from_text, sequence_next_value, set_sequence_value,
     with_sequences_read, with_sequences_write, SequenceState,
 };
+pub(crate) use crate::storage::heap::{with_storage_read, with_storage_write};
 use crate::catalog::oid::Oid;
 use crate::catalog::with_catalog_write;
 use crate::catalog::{
@@ -43,45 +44,7 @@ impl std::error::Error for EngineError {}
 
 type EngineFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ScalarValue {
-    Null,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    Text(String),
-    Array(Vec<ScalarValue>),
-}
-
-impl ScalarValue {
-    pub fn render(&self) -> String {
-        match self {
-            Self::Null => "NULL".to_string(),
-            Self::Bool(v) => v.to_string(),
-            Self::Int(v) => v.to_string(),
-            Self::Float(v) => {
-                let mut text = v.to_string();
-                if !text.contains('.') && !text.contains('e') && !text.contains('E') {
-                    text.push_str(".0");
-                }
-                text
-            }
-            Self::Text(v) => v.clone(),
-            Self::Array(values) => render_array_literal(values),
-        }
-    }
-}
-
-fn render_array_literal(values: &[ScalarValue]) -> String {
-    let parts: Vec<String> = values
-        .iter()
-        .map(|value| match value {
-            ScalarValue::Null => "NULL".to_string(),
-            _ => value.render(),
-        })
-        .collect();
-    format!("{{{}}}", parts.join(","))
-}
+pub use crate::storage::tuple::{CopyBinaryColumn, CopyBinarySnapshot, ScalarValue};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryResult {
@@ -97,19 +60,6 @@ const PG_TEXT_OID: u32 = 25;
 const PG_FLOAT8_OID: u32 = 701;
 const PG_DATE_OID: u32 = 1082;
 const PG_TIMESTAMP_OID: u32 = 1114;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CopyBinaryColumn {
-    pub name: String,
-    pub type_oid: u32,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CopyBinarySnapshot {
-    pub qualified_name: String,
-    pub columns: Vec<CopyBinaryColumn>,
-    pub rows: Vec<Vec<ScalarValue>>,
-}
 
 #[derive(Debug, Clone)]
 pub struct PlannedQuery {
@@ -298,31 +248,6 @@ pub fn execute_planned_query<'a>(
     };
     Ok(result)
     })
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct InMemoryStorage {
-    pub(crate) rows_by_table: HashMap<Oid, Vec<Vec<ScalarValue>>>,
-}
-
-static GLOBAL_STORAGE: OnceLock<RwLock<InMemoryStorage>> = OnceLock::new();
-
-fn global_storage() -> &'static RwLock<InMemoryStorage> {
-    GLOBAL_STORAGE.get_or_init(|| RwLock::new(InMemoryStorage::default()))
-}
-
-pub(crate) fn with_storage_read<T>(f: impl FnOnce(&InMemoryStorage) -> T) -> T {
-    let storage = global_storage()
-        .read()
-        .expect("global storage lock poisoned for read");
-    f(&storage)
-}
-
-pub(crate) fn with_storage_write<T>(f: impl FnOnce(&mut InMemoryStorage) -> T) -> T {
-    let mut storage = global_storage()
-        .write()
-        .expect("global storage lock poisoned for write");
-    f(&mut storage)
 }
 
 // ── Extension & User Function Registry ──────────────────────────────────────
