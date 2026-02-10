@@ -56,9 +56,30 @@ pub fn distinct_cost(input: PlanCost) -> PlanCost {
     PlanCost::new(input.rows * 0.5, input.startup_cost, input.total_cost + input.rows * 0.2)
 }
 
+pub fn window_cost(input: PlanCost) -> PlanCost {
+    PlanCost::new(input.rows, input.startup_cost, input.total_cost + input.rows * 0.2)
+}
+
 pub fn limit_cost(input: PlanCost, limit: Option<f64>) -> PlanCost {
     let rows = limit.map(|l| l.min(input.rows)).unwrap_or(input.rows);
     PlanCost::new(rows, input.startup_cost, input.total_cost)
+}
+
+pub fn cte_scan_cost(input: PlanCost) -> PlanCost {
+    PlanCost::new(input.rows, input.startup_cost, input.total_cost + input.rows * 0.05)
+}
+
+pub fn cte_cost<I>(input: PlanCost, cte_costs: I) -> PlanCost
+where
+    I: IntoIterator<Item = PlanCost>,
+{
+    let mut startup = input.startup_cost;
+    let mut total = input.total_cost;
+    for cost in cte_costs {
+        startup += cost.startup_cost;
+        total += cost.total_cost;
+    }
+    PlanCost::new(input.rows, startup, total)
 }
 
 pub fn set_op_cost(left: PlanCost, right: PlanCost) -> PlanCost {

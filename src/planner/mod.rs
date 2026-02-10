@@ -1,10 +1,8 @@
 use std::fmt;
 
-use crate::catalog::system_catalogs::lookup_virtual_relation;
-use crate::catalog::{with_catalog_read, SearchPath, TableKind};
 use crate::parser::ast::{
     DeleteStatement, Expr, InsertSource, InsertStatement, Query, QueryExpr, SelectItem,
-    SelectStatement, Statement, TableExpression, TableRef, UpdateStatement,
+    SelectStatement, Statement, UpdateStatement,
 };
 
 pub mod cost;
@@ -232,51 +230,12 @@ fn plan_delete_with_fallback(statement: &Statement, delete: &DeleteStatement) ->
 }
 
 fn should_plan_query(query: &Query) -> bool {
-    if query.with.is_some() {
-        return false;
-    }
-    if !query.order_by.is_empty() || query.limit.is_some() || query.offset.is_some() {
-        return false;
-    }
     match &query.body {
         QueryExpr::Select(select) => should_plan_select(select),
-        _ => false,
+        _ => true,
     }
 }
 
-fn should_plan_select(select: &SelectStatement) -> bool {
-    if select.quantifier.is_some()
-        || !select.distinct_on.is_empty()
-        || !select.group_by.is_empty()
-        || select.having.is_some()
-    {
-        return false;
-    }
-    select.from.iter().all(is_simple_table_expression)
-}
-
-fn is_simple_table_expression(expr: &TableExpression) -> bool {
-    match expr {
-        TableExpression::Relation(rel) => table_ref_plannable(rel),
-        TableExpression::Join(join) => {
-            is_simple_table_expression(&join.left) && is_simple_table_expression(&join.right)
-        }
-        TableExpression::Function(_) | TableExpression::Subquery(_) => false,
-    }
-}
-
-fn table_ref_plannable(table: &TableRef) -> bool {
-    if lookup_virtual_relation(&table.name).is_some() {
-        return false;
-    }
-    let resolved = with_catalog_read(|catalog| {
-        catalog
-            .resolve_table(&table.name, &SearchPath::default())
-            .cloned()
-            .ok()
-    });
-    match resolved {
-        Some(table) => matches!(table.kind(), TableKind::Heap),
-        None => false,
-    }
+fn should_plan_select(_select: &SelectStatement) -> bool {
+    true
 }

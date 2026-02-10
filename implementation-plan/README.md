@@ -16,7 +16,7 @@ Execution model:
 
 ## Status (audited 2026-02-10)
 
-All 402 tests pass. The codebase is ~41k lines of Rust across a PostgreSQL-style module layout.
+All 411 tests pass. The codebase is ~41k lines of Rust across a PostgreSQL-style module layout.
 
 ### Step 00 — Refactor to PG Layout: ✅ Done
 The monolithic `engine.rs` (was 21k lines) has been decomposed into:
@@ -115,8 +115,8 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
 
 ### Step 10 — Planner and Optimizer: ✅ Done
 - `src/planner/` module with logical plan nodes, physical plan selection, cost model, and table stats.
-- Planner is wired into `plan_statement()` with graceful PassThrough fallback for unsupported queries.
-- Initial coverage: simple SELECT...FROM...WHERE planning with scan/join selection.
+- Planner is wired into `plan_statement()` with graceful PassThrough fallback on planning errors.
+- Coverage: SELECT, CTEs, ORDER BY/LIMIT/OFFSET, DISTINCT, GROUP BY/HAVING, set operations, subqueries/LATERAL, window functions.
 
 ### Step 11 — Executor Node Parity: ✅ Done
 - Full set of executor nodes implemented in `src/executor/`:
@@ -190,7 +190,7 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
 ### Step 17 — Regression and Hardening: 🟡 Partially Done
 - `tests/regression/` — regression test corpus with SQL fixtures.
 - `tests/differential/` — differential testing framework.
-- 402 tests passing.
+- 411 tests passing.
 - **Not done:** No CI pipeline config. No fuzzing. No performance benchmarks. No formal compatibility scorecard.
 
 ---
@@ -209,17 +209,17 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
 | 07 | Parser Coverage | ✅ Done |
 | 08 | Parse Analysis and Type System | 🟡 Partial — no separate analyzer module; coercion is inline |
 | 09 | System Catalog and Dependencies | ✅ Done |
-| 10 | Planner and Optimizer | ✅ Done — logical/physical plans with PassThrough fallback |
+| 10 | Planner and Optimizer | ✅ Done — full query coverage with PassThrough fallback on errors |
 | 11 | Executor Node Parity | ✅ Done |
 | 12 | Full DDL Surface | ✅ Done (missing: partitioning, triggers, rules, CREATE TYPE/DOMAIN) |
 | 13 | DML Semantic Parity | ✅ Done (missing: triggers) |
 | 14 | Type/Function/Operator Parity | ✅ Done — 170+ functions including all listed targets |
 | 15 | Security (Roles/Grants/RLS) | ✅ Done (GRANT/REVOKE parsed via string matching) |
 | 16 | Protocol and Client Compat | ✅ Done |
-| 17 | Regression and Hardening | 🟡 Partial — 402 tests, no CI/fuzzing/benchmarks |
+| 17 | Regression and Hardening | 🟡 Partial — 411 tests, no CI/fuzzing/benchmarks |
 
 ### Key architectural gaps:
-1. **Planner coverage** — simple SELECT planning is in place; complex queries still execute via PassThrough
+1. **Planner execution wiring** — logical/physical plans are built for all query shapes, but execution still uses the AST directly
 2. **No formal analyzer** — type checking and name resolution are fused into the executor
 3. **String-parsed commands** — GRANT/REVOKE/COPY/role commands bypass the formal parser
 4. **No triggers, partitioning, or rules**

@@ -71,6 +71,8 @@ This makes Postrust uniquely suited for **data analytics against live APIs** —
 
 Parser coverage includes COPY plus CREATE/ALTER/DROP ROLE and GRANT/REVOKE, so these statements now flow through the formal AST pipeline.
 
+Planner coverage includes CTEs, set operations, window functions, aggregates, DISTINCT, ORDER BY, LIMIT/OFFSET, subqueries, and LATERAL joins, with PassThrough fallback only on planning errors.
+
 ### ✅ Built-in functions (170+ implemented)
 
 **String:** `length`, `lower`, `upper`, `trim`, `btrim`, `ltrim`, `rtrim`, `substring`, `substr`, `left`, `right`, `replace`, `reverse`, `repeat`, `lpad`, `rpad`, `initcap`, `concat`, `concat_ws`, `split_part`, `strpos`, `translate`, `format`, `regexp_replace`
@@ -121,7 +123,7 @@ TEXT, INTEGER, BIGINT, FLOAT, DOUBLE PRECISION, BOOLEAN, NUMERIC, DATE, TIMESTAM
 ## Quick Start
 
 ```bash
-# Build and test (402 tests)
+# Build and test (411 tests)
 cargo test
 
 # PostgreSQL-compatible server
@@ -138,7 +140,7 @@ cargo run --bin web_server -- 8080
 
 - **Native** (Linux, macOS) — Tokio + reqwest for async I/O
 - **Browser/WASM** — wasm-bindgen + web-sys fetch/WebSocket
-- 402 tests passing on both targets
+- 411 tests passing on both targets
 
 ## Project Layout
 

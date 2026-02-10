@@ -10,8 +10,8 @@ use super::cost::{
     self, JoinStrategy, PlanCost,
 };
 use super::logical::{
-    LogicalAggregate, LogicalDistinct, LogicalFilter, LogicalJoin, LogicalLimit, LogicalPlan,
-    LogicalProject, LogicalScan, LogicalSetOp, LogicalSort,
+    LogicalAggregate, LogicalCte, LogicalCteScan, LogicalDistinct, LogicalFilter, LogicalJoin,
+    LogicalLimit, LogicalPlan, LogicalProject, LogicalScan, LogicalSetOp, LogicalSort, LogicalWindow,
 };
 use super::stats::{self, TableStats};
 use super::PlannerError;
@@ -89,6 +89,34 @@ pub struct LimitPlan {
 }
 
 #[derive(Debug, Clone)]
+pub struct CtePlanBinding {
+    pub name: String,
+    pub plan: Box<PhysicalPlan>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CtePlan {
+    pub recursive: bool,
+    pub ctes: Vec<CtePlanBinding>,
+    pub input: Box<PhysicalPlan>,
+    pub cost: PlanCost,
+}
+
+#[derive(Debug, Clone)]
+pub struct CteScanPlan {
+    pub name: String,
+    pub alias: Option<String>,
+    pub cost: PlanCost,
+}
+
+#[derive(Debug, Clone)]
+pub struct WindowPlan {
+    pub expressions: Vec<Expr>,
+    pub input: Box<PhysicalPlan>,
+    pub cost: PlanCost,
+}
+
+#[derive(Debug, Clone)]
 pub struct JoinPlan {
     pub left: Box<PhysicalPlan>,
     pub right: Box<PhysicalPlan>,
@@ -117,13 +145,16 @@ pub enum PhysicalPlan {
     Result(ResultPlan),
     Scan(ScanPlan),
     FunctionScan(FunctionScanPlan),
+    CteScan(CteScanPlan),
     Subquery(SubqueryPlan),
     Filter(FilterPlan),
     Project(ProjectPlan),
     Aggregate(AggregatePlan),
+    Window(WindowPlan),
     Distinct(DistinctPlan),
     Sort(SortPlan),
     Limit(LimitPlan),
+    Cte(CtePlan),
     SetOp(SetOpPlan),
     HashJoin(JoinPlan),
     NestedLoopJoin(JoinPlan),
@@ -135,13 +166,16 @@ impl PhysicalPlan {
             PhysicalPlan::Result(plan) => plan.cost,
             PhysicalPlan::Scan(plan) => plan.cost,
             PhysicalPlan::FunctionScan(plan) => plan.cost,
+            PhysicalPlan::CteScan(plan) => plan.cost,
             PhysicalPlan::Subquery(plan) => plan.cost,
             PhysicalPlan::Filter(plan) => plan.cost,
             PhysicalPlan::Project(plan) => plan.cost,
             PhysicalPlan::Aggregate(plan) => plan.cost,
+            PhysicalPlan::Window(plan) => plan.cost,
             PhysicalPlan::Distinct(plan) => plan.cost,
             PhysicalPlan::Sort(plan) => plan.cost,
             PhysicalPlan::Limit(plan) => plan.cost,
+            PhysicalPlan::Cte(plan) => plan.cost,
             PhysicalPlan::SetOp(plan) => plan.cost,
             PhysicalPlan::HashJoin(plan) => plan.cost,
             PhysicalPlan::NestedLoopJoin(plan) => plan.cost,
@@ -192,6 +226,15 @@ impl PhysicalPlan {
                     format_cost(plan.cost)
                 ));
             }
+            PhysicalPlan::CteScan(plan) => {
+                let label = plan.alias.as_deref().unwrap_or(&plan.name);
+                lines.push(format!(
+                    "{}CTE Scan on {}  ({})",
+                    prefix,
+                    label,
+                    format_cost(plan.cost)
+                ));
+            }
             PhysicalPlan::Subquery(plan) => {
                 lines.push(format!("{}Subquery Scan  ({})", prefix, format_cost(plan.cost)));
                 plan.plan.explain(lines, indent + 2);
@@ -215,6 +258,10 @@ impl PhysicalPlan {
                 }
                 plan.input.explain(lines, indent + 2);
             }
+            PhysicalPlan::Window(plan) => {
+                lines.push(format!("{}Window  ({})", prefix, format_cost(plan.cost)));
+                plan.input.explain(lines, indent + 2);
+            }
             PhysicalPlan::Distinct(plan) => {
                 lines.push(format!("{}Unique  ({})", prefix, format_cost(plan.cost)));
                 if !plan.on.is_empty() {
@@ -228,6 +275,19 @@ impl PhysicalPlan {
             }
             PhysicalPlan::Limit(plan) => {
                 lines.push(format!("{}Limit  ({})", prefix, format_cost(plan.cost)));
+                plan.input.explain(lines, indent + 2);
+            }
+            PhysicalPlan::Cte(plan) => {
+                lines.push(format!("{}CTE  ({})", prefix, format_cost(plan.cost)));
+                for cte in &plan.ctes {
+                    lines.push(format!(
+                        "{}  CTE {}  ({})",
+                        prefix,
+                        cte.name,
+                        format_cost(cte.plan.cost())
+                    ));
+                    cte.plan.explain(lines, indent + 4);
+                }
                 plan.input.explain(lines, indent + 2);
             }
             PhysicalPlan::SetOp(plan) => {
@@ -273,6 +333,7 @@ pub fn plan_physical(logical: &LogicalPlan) -> Result<PhysicalPlan, PlannerError
 #[derive(Default)]
 struct PlannerContext {
     stats_cache: HashMap<String, TableStats>,
+    cte_costs: Vec<HashMap<String, PlanCost>>,
 }
 
 impl PlannerContext {
@@ -284,6 +345,35 @@ impl PlannerContext {
         let stats = stats::table_stats(table)?;
         self.stats_cache.insert(key, stats.clone());
         Ok(stats)
+    }
+
+    fn push_cte_scope<I>(&mut self, names: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let mut scope = HashMap::new();
+        for name in names {
+            scope.insert(name.to_ascii_lowercase(), PlanCost::new(1.0, 0.0, 1.0));
+        }
+        self.cte_costs.push(scope);
+    }
+
+    fn pop_cte_scope(&mut self) {
+        self.cte_costs.pop();
+    }
+
+    fn update_cte_cost(&mut self, name: &str, cost: PlanCost) {
+        if let Some(scope) = self.cte_costs.last_mut() {
+            scope.insert(name.to_ascii_lowercase(), cost);
+        }
+    }
+
+    fn cte_cost(&self, name: &str) -> Option<PlanCost> {
+        let key = name.to_ascii_lowercase();
+        self.cte_costs
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(&key).copied())
     }
 }
 
@@ -297,6 +387,7 @@ fn plan_with_context(logical: &LogicalPlan, ctx: &mut PlannerContext) -> Result<
             function: scan.function.clone(),
             cost: PlanCost::new(1.0, 0.0, 1.0),
         })),
+        LogicalPlan::CteScan(scan) => plan_cte_scan(scan, ctx),
         LogicalPlan::Subquery(subquery) => {
             let planned = plan_with_context(&subquery.plan, ctx)?;
             let cost = planned.cost();
@@ -310,9 +401,11 @@ fn plan_with_context(logical: &LogicalPlan, ctx: &mut PlannerContext) -> Result<
         LogicalPlan::Filter(filter) => plan_filter(filter, ctx),
         LogicalPlan::Project(project) => plan_project(project, ctx),
         LogicalPlan::Aggregate(aggregate) => plan_aggregate(aggregate, ctx),
+        LogicalPlan::Window(window) => plan_window(window, ctx),
         LogicalPlan::Distinct(distinct) => plan_distinct(distinct, ctx),
         LogicalPlan::Sort(sort) => plan_sort(sort, ctx),
         LogicalPlan::Limit(limit) => plan_limit(limit, ctx),
+        LogicalPlan::Cte(cte) => plan_cte(cte, ctx),
         LogicalPlan::SetOp(set_op) => plan_set_op(set_op, ctx),
         LogicalPlan::Join(join) => plan_join(join, ctx),
     }
@@ -416,6 +509,53 @@ fn plan_limit(limit: &LogicalLimit, ctx: &mut PlannerContext) -> Result<Physical
         input: Box::new(input),
         cost,
     }))
+}
+
+fn plan_window(window: &LogicalWindow, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+    let input = plan_with_context(&window.input, ctx)?;
+    let cost = cost::window_cost(input.cost());
+    Ok(PhysicalPlan::Window(WindowPlan {
+        expressions: window.expressions.clone(),
+        input: Box::new(input),
+        cost,
+    }))
+}
+
+fn plan_cte_scan(scan: &LogicalCteScan, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+    let base_cost = ctx
+        .cte_cost(&scan.name)
+        .unwrap_or_else(|| PlanCost::new(1.0, 0.0, 1.0));
+    let cost = cost::cte_scan_cost(base_cost);
+    Ok(PhysicalPlan::CteScan(CteScanPlan {
+        name: scan.name.clone(),
+        alias: scan.alias.clone(),
+        cost,
+    }))
+}
+
+fn plan_cte(cte: &LogicalCte, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+    ctx.push_cte_scope(cte.ctes.iter().map(|cte| cte.name.clone()));
+    let result = (|| {
+        let mut planned_ctes = Vec::with_capacity(cte.ctes.len());
+        for binding in &cte.ctes {
+            let plan = plan_with_context(&binding.plan, ctx)?;
+            ctx.update_cte_cost(&binding.name, plan.cost());
+            planned_ctes.push(CtePlanBinding {
+                name: binding.name.clone(),
+                plan: Box::new(plan),
+            });
+        }
+        let input = plan_with_context(&cte.input, ctx)?;
+        let cost = cost::cte_cost(input.cost(), planned_ctes.iter().map(|cte| cte.plan.cost()));
+        Ok(PhysicalPlan::Cte(CtePlan {
+            recursive: cte.recursive,
+            ctes: planned_ctes,
+            input: Box::new(input),
+            cost,
+        }))
+    })();
+    ctx.pop_cte_scope();
+    result
 }
 
 fn plan_set_op(set_op: &LogicalSetOp, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
