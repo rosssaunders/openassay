@@ -114,6 +114,8 @@ TEXT, INTEGER, BIGINT, FLOAT, DOUBLE PRECISION, BOOLEAN, NUMERIC, DATE, TIMESTAM
 
 `pg_class`, `pg_namespace`, `pg_type`, `pg_attribute`, `pg_index`, `pg_constraint`, `pg_sequence`, `pg_depend`, `pg_extension`, `pg_proc`, `pg_am`, `pg_roles`, `pg_settings`, `information_schema.tables`, `information_schema.columns`
 
+See [COMPATIBILITY.md](COMPATIBILITY.md) for the supported/unsupported scorecard.
+
 ## Screenshot
 
 ![Postrust Browser SQL Harness](assets/postrust-browser-harness.png)
@@ -121,7 +123,7 @@ TEXT, INTEGER, BIGINT, FLOAT, DOUBLE PRECISION, BOOLEAN, NUMERIC, DATE, TIMESTAM
 ## Quick Start
 
 ```bash
-# Build and test (402 tests)
+# Build and test (408 tests)
 cargo test
 
 # PostgreSQL-compatible server
@@ -138,7 +140,7 @@ cargo run --bin web_server -- 8080
 
 - **Native** (Linux, macOS) — Tokio + reqwest for async I/O
 - **Browser/WASM** — wasm-bindgen + web-sys fetch/WebSocket
-- 402 tests passing on both targets
+- 408 tests passing on both targets
 
 ## Project Layout
 

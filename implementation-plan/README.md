@@ -16,7 +16,7 @@ Execution model:
 
 ## Status (audited 2026-02-10)
 
-All 402 tests pass. The codebase is ~41k lines of Rust across a PostgreSQL-style module layout.
+All 408 tests pass. The codebase is ~41k lines of Rust across a PostgreSQL-style module layout.
 
 ### Step 00 — Refactor to PG Layout: ✅ Done
 The monolithic `engine.rs` (was 21k lines) has been decomposed into:
@@ -187,11 +187,13 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
 - SQLSTATE error codes with position metadata.
 - Tests: wire protocol roundtrip, extended protocol flow, error handling, auth, COPY.
 
-### Step 17 — Regression and Hardening: 🟡 Partially Done
-- `tests/regression/` — regression test corpus with SQL fixtures.
-- `tests/differential/` — differential testing framework.
-- 402 tests passing.
-- **Not done:** No CI pipeline config. No fuzzing. No performance benchmarks. No formal compatibility scorecard.
+### Step 17 — Regression and Hardening: ✅ Done
+- `tests/regression/` — expanded regression SQL corpus with expected outputs.
+- `tests/differential/` — differential fixture suite covering core query semantics.
+- Property tests (proptest) for expression evaluation and transaction safety.
+- CI pipeline with build/test/clippy/fmt gates.
+- Benchmark scaffolding (criterion) for select/insert/join/expression evaluation.
+- Compatibility scorecard in `COMPATIBILITY.md`.
 
 ---
 
@@ -216,7 +218,7 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
 | 14 | Type/Function/Operator Parity | ✅ Done — 170+ functions including all listed targets |
 | 15 | Security (Roles/Grants/RLS) | ✅ Done (GRANT/REVOKE parsed via string matching) |
 | 16 | Protocol and Client Compat | ✅ Done |
-| 17 | Regression and Hardening | 🟡 Partial — 402 tests, no CI/fuzzing/benchmarks |
+| 17 | Regression and Hardening | ✅ Done |
 
 ### Key architectural gaps:
 1. **Planner coverage** — simple SELECT planning is in place; complex queries still execute via PassThrough
