@@ -564,7 +564,7 @@ impl PgWireConnection {
 }
 
 fn parse_copy_both_response(frame: &[u8]) -> Result<CopyBothResponse, ReplicationError> {
-    if frame.len() < 9 {
+    if frame.len() < 8 {
         return Err(ReplicationError {
             message: "CopyBothResponse frame too short".to_string(),
         });

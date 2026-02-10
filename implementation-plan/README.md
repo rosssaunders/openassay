@@ -16,7 +16,8 @@ Execution model:
 
 ## Status (audited 2026-02-10)
 
-All 405 tests pass. The codebase is ~41k lines of Rust across a PostgreSQL-style module layout.
+All 405 unit tests pass, with a replication integration test under `tests/integration/`.
+The codebase is ~41k lines of Rust across a PostgreSQL-style module layout.
 
 ### Step 00 — Refactor to PG Layout: ✅ Done
 The monolithic `engine.rs` (was 21k lines) has been decomposed into:
@@ -197,7 +198,9 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
 - `src/replication/` module with protocol client, pgoutput decoder, schema sync, initial COPY sync,
   and apply worker.
 - CREATE/DROP SUBSCRIPTION parsing and command handlers.
-- Background replication worker with standby status updates.
+- Background replication worker that validates schemas, creates pgoutput slots, performs COPY sync,
+  and streams WAL changes with standby status updates.
+- Integration test harness: `cd tests/integration && node replication_test.js`.
 - Unit tests for pgoutput and tuple decoding.
 
 ---

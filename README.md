@@ -124,12 +124,9 @@ TEXT, INTEGER, BIGINT, FLOAT, DOUBLE PRECISION, BOOLEAN, NUMERIC, DATE, TIMESTAM
 ## Quick Start
 
 ```bash
-<<<<<<< HEAD
-# Build and test (411 tests)
-=======
-# Build and test (405 tests)
->>>>>>> replication/feature/logical-replication
+# Build and test
 cargo test
+cargo clippy -- -D warnings
 
 # PostgreSQL-compatible server
 cargo run --bin pg_server -- 55432
@@ -145,10 +142,6 @@ cargo run --bin web_server -- 8080
 
 - **Native** (Linux, macOS) — Tokio + reqwest for async I/O
 - **Browser/WASM** — wasm-bindgen + web-sys fetch/WebSocket
-<<<<<<< HEAD
-- 411 tests passing on both targets
-=======
-- 405 tests passing on both targets
 
 ## Logical replication
 
@@ -162,9 +155,10 @@ CREATE SUBSCRIPTION local_sub
   WITH (copy_data = true, slot_name = 'postrust_sub');
 ```
 
-Once created, the replication worker performs an initial COPY and then streams pgoutput changes
-into the in-memory tables for local queries.
->>>>>>> replication/feature/logical-replication
+The subscription worker runs in the background: it validates table schemas, creates a logical slot
+with pgoutput, performs the optional COPY sync, then streams WAL changes into the in-memory tables.
+
+Run the integration test with `cd tests/integration && node replication_test.js`.
 
 ## Project Layout
 

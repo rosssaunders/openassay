@@ -1,5 +1,7 @@
 use crate::catalog::search_path::SearchPath;
-use crate::catalog::{ColumnSpec, TableKind, TypeSignature, with_catalog_read, with_catalog_write};
+use crate::catalog::{
+    ColumnSpec, Table, TableKind, TypeSignature, with_catalog_read, with_catalog_write,
+};
 use crate::replication::pgoutput::RelationMessage;
 use crate::replication::tuple_decoder::type_signature_for_oid;
 use crate::replication::ReplicationError;
@@ -28,10 +30,10 @@ pub async fn fetch_publication_schema(
 ) -> Result<Vec<TableSchema>, ReplicationError> {
     let tables = client
         .query(
-            "SELECT p.relid, n.nspname, c.relname \
+            "SELECT c.oid, n.nspname, c.relname \
              FROM pg_publication_tables p \
-             JOIN pg_class c ON c.oid = p.relid \
-             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN pg_namespace n ON n.nspname = p.schemaname \
+             JOIN pg_class c ON c.relname = p.tablename AND c.relnamespace = n.oid \
              WHERE p.pubname = $1",
             &[&publication],
         )
@@ -53,15 +55,16 @@ pub async fn fetch_publication_schema(
 }
 
 pub fn ensure_local_table(schema: &TableSchema) -> Result<crate::catalog::oid::Oid, ReplicationError> {
-    if let Ok(oid) = with_catalog_read(|catalog| {
+    if let Ok(table) = with_catalog_read(|catalog| {
         catalog
             .resolve_table(
                 &[schema.namespace.clone(), schema.name.clone()],
                 &SearchPath::default(),
             )
-            .map(|table| table.oid())
+            .cloned()
     }) {
-        return Ok(oid);
+        verify_table_schema(&table, schema)?;
+        return Ok(table.oid());
     }
 
     let mut columns = Vec::with_capacity(schema.columns.len());
@@ -97,9 +100,82 @@ pub fn ensure_local_table(schema: &TableSchema) -> Result<crate::catalog::oid::O
     Ok(oid)
 }
 
+fn verify_table_schema(table: &Table, schema: &TableSchema) -> Result<(), ReplicationError> {
+    let local_columns = table.columns();
+    if local_columns.len() != schema.columns.len() {
+        return Err(ReplicationError {
+            message: format!(
+                "table \"{}.{}\" column count mismatch (local {}, upstream {})",
+                schema.namespace,
+                schema.name,
+                local_columns.len(),
+                schema.columns.len()
+            ),
+        });
+    }
+    for (idx, (local, upstream)) in local_columns.iter().zip(schema.columns.iter()).enumerate() {
+        if local.name() != upstream.name {
+            return Err(ReplicationError {
+                message: format!(
+                    "table \"{}.{}\" column {} name mismatch (local {}, upstream {})",
+                    schema.namespace,
+                    schema.name,
+                    idx + 1,
+                    local.name(),
+                    upstream.name
+                ),
+            });
+        }
+        if local.type_signature() != upstream.type_signature {
+            return Err(ReplicationError {
+                message: format!(
+                    "table \"{}.{}\" column {} type mismatch for {}",
+                    schema.namespace,
+                    schema.name,
+                    idx + 1,
+                    local.name()
+                ),
+            });
+        }
+        if local.nullable() != upstream.nullable {
+            return Err(ReplicationError {
+                message: format!(
+                    "table \"{}.{}\" column {} nullability mismatch for {}",
+                    schema.namespace,
+                    schema.name,
+                    idx + 1,
+                    local.name()
+                ),
+            });
+        }
+        if local.primary_key() != upstream.primary_key {
+            return Err(ReplicationError {
+                message: format!(
+                    "table \"{}.{}\" column {} primary key mismatch for {}",
+                    schema.namespace,
+                    schema.name,
+                    idx + 1,
+                    local.name()
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub fn ensure_relation_from_message(
     message: &RelationMessage,
 ) -> Result<crate::catalog::oid::Oid, ReplicationError> {
+    if let Ok(oid) = with_catalog_read(|catalog| {
+        catalog
+            .resolve_table(
+                &[message.namespace.clone(), message.name.clone()],
+                &SearchPath::default(),
+            )
+            .map(|table| table.oid())
+    }) {
+        return Ok(oid);
+    }
     let columns = message
         .columns
         .iter()

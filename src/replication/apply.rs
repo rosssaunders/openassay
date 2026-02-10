@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::access::transam::xact::TransactionContext;
-use crate::catalog::oid::Oid;
+use crate::catalog::{SearchPath, oid::Oid, with_catalog_read};
 use crate::replication::pgoutput::{
     CommitMessage, DeleteMessage, InsertMessage, PgOutputMessage, RelationColumn, RelationMessage,
     TruncateMessage, UpdateMessage,
@@ -37,6 +37,9 @@ impl RelationInfo {
                 }
             })
             .collect();
+        if indexes.is_empty() {
+            indexes = primary_key_indexes(&self.namespace, &self.name, &self.columns);
+        }
         if indexes.is_empty() {
             indexes = (0..self.columns.len()).collect();
         }
@@ -108,7 +111,7 @@ impl ApplyWorker {
 
     fn handle_relation(&mut self, relation: &RelationMessage) -> Result<(), ReplicationError> {
         let local_oid = ensure_relation_from_message(relation)?;
-        let columns = relation
+        let mut columns: Vec<RelationColumn> = relation
             .columns
             .iter()
             .map(|column| RelationColumn {
@@ -118,6 +121,16 @@ impl ApplyWorker {
                 type_modifier: column.type_modifier,
             })
             .collect();
+        if let Some(existing) = self.relations.get(&relation.relation_id) {
+            for (idx, column) in columns.iter_mut().enumerate() {
+                if column.flags & 0x01 == 0
+                    && let Some(existing_col) = existing.columns.get(idx)
+                    && existing_col.flags & 0x01 != 0
+                {
+                    column.flags |= 0x01;
+                }
+            }
+        }
         self.relations.insert(
             relation.relation_id,
             RelationInfo {
@@ -154,12 +167,14 @@ impl ApplyWorker {
 
     fn apply_update(&mut self, update: &UpdateMessage) -> Result<(), ReplicationError> {
         let relation = self.get_relation(update.relation_id)?;
-        let Some((_, old_tuple)) = update.old_tuple.as_ref() else {
-            return Ok(());
-        };
-        let decoded_old = decode_tuple(&relation.columns, old_tuple)?;
         let key_indexes = relation.key_indexes();
-        let key_values = extract_key_values(&decoded_old, &key_indexes)?;
+        let decoded_new = decode_tuple(&relation.columns, &update.new_tuple)?;
+        let key_values = if let Some((_, old_tuple)) = update.old_tuple.as_ref() {
+            let decoded_old = decode_tuple(&relation.columns, old_tuple)?;
+            extract_key_values(&decoded_old, &key_indexes)?
+        } else {
+            extract_key_values(&decoded_new, &key_indexes)?
+        };
         if key_values.is_empty() {
             return Ok(());
         }
@@ -177,7 +192,6 @@ impl ApplyWorker {
             );
             return Ok(());
         };
-        let decoded_new = decode_tuple(&relation.columns, &update.new_tuple)?;
         let mut updated = rows[row_idx].clone();
         for (idx, value) in decoded_new.into_iter().enumerate() {
             if let DecodedColumn::Value(value) = value && idx < updated.len() {
@@ -301,4 +315,31 @@ fn find_row_index(
                 .unwrap_or(false)
         })
     })
+}
+
+fn primary_key_indexes(
+    namespace: &str,
+    table: &str,
+    columns: &[RelationColumn],
+) -> Vec<usize> {
+    let key_columns = with_catalog_read(|catalog| {
+        catalog
+            .resolve_table(
+                &[namespace.to_string(), table.to_string()],
+                &SearchPath::default(),
+            )
+            .ok()
+            .and_then(|table| {
+                table
+                    .key_constraints()
+                    .iter()
+                    .find(|constraint| constraint.primary)
+                    .map(|constraint| constraint.columns.clone())
+            })
+    })
+    .unwrap_or_default();
+    key_columns
+        .into_iter()
+        .filter_map(|key| columns.iter().position(|col| col.name == key))
+        .collect()
 }

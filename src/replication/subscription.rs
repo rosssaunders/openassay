@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
+use std::thread;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
@@ -11,7 +12,7 @@ use crate::replication::initial_sync::copy_tables;
 use crate::replication::pgoutput::decode_stream;
 use crate::replication::schema_sync::{ensure_local_table, fetch_publication_schema};
 use crate::replication::slot::slot_exists_error;
-use crate::replication::{replication_runtime, Lsn, ReplicationError};
+use crate::replication::{Lsn, ReplicationError};
 
 #[derive(Debug, Clone)]
 pub struct SubscriptionConfig {
@@ -33,6 +34,7 @@ fn subscriptions() -> &'static RwLock<HashMap<String, SubscriptionHandle>> {
 }
 
 pub fn create_subscription(config: SubscriptionConfig) -> Result<(), ReplicationError> {
+    ConnectionConfig::parse(&config.conninfo)?;
     let mut registry = subscriptions()
         .write()
         .map_err(|_| ReplicationError {
@@ -44,7 +46,26 @@ pub fn create_subscription(config: SubscriptionConfig) -> Result<(), Replication
         });
     }
     let (stop_tx, stop_rx) = oneshot::channel();
-    replication_runtime().spawn(run_subscription(config.clone(), stop_rx));
+    let thread_name = format!("postrust-subscription-{}", config.name);
+    let config_clone = config.clone();
+    thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build();
+            match runtime {
+                Ok(runtime) => {
+                    runtime.block_on(run_subscription(config_clone, stop_rx));
+                }
+                Err(err) => {
+                    eprintln!("replication runtime error: {}", err);
+                }
+            }
+        })
+        .map_err(|err| ReplicationError {
+            message: err.to_string(),
+        })?;
     registry.insert(
         config.name.clone(),
         SubscriptionHandle {
@@ -100,7 +121,7 @@ async fn run_subscription_once(config: &SubscriptionConfig) -> Result<(), Replic
     let connection_config = ConnectionConfig::parse(&config.conninfo)?;
     let standard_conninfo = connection_config.conninfo_string(false);
     let (standard_client, connection) = tokio_postgres::connect(&standard_conninfo, NoTls).await?;
-    replication_runtime().spawn(async move {
+    tokio::spawn(async move {
         if let Err(err) = connection.await {
             eprintln!("replication schema connection error: {}", err);
         }
@@ -173,7 +194,8 @@ async fn fetch_slot_lsn(
 ) -> Result<Option<Lsn>, ReplicationError> {
     let rows = client
         .query(
-            "SELECT confirmed_flush_lsn, restart_lsn FROM pg_replication_slots WHERE slot_name = $1",
+            "SELECT confirmed_flush_lsn::text, restart_lsn::text \
+             FROM pg_replication_slots WHERE slot_name = $1",
             &[&slot_name],
         )
         .await?;

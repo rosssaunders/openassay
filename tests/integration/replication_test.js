@@ -198,52 +198,66 @@ async function connectUpstream() {
 async function testBasicQuery() {
   console.log('\n🧪 Test: Basic postrust query works');
   const pr = await connectPostrust();
-  const res = await pr.query('SELECT 1 AS num, \'hello\' AS greeting');
-  assertEqual(res.rows.length, 1, 'Should return 1 row');
-  assertEqual(res.rows[0].num, '1', 'num should be 1');
-  assertEqual(res.rows[0].greeting, 'hello', 'greeting should be hello');
-  await pr.end();
+  try {
+    const res = await pr.query('SELECT 1 AS num, \'hello\' AS greeting');
+    assertEqual(res.rows.length, 1, 'Should return 1 row');
+    assertEqual(res.rows[0].num, '1', 'num should be 1');
+    assertEqual(res.rows[0].greeting, 'hello', 'greeting should be hello');
+  } catch (err) {
+    console.error(`  ✗ FAIL: Basic query failed: ${err.message}`);
+    failed++;
+  } finally {
+    try {
+      await pr.end();
+    } catch {}
+  }
 }
 
 async function testCreateSubscription() {
   console.log('\n🧪 Test: CREATE SUBSCRIPTION on postrust');
   const pr = await connectPostrust();
-
-  // First create the target tables (postrust needs them before replication)
-  await pr.query(`
-    CREATE TABLE users (
-      id SERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      email TEXT,
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-
-  await pr.query(`
-    CREATE TABLE orders (
-      id SERIAL PRIMARY KEY,
-      user_id INTEGER,
-      amount NUMERIC(10,2) NOT NULL,
-      status TEXT DEFAULT 'pending'
-    )
-  `);
-
-  // Create subscription
   try {
+    // First create the target tables (postrust needs them before replication)
     await pr.query(`
-      CREATE SUBSCRIPTION test_sub
-        CONNECTION 'host=localhost port=${PG_PORT} dbname=${PG_DB} user=${PG_USER} password=${PG_PASS}'
-        PUBLICATION postrust_pub
-        WITH (copy_data = true)
+      CREATE TABLE users (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
     `);
-    console.log('  ✓ PASS: CREATE SUBSCRIPTION succeeded');
-    passed++;
-  } catch (err) {
-    console.log(`  ✗ FAIL: CREATE SUBSCRIPTION failed: ${err.message}`);
-    failed++;
-  }
 
-  await pr.end();
+    await pr.query(`
+      CREATE TABLE orders (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER,
+        amount NUMERIC(10,2) NOT NULL,
+        status TEXT DEFAULT 'pending'
+      )
+    `);
+
+    // Create subscription
+    try {
+      await pr.query(`
+        CREATE SUBSCRIPTION test_sub
+          CONNECTION 'host=localhost port=${PG_PORT} dbname=${PG_DB} user=${PG_USER} password=${PG_PASS}'
+          PUBLICATION postrust_pub
+          WITH (copy_data = true)
+      `);
+      console.log('  ✓ PASS: CREATE SUBSCRIPTION succeeded');
+      passed++;
+    } catch (err) {
+      console.log(`  ✗ FAIL: CREATE SUBSCRIPTION failed: ${err.message}`);
+      failed++;
+    }
+  } catch (err) {
+    console.error(`  ✗ FAIL: Setup for CREATE SUBSCRIPTION failed: ${err.message}`);
+    failed++;
+  } finally {
+    try {
+      await pr.end();
+    } catch {}
+  }
 }
 
 async function testInitialSync() {
@@ -251,19 +265,24 @@ async function testInitialSync() {
 
   // Insert data into upstream BEFORE subscription (tests copy_data)
   const upstream = await connectUpstream();
-  await upstream.query(`
-    INSERT INTO users (name, email) VALUES
-      ('Alice', 'alice@example.com'),
-      ('Bob', 'bob@example.com'),
-      ('Charlie', 'charlie@example.com')
-  `);
-  await upstream.query(`
-    INSERT INTO orders (user_id, amount, status) VALUES
-      (1, 99.99, 'completed'),
-      (2, 49.50, 'pending'),
-      (3, 199.00, 'shipped')
-  `);
-  await upstream.end();
+  try {
+    await upstream.query(`
+      INSERT INTO users (name, email) VALUES
+        ('Alice', 'alice@example.com'),
+        ('Bob', 'bob@example.com'),
+        ('Charlie', 'charlie@example.com')
+    `);
+    await upstream.query(`
+      INSERT INTO orders (user_id, amount, status) VALUES
+        (1, 99.99, 'completed'),
+        (2, 49.50, 'pending'),
+        (3, 199.00, 'shipped')
+    `);
+  } finally {
+    try {
+      await upstream.end();
+    } catch {}
+  }
 
   // Wait for replication to catch up
   console.log('  Waiting for replication sync...');
@@ -271,14 +290,21 @@ async function testInitialSync() {
 
   // Query postrust
   const pr = await connectPostrust();
-  const users = await pr.query('SELECT name, email FROM users ORDER BY name');
-  assertEqual(users.rows.length, 3, 'Should have 3 users after initial sync');
-  assertEqual(users.rows[0].name, 'Alice', 'First user should be Alice');
+  try {
+    const users = await pr.query('SELECT name, email FROM users ORDER BY name');
+    assertEqual(users.rows.length, 3, 'Should have 3 users after initial sync');
+    assertEqual(users.rows[0].name, 'Alice', 'First user should be Alice');
 
-  const orders = await pr.query('SELECT amount, status FROM orders ORDER BY amount');
-  assertEqual(orders.rows.length, 3, 'Should have 3 orders after initial sync');
-
-  await pr.end();
+    const orders = await pr.query('SELECT amount, status FROM orders ORDER BY amount');
+    assertEqual(orders.rows.length, 3, 'Should have 3 orders after initial sync');
+  } catch (err) {
+    console.error(`  ✗ FAIL: Initial sync verification failed: ${err.message}`);
+    failed++;
+  } finally {
+    try {
+      await pr.end();
+    } catch {}
+  }
 }
 
 async function testStreamingReplication() {
@@ -286,13 +312,18 @@ async function testStreamingReplication() {
 
   // Insert new data into upstream
   const upstream = await connectUpstream();
-  await upstream.query(`
-    INSERT INTO users (name, email) VALUES ('Dave', 'dave@example.com')
-  `);
-  await upstream.query(`
-    INSERT INTO orders (user_id, amount, status) VALUES (4, 75.00, 'pending')
-  `);
-  await upstream.end();
+  try {
+    await upstream.query(`
+      INSERT INTO users (name, email) VALUES ('Dave', 'dave@example.com')
+    `);
+    await upstream.query(`
+      INSERT INTO orders (user_id, amount, status) VALUES (4, 75.00, 'pending')
+    `);
+  } finally {
+    try {
+      await upstream.end();
+    } catch {}
+  }
 
   // Wait for replication
   console.log('  Waiting for streaming replication...');
@@ -300,48 +331,81 @@ async function testStreamingReplication() {
 
   // Verify in postrust
   const pr = await connectPostrust();
-  const users = await pr.query('SELECT name FROM users ORDER BY name');
-  assertEqual(users.rows.length, 4, 'Should have 4 users after streaming insert');
-  assert(
-    users.rows.some(r => r.name === 'Dave'),
-    'Dave should appear via streaming replication'
-  );
+  try {
+    const users = await pr.query('SELECT name FROM users ORDER BY name');
+    assertEqual(users.rows.length, 4, 'Should have 4 users after streaming insert');
+    assert(
+      users.rows.some(r => r.name === 'Dave'),
+      'Dave should appear via streaming replication'
+    );
 
-  const orders = await pr.query('SELECT COUNT(*) AS cnt FROM orders');
-  assertEqual(orders.rows[0].cnt, '4', 'Should have 4 orders');
-
-  await pr.end();
+    const orders = await pr.query('SELECT COUNT(*) AS cnt FROM orders');
+    assertEqual(orders.rows[0].cnt, '4', 'Should have 4 orders');
+  } catch (err) {
+    console.error(`  ✗ FAIL: Streaming insert verification failed: ${err.message}`);
+    failed++;
+  } finally {
+    try {
+      await pr.end();
+    } catch {}
+  }
 }
 
 async function testUpdateReplication() {
   console.log('\n🧪 Test: Streaming replication (UPDATE)');
 
   const upstream = await connectUpstream();
-  await upstream.query(`UPDATE users SET email = 'alice-new@example.com' WHERE name = 'Alice'`);
-  await upstream.end();
+  try {
+    await upstream.query(`UPDATE users SET email = 'alice-new@example.com' WHERE name = 'Alice'`);
+  } finally {
+    try {
+      await upstream.end();
+    } catch {}
+  }
 
   await sleep(2000);
 
   const pr = await connectPostrust();
-  const res = await pr.query(`SELECT email FROM users WHERE name = 'Alice'`);
-  assertEqual(res.rows.length, 1, 'Alice should still exist');
-  assertEqual(res.rows[0].email, 'alice-new@example.com', 'Alice email should be updated');
-  await pr.end();
+  try {
+    const res = await pr.query(`SELECT email FROM users WHERE name = 'Alice'`);
+    assertEqual(res.rows.length, 1, 'Alice should still exist');
+    assertEqual(res.rows[0].email, 'alice-new@example.com', 'Alice email should be updated');
+  } catch (err) {
+    console.error(`  ✗ FAIL: Update replication verification failed: ${err.message}`);
+    failed++;
+  } finally {
+    try {
+      await pr.end();
+    } catch {}
+  }
 }
 
 async function testDeleteReplication() {
   console.log('\n🧪 Test: Streaming replication (DELETE)');
 
   const upstream = await connectUpstream();
-  await upstream.query(`DELETE FROM orders WHERE status = 'pending'`);
-  await upstream.end();
+  try {
+    await upstream.query(`DELETE FROM orders WHERE status = 'pending'`);
+  } finally {
+    try {
+      await upstream.end();
+    } catch {}
+  }
 
   await sleep(2000);
 
   const pr = await connectPostrust();
-  const res = await pr.query(`SELECT COUNT(*) AS cnt FROM orders WHERE status = 'pending'`);
-  assertEqual(res.rows[0].cnt, '0', 'Pending orders should be deleted');
-  await pr.end();
+  try {
+    const res = await pr.query(`SELECT COUNT(*) AS cnt FROM orders WHERE status = 'pending'`);
+    assertEqual(res.rows[0].cnt, '0', 'Pending orders should be deleted');
+  } catch (err) {
+    console.error(`  ✗ FAIL: Delete replication verification failed: ${err.message}`);
+    failed++;
+  } finally {
+    try {
+      await pr.end();
+    } catch {}
+  }
 }
 
 async function cleanup() {

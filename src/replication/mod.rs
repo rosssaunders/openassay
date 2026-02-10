@@ -8,9 +8,6 @@ pub mod subscription;
 pub mod tuple_decoder;
 
 use std::fmt;
-use std::sync::OnceLock;
-
-use tokio::runtime::{Builder, Runtime};
 
 #[derive(Debug, Clone)]
 pub struct ReplicationError {
@@ -35,6 +32,11 @@ impl From<std::io::Error> for ReplicationError {
 
 impl From<tokio_postgres::Error> for ReplicationError {
     fn from(err: tokio_postgres::Error) -> Self {
+        if let Some(db_error) = err.as_db_error() {
+            return Self {
+                message: format!("{} (SQLSTATE {:?})", db_error.message(), db_error.code()),
+            };
+        }
         Self {
             message: err.to_string(),
         }
@@ -66,17 +68,4 @@ impl Lsn {
     pub fn format(self) -> String {
         format!("{:X}/{:X}", self.0 >> 32, self.0 & 0xFFFF_FFFF)
     }
-}
-
-static REPLICATION_RUNTIME: OnceLock<Runtime> = OnceLock::new();
-
-pub(crate) fn replication_runtime() -> &'static Runtime {
-    REPLICATION_RUNTIME.get_or_init(|| {
-        Builder::new_multi_thread()
-            .enable_all()
-            .worker_threads(2)
-            .thread_name("postrust-repl")
-            .build()
-            .expect("replication runtime should build")
-    })
 }
