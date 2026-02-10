@@ -16,7 +16,7 @@ Execution model:
 
 ## Status (audited 2026-02-10)
 
-All 402 tests pass. The codebase is ~41k lines of Rust across a PostgreSQL-style module layout.
+All 405 tests pass. The codebase is ~41k lines of Rust across a PostgreSQL-style module layout.
 
 ### Step 00 — Refactor to PG Layout: ✅ Done
 The monolithic `engine.rs` (was 21k lines) has been decomposed into:
@@ -190,8 +190,15 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
 ### Step 17 — Regression and Hardening: 🟡 Partially Done
 - `tests/regression/` — regression test corpus with SQL fixtures.
 - `tests/differential/` — differential testing framework.
-- 402 tests passing.
+- 405 tests passing.
 - **Not done:** No CI pipeline config. No fuzzing. No performance benchmarks. No formal compatibility scorecard.
+
+### Step 18 — Logical Replication Target: ✅ Done
+- `src/replication/` module with protocol client, pgoutput decoder, schema sync, initial COPY sync,
+  and apply worker.
+- CREATE/DROP SUBSCRIPTION parsing and command handlers.
+- Background replication worker with standby status updates.
+- Unit tests for pgoutput and tuple decoding.
 
 ---
 
@@ -216,7 +223,8 @@ The monolithic `engine.rs` (was 21k lines) has been decomposed into:
 | 14 | Type/Function/Operator Parity | ✅ Done — 170+ functions including all listed targets |
 | 15 | Security (Roles/Grants/RLS) | ✅ Done (GRANT/REVOKE parsed via string matching) |
 | 16 | Protocol and Client Compat | ✅ Done |
-| 17 | Regression and Hardening | 🟡 Partial — 402 tests, no CI/fuzzing/benchmarks |
+| 17 | Regression and Hardening | 🟡 Partial — 405 tests, no CI/fuzzing/benchmarks |
+| 18 | Logical Replication Target | ✅ Done |
 
 ### Key architectural gaps:
 1. **Planner coverage** — simple SELECT planning is in place; complex queries still execute via PassThrough
@@ -242,6 +250,7 @@ Milestone map:
 15. `15-security-roles-rls.md`
 16. `16-protocol-and-client-compat.md`
 17. `17-regression-compat-and-hardening.md`
+18. `18-logical-replication-target.md`
 
 Current code anchors:
 - Parser/AST: `src/parser/`

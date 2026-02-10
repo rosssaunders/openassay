@@ -16,7 +16,8 @@ use crate::parser::ast::{
     ExplainStatement, SetStatement, ShowStatement, DiscardStatement, DoStatement,
     ListenStatement, NotifyStatement, UnlistenStatement,
     CreateExtensionStatement, DropExtensionStatement,
-    CreateFunctionStatement, FunctionParam, FunctionReturnType, GroupByExpr,
+    CreateFunctionStatement, CreateSubscriptionStatement, DropSubscriptionStatement,
+    SubscriptionOptions, FunctionParam, FunctionReturnType, GroupByExpr,
     TransactionStatement,
     CopyDirection, CopyFormat, CopyOptions, CopyStatement,
     CreateRoleStatement, AlterRoleStatement, DropRoleStatement, RoleOption,
@@ -225,6 +226,14 @@ impl Parser {
             }
             return self.parse_create_function(or_replace);
         }
+        if self.consume_ident("subscription") {
+            if or_replace || unique || materialized {
+                return Err(self.error_at_current(
+                    "unexpected modifier before CREATE SUBSCRIPTION",
+                ));
+            }
+            return self.parse_create_subscription();
+        }
         if self.consume_keyword(Keyword::Index) {
             if or_replace {
                 return Err(self.error_at_current("OR REPLACE is only supported for CREATE VIEW"));
@@ -328,7 +337,7 @@ impl Parser {
         }
         self.expect_keyword(
             Keyword::Table,
-            "expected TABLE, SCHEMA, INDEX, SEQUENCE, or VIEW after CREATE",
+            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or SUBSCRIPTION after CREATE",
         )?;
         let name = self.parse_qualified_name()?;
         self.expect_token(
@@ -742,6 +751,19 @@ impl Parser {
         if !materialized && self.consume_ident("role") {
             return self.parse_drop_role_statement();
         }
+        if self.consume_ident("subscription") {
+            let if_exists = if self.consume_keyword(Keyword::If) {
+                self.expect_keyword(
+                    Keyword::Exists,
+                    "expected EXISTS after IF in DROP SUBSCRIPTION",
+                )?;
+                true
+            } else {
+                false
+            };
+            let name = self.parse_identifier()?;
+            return Ok(Statement::DropSubscription(DropSubscriptionStatement { name, if_exists }));
+        }
         if self.consume_keyword(Keyword::View) {
             let if_exists = if self.consume_keyword(Keyword::If) {
                 self.expect_keyword(Keyword::Exists, "expected EXISTS after IF in DROP VIEW")?;
@@ -846,7 +868,115 @@ impl Parser {
             // We don't actually implement DROP FUNCTION yet, just parse it
             return Err(self.error_at_current("DROP FUNCTION is not yet supported"));
         }
-        Err(self.error_at_current("expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or EXTENSION after DROP"))
+        Err(self.error_at_current(
+            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, SUBSCRIPTION, or EXTENSION after DROP",
+        ))
+    }
+
+    fn parse_create_subscription(&mut self) -> Result<Statement, ParseError> {
+        let name = self.parse_identifier()?;
+        if !self.consume_ident("connection") {
+            return Err(self.error_at_current(
+                "expected CONNECTION after CREATE SUBSCRIPTION name",
+            ));
+        }
+        let connection = match self.current_kind() {
+            TokenKind::String(value) => {
+                let out = value.clone();
+                self.advance();
+                out
+            }
+            _ => {
+                return Err(self.error_at_current(
+                    "CREATE SUBSCRIPTION CONNECTION requires a single-quoted string",
+                ));
+            }
+        };
+        if !self.consume_ident("publication") {
+            return Err(self.error_at_current(
+                "expected PUBLICATION after CREATE SUBSCRIPTION CONNECTION",
+            ));
+        }
+        let publication = self.parse_identifier()?;
+        let options = if self.consume_keyword(Keyword::With) {
+            self.parse_subscription_options()?
+        } else {
+            SubscriptionOptions {
+                copy_data: true,
+                slot_name: None,
+            }
+        };
+        Ok(Statement::CreateSubscription(CreateSubscriptionStatement {
+            name,
+            connection,
+            publication,
+            options,
+        }))
+    }
+
+    fn parse_subscription_options(&mut self) -> Result<SubscriptionOptions, ParseError> {
+        self.expect_token(
+            |k| matches!(k, TokenKind::LParen),
+            "expected '(' after WITH in CREATE SUBSCRIPTION",
+        )?;
+        let mut options = SubscriptionOptions {
+            copy_data: true,
+            slot_name: None,
+        };
+        loop {
+            let Some(option) = self.take_keyword_or_identifier_upper() else {
+                return Err(self.error_at_current("expected subscription option"));
+            };
+            if self.consume_if(|k| matches!(k, TokenKind::Equal)) {
+                // optional '='
+            }
+            match option.as_str() {
+                "COPY_DATA" => {
+                    let Some(value) = self.take_keyword_or_identifier_upper() else {
+                        return Err(self.error_at_current(
+                            "COPY_DATA requires TRUE or FALSE",
+                        ));
+                    };
+                    match value.as_str() {
+                        "TRUE" => options.copy_data = true,
+                        "FALSE" => options.copy_data = false,
+                        _ => {
+                            return Err(self.error_at_current(
+                                "COPY_DATA requires TRUE or FALSE",
+                            ));
+                        }
+                    }
+                }
+                "SLOT_NAME" => {
+                    match self.current_kind() {
+                        TokenKind::String(value) => {
+                            let out = value.clone();
+                            self.advance();
+                            options.slot_name = Some(out);
+                        }
+                        _ => {
+                            return Err(self.error_at_current(
+                                "SLOT_NAME requires a single-quoted string",
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(self.error_at_current(&format!(
+                        "unsupported subscription option {}",
+                        option
+                    )));
+                }
+            }
+            if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                break;
+            }
+        }
+        self.expect_token(
+            |k| matches!(k, TokenKind::RParen),
+            "expected ')' after subscription options",
+        )?;
+        Ok(options)
     }
 
     fn parse_copy_statement(&mut self) -> Result<Statement, ParseError> {
@@ -5427,5 +5557,29 @@ mod tests {
             stmt,
             Statement::Transaction(TransactionStatement::RollbackToSavepoint(name)) if name == "s1"
         ));
+    }
+
+    #[test]
+    fn parses_create_and_drop_subscription() {
+        let stmt = parse_statement(
+            "CREATE SUBSCRIPTION sub1 CONNECTION 'host=upstream dbname=app' \
+             PUBLICATION pub1 WITH (copy_data = false, slot_name = 'slot1')",
+        )
+        .expect("parse should succeed");
+        let Statement::CreateSubscription(create) = stmt else {
+            panic!("expected create subscription");
+        };
+        assert_eq!(create.name, "sub1");
+        assert_eq!(create.publication, "pub1");
+        assert!(!create.options.copy_data);
+        assert_eq!(create.options.slot_name.as_deref(), Some("slot1"));
+
+        let stmt = parse_statement("DROP SUBSCRIPTION IF EXISTS sub1")
+            .expect("parse should succeed");
+        let Statement::DropSubscription(drop) = stmt else {
+            panic!("expected drop subscription");
+        };
+        assert!(drop.if_exists);
+        assert_eq!(drop.name, "sub1");
     }
 }

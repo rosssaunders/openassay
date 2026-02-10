@@ -2,6 +2,8 @@ use crate::commands::{
     alter, create_table, do_block, drop, explain, extension, function, index, matview, schema,
     sequence, variable, view,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use crate::commands::subscription;
 use crate::parser::ast::Statement;
 use crate::tcop::engine::{EngineError, QueryResult};
 
@@ -76,6 +78,22 @@ pub async fn execute_utility_statement(
         Statement::CreateExtension(create) => extension::execute_create_extension(create).await,
         Statement::DropExtension(drop_ext) => extension::execute_drop_extension(drop_ext).await,
         Statement::CreateFunction(create) => function::execute_create_function(create).await,
+        #[cfg(not(target_arch = "wasm32"))]
+        Statement::CreateSubscription(create) => {
+            subscription::execute_create_subscription(create).await
+        }
+        #[cfg(target_arch = "wasm32")]
+        Statement::CreateSubscription(_) => Err(EngineError {
+            message: "subscriptions are not supported in wasm builds".to_string(),
+        }),
+        #[cfg(not(target_arch = "wasm32"))]
+        Statement::DropSubscription(drop_subscription) => {
+            subscription::execute_drop_subscription(drop_subscription).await
+        }
+        #[cfg(target_arch = "wasm32")]
+        Statement::DropSubscription(_) => Err(EngineError {
+            message: "subscriptions are not supported in wasm builds".to_string(),
+        }),
         _ => Err(EngineError {
             message: "statement is not a utility command".to_string(),
         }),
@@ -111,5 +129,7 @@ pub fn is_utility_statement(statement: &Statement) -> bool {
             | Statement::CreateExtension(_)
             | Statement::DropExtension(_)
             | Statement::CreateFunction(_)
+            | Statement::CreateSubscription(_)
+            | Statement::DropSubscription(_)
     )
 }

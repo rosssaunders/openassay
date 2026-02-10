@@ -9,5 +9,7 @@ pub mod index;
 pub mod matview;
 pub mod schema;
 pub mod sequence;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod subscription;
 pub mod variable;
 pub mod view;

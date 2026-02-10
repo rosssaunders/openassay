@@ -57,6 +57,7 @@ This makes Postrust uniquely suited for **data analytics against live APIs** —
 | SET / SHOW / RESET | ✅ |
 | CREATE / DROP EXTENSION | ✅ |
 | CREATE FUNCTION (SQL body) | ✅ |
+| CREATE/DROP SUBSCRIPTION (logical replication) | ✅ |
 | Transactions (BEGIN, COMMIT, ROLLBACK, SAVEPOINT) | ✅ |
 | PostgreSQL wire protocol (psql, DBeaver, any PG client) | ✅ |
 | LATERAL JOIN | ✅ |
@@ -121,7 +122,7 @@ TEXT, INTEGER, BIGINT, FLOAT, DOUBLE PRECISION, BOOLEAN, NUMERIC, DATE, TIMESTAM
 ## Quick Start
 
 ```bash
-# Build and test (402 tests)
+# Build and test (405 tests)
 cargo test
 
 # PostgreSQL-compatible server
@@ -138,7 +139,22 @@ cargo run --bin web_server -- 8080
 
 - **Native** (Linux, macOS) — Tokio + reqwest for async I/O
 - **Browser/WASM** — wasm-bindgen + web-sys fetch/WebSocket
-- 402 tests passing on both targets
+- 405 tests passing on both targets
+
+## Logical replication
+
+Postrust can subscribe to a PostgreSQL publication and keep an in-memory replica of the published
+tables. Example:
+
+```sql
+CREATE SUBSCRIPTION local_sub
+  CONNECTION 'host=upstream dbname=app user=replicator password=secret'
+  PUBLICATION app_pub
+  WITH (copy_data = true, slot_name = 'postrust_sub');
+```
+
+Once created, the replication worker performs an initial COPY and then streams pgoutput changes
+into the in-memory tables for local queries.
 
 ## Project Layout
 

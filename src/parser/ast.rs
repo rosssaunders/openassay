@@ -18,6 +18,7 @@ pub enum Statement {
     DropIndex(DropIndexStatement),
     DropSequence(DropSequenceStatement),
     DropView(DropViewStatement),
+    DropSubscription(DropSubscriptionStatement),
     Truncate(TruncateStatement),
     AlterTable(AlterTableStatement),
     Explain(ExplainStatement),
@@ -31,6 +32,7 @@ pub enum Statement {
     CreateExtension(CreateExtensionStatement),
     DropExtension(DropExtensionStatement),
     CreateFunction(CreateFunctionStatement),
+    CreateSubscription(CreateSubscriptionStatement),
     CreateRole(CreateRoleStatement),
     AlterRole(AlterRoleStatement),
     DropRole(DropRoleStatement),
@@ -838,6 +840,26 @@ pub struct CreateExtensionStatement {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DropExtensionStatement {
+    pub name: String,
+    pub if_exists: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubscriptionOptions {
+    pub copy_data: bool,
+    pub slot_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateSubscriptionStatement {
+    pub name: String,
+    pub connection: String,
+    pub publication: String,
+    pub options: SubscriptionOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropSubscriptionStatement {
     pub name: String,
     pub if_exists: bool,
 }

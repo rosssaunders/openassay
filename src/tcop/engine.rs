@@ -228,6 +228,12 @@ pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError>
         Statement::CreateExtension(_) => (Vec::new(), Vec::new(), false, "CREATE EXTENSION".to_string()),
         Statement::DropExtension(_) => (Vec::new(), Vec::new(), false, "DROP EXTENSION".to_string()),
         Statement::CreateFunction(_) => (Vec::new(), Vec::new(), false, "CREATE FUNCTION".to_string()),
+        Statement::CreateSubscription(_) => {
+            (Vec::new(), Vec::new(), false, "CREATE SUBSCRIPTION".to_string())
+        }
+        Statement::DropSubscription(_) => {
+            (Vec::new(), Vec::new(), false, "DROP SUBSCRIPTION".to_string())
+        }
         Statement::Transaction(statement) => {
             let tag = match statement {
                 crate::parser::ast::TransactionStatement::Begin => "BEGIN",
