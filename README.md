@@ -59,12 +59,15 @@ This makes Postrust uniquely suited for **data analytics against live APIs** —
 | CREATE FUNCTION (SQL body) | ✅ |
 | Transactions (BEGIN, COMMIT, ROLLBACK, SAVEPOINT) | ✅ |
 | PostgreSQL wire protocol (psql, DBeaver, any PG client) | ✅ |
-| LATERAL JOIN | 🔜 |
-| GROUPING SETS / ROLLUP / CUBE | 🔜 |
-| ARRAY constructors (`ARRAY[1,2,3]`) | 🔜 |
-| FILTER clause on aggregates | 🔜 |
-| ANY / ALL subqueries | 🔜 |
-| WITHIN GROUP (ordered-set aggregates) | 🔜 |
+| LATERAL JOIN | ✅ |
+| GROUPING SETS / ROLLUP / CUBE | ✅ |
+| ARRAY constructors (`ARRAY[1,2,3]`) | ✅ |
+| FILTER clause on aggregates | ✅ |
+| ANY / ALL subqueries | ✅ |
+| WITHIN GROUP (ordered-set aggregates) | ✅ |
+| GRANT / REVOKE table privileges | ✅ |
+| Row-level security (RLS) policies | ✅ |
+| COPY TO/FROM (text and CSV) | ✅ |
 
 ### ✅ Built-in functions (165 implemented)
 
@@ -116,7 +119,7 @@ TEXT, INTEGER, BIGINT, FLOAT, DOUBLE PRECISION, BOOLEAN, NUMERIC, DATE, TIMESTAM
 ## Quick Start
 
 ```bash
-# Build and test (350 tests)
+# Build and test (365 tests)
 cargo test
 
 # PostgreSQL-compatible server
@@ -133,19 +136,73 @@ cargo run --bin web_server -- 8080
 
 - **Native** (Linux, macOS) — Tokio + reqwest for async I/O
 - **Browser/WASM** — wasm-bindgen + web-sys fetch/WebSocket
-- 350 tests passing on both targets
+- 365 tests passing on both targets
 
 ## Project Layout
 
 ```
 src/
-├── tcop/engine.rs       # Async query execution engine (18k lines)
-├── tcop/postgres.rs     # PostgreSQL wire protocol session
-├── parser/              # SQL lexer + parser
+├── parser/              # SQL lexer, AST, parser (5k lines)
+│   ├── lexer.rs         # Token scanner
+│   ├── ast.rs           # AST node types (74 types)
+│   ├── sql_parser.rs    # Recursive-descent parser
+│   └── scansup.rs       # Identifier handling (PG's scansup.c)
+├── catalog/             # In-memory catalog (schemas, tables, OIDs)
+│   ├── mod.rs           # Core catalog API
+│   ├── schema.rs        # Schema management
+│   ├── table.rs         # Table metadata
+│   ├── oid.rs           # OID allocator
+│   ├── search_path.rs   # Name resolution / search_path
+│   ├── dependency.rs    # Object dependency graph (CASCADE/RESTRICT)
+│   └── system_catalogs.rs  # pg_class, pg_type, information_schema, etc.
+├── commands/            # DDL command handlers
+│   ├── create_table.rs, drop.rs, alter.rs
+│   ├── view.rs, matview.rs, index.rs, sequence.rs, schema.rs
+│   ├── function.rs, extension.rs, variable.rs
+│   ├── explain.rs, do_block.rs
+│   └── mod.rs
+├── executor/            # Query executor nodes
+│   ├── exec_main.rs     # Main execution dispatch
+│   ├── exec_expr.rs     # Expression evaluation
+│   ├── exec_scan.rs     # Sequential scan
+│   ├── exec_grouping.rs # GROUPING SETS / ROLLUP / CUBE
+│   ├── exec_srf.rs      # Set-returning functions
+│   ├── node_agg.rs      # Aggregation
+│   ├── node_hash_join.rs, node_merge_join.rs, node_nested_loop.rs
+│   ├── node_window_agg.rs, node_sort.rs, node_limit.rs
+│   ├── node_cte.rs, node_subquery.rs, node_set_op.rs
+│   ├── node_modify_table.rs, node_append.rs, node_result.rs
+│   └── mod.rs
+├── storage/             # In-memory row storage
+│   ├── heap.rs          # Heap table storage
+│   └── tuple.rs         # Tuple representation
+├── access/transam/      # Transaction management
+│   ├── snapshot.rs      # MVCC snapshots
+│   ├── visibility.rs    # Tuple visibility
+│   └── xact.rs          # Transaction state
+├── security/            # Security model
+│   ├── roles.rs         # Role management
+│   ├── acl.rs           # GRANT/REVOKE privileges
+│   └── rls.rs           # Row-level security policies
+├── protocol/            # PostgreSQL wire protocol
+│   ├── messages.rs      # Message encoding/decoding
+│   ├── startup.rs       # Connection handshake
+│   └── copy.rs          # COPY protocol
+├── tcop/                # Traffic cop (query dispatch)
+│   ├── engine.rs        # Core execution engine (3k lines)
+│   ├── postgres.rs      # Wire protocol session handler (5k lines)
+│   ├── pquery.rs        # Portal/prepared statement management
+│   └── utility.rs       # Utility command dispatch
+├── utils/adt/           # Built-in data type functions
+│   ├── json.rs, datetime.rs, math_functions.rs
+│   ├── string_functions.rs, misc.rs
+│   └── mod.rs
 ├── browser.rs           # WASM/browser bindings
+├── bin/pg_server.rs     # TCP PostgreSQL server
+├── bin/web_server.rs    # HTTP server for WASM harness
 └── main.rs              # CLI entry point
 web/                     # Browser harness UI
-tests/                   # Regression + differential test suites
+tests/                   # Regression + differential test suites (365 tests)
 implementation-plan/     # Staged PostgreSQL parity roadmap
 ```
 
