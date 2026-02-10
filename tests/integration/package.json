@@ -1,0 +1,11 @@
+{
+  "name": "postrust-integration-tests",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node replication_test.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  }
+}

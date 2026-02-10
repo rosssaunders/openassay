@@ -1,3 +1,4 @@
 /target
 /postgres-src/
 /web/pkg/
+tests/integration/node_modules/
