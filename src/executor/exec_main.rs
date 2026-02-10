@@ -3,14 +3,21 @@ use std::collections::{HashMap, HashSet};
 
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
 use crate::executor::exec_expr::{
-    compare_values_for_predicate, eval_any_all, eval_between_predicate, eval_binary,
+    eval_any_all, eval_between_predicate, eval_binary,
     eval_cast_scalar, eval_expr, eval_expr_with_window, eval_is_distinct_from,
-    eval_like_predicate, eval_regexp_matches_set_function,
-    eval_regexp_split_to_table_set_function, eval_scalar_function, eval_unary,
-    execute_ws_messages, is_ws_extension_loaded, json_value_text_output, jsonb_path_query_values,
-    parse_f64_numeric_scalar, parse_json_document_arg, scalar_to_json_value, truthy,
+    eval_like_predicate, eval_unary,
+    execute_ws_messages, is_ws_extension_loaded,
     EngineFuture, EvalScope,
 };
+use crate::utils::adt::json::{
+    json_value_text_output, jsonb_path_query_values, parse_json_document_arg,
+    scalar_to_json_value,
+};
+use crate::utils::adt::misc::{
+    compare_values_for_predicate, eval_regexp_matches_set_function,
+    eval_regexp_split_to_table_set_function, parse_f64_numeric_scalar, truthy,
+};
+use crate::utils::fmgr::eval_scalar_function;
 use crate::security::{self, RlsCommand, TablePrivilege};
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{

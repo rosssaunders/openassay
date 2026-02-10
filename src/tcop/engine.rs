@@ -5,14 +5,15 @@ use std::sync::{OnceLock, RwLock};
 
 use crate::commands::sequence::{with_sequences_read, with_sequences_write, SequenceState};
 pub(crate) use crate::storage::heap::{with_storage_read, with_storage_write};
-use crate::executor::exec_expr::{
+use crate::utils::adt::datetime::{
     datetime_from_epoch_seconds, format_date, format_timestamp, parse_datetime_text,
 };
 use crate::executor::exec_main::{
     combine_scopes, evaluate_from_clause, evaluate_table_expression, scope_for_table_row,
     scope_for_table_row_with_qualifiers,
 };
-pub(crate) use crate::executor::exec_expr::{eval_expr, truthy, EvalScope};
+pub(crate) use crate::executor::exec_expr::{eval_expr, EvalScope};
+pub(crate) use crate::utils::adt::misc::truthy;
 pub(crate) use crate::executor::exec_main::execute_query;
 use crate::catalog::oid::Oid;
 use crate::catalog::with_catalog_write;
