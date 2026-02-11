@@ -3156,8 +3156,14 @@ impl Parser {
         let base = self.parse_expr_type_word()?.to_ascii_lowercase();
         let normalized = match base.as_str() {
             "bool" | "boolean" => "boolean".to_string(),
-            "int" | "integer" | "int8" | "bigint" | "int4" | "smallint" => "int8".to_string(),
-            "float" | "float8" | "real" | "numeric" | "decimal" => "float8".to_string(),
+            // Integer types - normalize to appropriate internal type
+            "int2" | "smallint" => "int8".to_string(),
+            "int" | "integer" | "int4" => "int8".to_string(),
+            "int8" | "bigint" => "int8".to_string(),
+            // Float types - normalize to float8
+            "float4" | "real" => "float8".to_string(),
+            "float" | "float8" => "float8".to_string(),
+            "numeric" | "decimal" => "float8".to_string(),
             "double" => {
                 if matches!(self.current_kind(), TokenKind::Identifier(next) if next.eq_ignore_ascii_case("precision"))
                 {
@@ -3165,6 +3171,7 @@ impl Parser {
                 }
                 "float8".to_string()
             }
+            // String types
             "text" | "varchar" | "char" => "text".to_string(),
             "character" => {
                 if matches!(self.current_kind(), TokenKind::Identifier(next) if next.eq_ignore_ascii_case("varying"))
@@ -3173,7 +3180,10 @@ impl Parser {
                 }
                 "text".to_string()
             }
+            // Date/time types
             "date" => "date".to_string(),
+            "time" => "time".to_string(),
+            "interval" => "interval".to_string(),
             "timestamp" | "timestamptz" => {
                 if self.consume_keyword(Keyword::With) {
                     if matches!(self.current_kind(), TokenKind::Identifier(next) if next.eq_ignore_ascii_case("time"))
@@ -3198,6 +3208,15 @@ impl Parser {
                 }
                 "timestamp".to_string()
             }
+            // Binary and special types
+            "bytea" => "bytea".to_string(),
+            "uuid" => "uuid".to_string(),
+            // JSON types
+            "json" => "json".to_string(),
+            "jsonb" => "jsonb".to_string(),
+            // System types
+            "regclass" => "regclass".to_string(),
+            "oid" => "oid".to_string(),
             other => {
                 return Err(
                     self.error_at_current(&format!("unsupported cast type name \"{other}\""))
@@ -3225,7 +3244,17 @@ impl Parser {
             }
         }
 
-        Ok(normalized)
+        // Handle array types like int[], text[]
+        let mut final_type = normalized;
+        while self.consume_if(|k| matches!(k, TokenKind::LBracket)) {
+            self.expect_token(
+                |k| matches!(k, TokenKind::RBracket),
+                "expected ']' after '[' in array type",
+            )?;
+            final_type = format!("{}[]", final_type);
+        }
+
+        Ok(final_type)
     }
 
     fn parse_expr_type_word(&mut self) -> Result<String, ParseError> {
@@ -5894,5 +5923,233 @@ mod tests {
             panic!("expected drop domain statement");
         };
         assert!(drop.if_exists);
+    }
+
+    #[test]
+    fn parses_cast_to_integer_types() {
+        // int2 / smallint
+        let stmt = parse_statement("SELECT 1::int2").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "int8"
+        ));
+
+        let stmt = parse_statement("SELECT 1::smallint").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "int8"
+        ));
+
+        // int4 / integer
+        let stmt = parse_statement("SELECT 1::int4").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "int8"
+        ));
+
+        let stmt = parse_statement("SELECT 1::integer").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "int8"
+        ));
+
+        // int8 / bigint
+        let stmt = parse_statement("SELECT 1::bigint").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "int8"
+        ));
+    }
+
+    #[test]
+    fn parses_cast_to_float_types() {
+        // float4 / real
+        let stmt = parse_statement("SELECT 1.5::float4").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "float8"
+        ));
+
+        let stmt = parse_statement("SELECT 1.5::real").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "float8"
+        ));
+
+        // numeric / decimal
+        let stmt = parse_statement("SELECT 1.5::numeric").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "float8"
+        ));
+
+        let stmt = parse_statement("SELECT 1.5::decimal").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "float8"
+        ));
+    }
+
+    #[test]
+    fn parses_cast_to_time_types() {
+        let stmt = parse_statement("SELECT '12:00:00'::time").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "time"
+        ));
+
+        let stmt = parse_statement("SELECT '1 day'::interval").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "interval"
+        ));
+    }
+
+    #[test]
+    fn parses_cast_to_binary_and_special_types() {
+        let stmt = parse_statement("SELECT 'abc'::bytea").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "bytea"
+        ));
+
+        let stmt = parse_statement("SELECT '550e8400-e29b-41d4-a716-446655440000'::uuid")
+            .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "uuid"
+        ));
+    }
+
+    #[test]
+    fn parses_cast_to_json_types() {
+        let stmt = parse_statement("SELECT '{}'::json").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "json"
+        ));
+
+        let stmt = parse_statement("SELECT '{}'::jsonb").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "jsonb"
+        ));
+    }
+
+    #[test]
+    fn parses_cast_to_system_types() {
+        let stmt = parse_statement("SELECT 'users'::regclass").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "regclass"
+        ));
+
+        let stmt = parse_statement("SELECT 123::oid").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "oid"
+        ));
+    }
+
+    #[test]
+    fn parses_cast_to_array_types() {
+        let stmt = parse_statement("SELECT ARRAY[1,2,3]::int[]").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "int8[]"
+        ));
+
+        let stmt = parse_statement("SELECT ARRAY['a','b']::text[]").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "text[]"
+        ));
+
+        // Multi-dimensional arrays
+        let stmt = parse_statement("SELECT '{}'::int[][]").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::Cast { type_name, .. } if type_name == "int8[][]"
+        ));
     }
 }
