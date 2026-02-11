@@ -1333,6 +1333,12 @@ pub(crate) fn eval_cast_scalar(
             let dt = parse_datetime_scalar(&value)?;
             Ok(ScalarValue::Text(format_timestamp(dt)))
         }
+        "json" | "jsonb" => {
+            // For JSON/JSONB casts, validate that the input is valid JSON
+            let text = value.render();
+            parse_json_document_arg(&ScalarValue::Text(text.clone()), type_name, 1)?;
+            Ok(ScalarValue::Text(text))
+        }
         other => Err(EngineError {
             message: format!("unsupported cast type {}", other),
         }),

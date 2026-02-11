@@ -4880,3 +4880,24 @@ fn selects_multiple_qualified_wildcards() {
     assert_eq!(results[4].rows[0][2], ScalarValue::Int(2));
     assert_eq!(results[4].rows[0][3], ScalarValue::Text("bar".to_string()));
 }
+
+#[test]
+fn casts_to_json_and_jsonb() {
+    let result = run("SELECT '{}'::json, '[]'::jsonb, '{\"a\":1}'::json");
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0][0], ScalarValue::Text("{}".to_string()));
+    assert_eq!(result.rows[0][1], ScalarValue::Text("[]".to_string()));
+    assert_eq!(result.rows[0][2], ScalarValue::Text("{\"a\":1}".to_string()));
+}
+
+#[test]
+fn rejects_invalid_json_cast() {
+    let statement = parse_statement("SELECT 'invalid'::json").expect("should parse");
+    let planned = plan_statement(statement).expect("should plan");
+    with_isolated_state(|| {
+        let result = block_on(execute_planned_query(&planned, &[]));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.message.contains("not valid JSON"));
+    });
+}
