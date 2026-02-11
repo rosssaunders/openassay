@@ -67,12 +67,8 @@ pub async fn execute_create_table(
     let key_specs = key_constraint_specs_from_ast(&create.constraints)?;
     let foreign_key_specs = foreign_key_constraint_specs_from_ast(&create.constraints)?;
 
-    // Determine the table kind based on temporary flag
-    let table_kind = if create.temporary {
-        TableKind::Heap  // For now, temporary tables work like regular heap tables in memory
-    } else {
-        TableKind::Heap
-    };
+    // For now, temporary tables work like regular heap tables in memory
+    let table_kind = TableKind::Heap;
 
     let table_oid = with_catalog_write(|catalog| {
         catalog.create_table(

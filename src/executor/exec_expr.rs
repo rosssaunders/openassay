@@ -1112,16 +1112,15 @@ async fn window_frame_rows(
             )
             .await?;
             let mut out = Vec::new();
-            for idx in start..=end {
-                let row_idx = partition[idx];
+            for (idx, &row_idx) in partition.iter().enumerate().take(end + 1).skip(start) {
                 // Skip current row if exclusion applies
-                if idx == current_pos {
-                    if matches!(
+                if idx == current_pos
+                    && matches!(
                         frame.exclusion,
                         Some(WindowFrameExclusion::CurrentRow) | Some(WindowFrameExclusion::Group)
-                    ) {
-                        continue;
-                    }
+                    )
+                {
+                    continue;
                 }
                 out.push(row_idx);
             }
