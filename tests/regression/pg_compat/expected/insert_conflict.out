@@ -2,6 +2,19 @@
 -- insert...on conflict do unique index inference
 --
 create table insertconflicttest(key int4, fruit text);
+-- invalid clauses
+insert into insertconflicttest values (1) on conflict (key int4_ops (fillfactor=10)) do nothing;
+ERROR:  operator class options are not allowed in ON CONFLICT clause
+LINE 1: ...t into insertconflicttest values (1) on conflict (key int4_o...
+                                                             ^
+insert into insertconflicttest values (1) on conflict (key asc) do nothing;
+ERROR:  ASC/DESC is not allowed in ON CONFLICT clause
+LINE 1: ...t into insertconflicttest values (1) on conflict (key asc) d...
+                                                             ^
+insert into insertconflicttest values (1) on conflict (key nulls last) do nothing;
+ERROR:  NULLS FIRST/LAST is not allowed in ON CONFLICT clause
+LINE 1: ...t into insertconflicttest values (1) on conflict (key nulls ...
+                                                             ^
 -- These things should work through a view, as well
 create view insertconflictview as select * from insertconflicttest;
 --
@@ -61,9 +74,9 @@ explain (costs off) insert into insertconflicttest values(0, 'Crowberry') on con
  Insert on insertconflicttest
    Conflict Resolution: UPDATE
    Conflict Arbiter Indexes: op_index_key, collation_index_key, both_index_key
-   Conflict Filter: (SubPlan 1)
+   Conflict Filter: EXISTS(SubPlan exists_1)
    ->  Result
-   SubPlan 1
+   SubPlan exists_1
      ->  Index Only Scan using both_index_expr_key on insertconflicttest ii
            Index Cond: (key = excluded.key)
 (8 rows)
@@ -218,6 +231,7 @@ explain (costs off, format json) insert into insertconflicttest values (0, 'Bilb
        "Async Capable": false,                                         +
        "Relation Name": "insertconflicttest",                          +
        "Alias": "insertconflicttest",                                  +
+       "Disabled": false,                                              +
        "Conflict Resolution": "UPDATE",                                +
        "Conflict Arbiter Indexes": ["key_index"],                      +
        "Conflict Filter": "(insertconflicttest.fruit <> 'Lime'::text)",+
@@ -226,7 +240,8 @@ explain (costs off, format json) insert into insertconflicttest values (0, 'Bilb
            "Node Type": "Result",                                      +
            "Parent Relationship": "Outer",                             +
            "Parallel Aware": false,                                    +
-           "Async Capable": false                                      +
+           "Async Capable": false,                                     +
+           "Disabled": false                                           +
          }                                                             +
        ]                                                               +
      }                                                                 +
@@ -283,6 +298,12 @@ ERROR:  invalid reference to FROM-clause entry for table "insertconflicttest"
 LINE 1: ...onfruit') on conflict (key) do update set fruit = insertconf...
                                                              ^
 HINT:  Perhaps you meant to reference the table alias "ict".
+-- Check helpful hint when qualifying set column with target table
+insert into insertconflicttest values (3, 'Kiwi') on conflict (key, fruit) do update set insertconflicttest.fruit = 'Mango';
+ERROR:  column "insertconflicttest" of relation "insertconflicttest" does not exist
+LINE 1: ...3, 'Kiwi') on conflict (key, fruit) do update set insertconf...
+                                                             ^
+HINT:  SET target columns cannot be qualified with the relation name.
 drop index key_index;
 --
 -- Composite key tests

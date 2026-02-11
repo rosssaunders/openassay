@@ -51,11 +51,11 @@ SELECT * FROM t;
 
 -- UNION DISTINCT requires hashable type
 WITH RECURSIVE t(n) AS (
-    VALUES (1::money)
+    VALUES ('01'::varbit)
 UNION
-    SELECT n+1::money FROM t WHERE n < 100::money
+    SELECT n || '10'::varbit FROM t WHERE n < '100'::varbit
 )
-SELECT sum(n) FROM t;
+SELECT n FROM t;
 ERROR:  could not implement recursive UNION
 DETAIL:  All column datatypes must be hashable.
 -- recursive view
@@ -175,7 +175,8 @@ SELECT n, pg_typeof(n) FROM t;
 ERROR:  operator does not exist: text + integer
 LINE 4:     SELECT n+1 FROM t WHERE n < 10
                     ^
-HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+DETAIL:  No operator of that name accepts the given argument types.
+HINT:  You might need to add explicit type casts.
 -- Deeply nested WITH caused a list-munging problem in v13
 -- Detection of cross-references and self-references
 WITH RECURSIVE w1(c1) AS
@@ -328,6 +329,26 @@ SELECT * FROM subdepartment ORDER BY name;
 ----+-------------------+------
   1 |                 0 | A
 (1 row)
+
+-- exercise the deduplication code of a UNION with mixed input slot types
+WITH RECURSIVE subdepartment AS
+(
+	-- select all columns to prevent projection
+	SELECT id, parent_department, name FROM department WHERE name = 'A'
+	UNION
+	-- joins do projection
+	SELECT d.id, d.parent_department, d.name FROM department AS d
+	INNER JOIN subdepartment AS sd ON d.parent_department = sd.id
+)
+SELECT * FROM subdepartment ORDER BY name;
+ id | parent_department | name 
+----+-------------------+------
+  1 |                 0 | A
+  2 |                 1 | B
+  3 |                 2 | C
+  4 |                 2 | D
+  6 |                 4 | F
+(5 rows)
 
 -- inside subqueries
 SELECT count(*) FROM (
@@ -650,6 +671,59 @@ SELECT a FROM cte;
 ---
  1
 (1 row)
+
+-- test that column statistics from a materialized CTE are available
+-- to upper planner (otherwise, we'd get a stupider plan)
+explain (costs off)
+with x as materialized (select unique1 from tenk1 b)
+select count(*) from tenk1 a
+  where unique1 in (select * from x);
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Aggregate
+   CTE x
+     ->  Index Only Scan using tenk1_unique1 on tenk1 b
+   ->  Hash Semi Join
+         Hash Cond: (a.unique1 = x.unique1)
+         ->  Index Only Scan using tenk1_unique1 on tenk1 a
+         ->  Hash
+               ->  CTE Scan on x
+(8 rows)
+
+explain (costs off)
+with x as materialized (insert into tenk1 default values returning unique1)
+select count(*) from tenk1 a
+  where unique1 in (select * from x);
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Aggregate
+   CTE x
+     ->  Insert on tenk1
+           ->  Result
+   ->  Nested Loop
+         ->  HashAggregate
+               Group Key: x.unique1
+               ->  CTE Scan on x
+         ->  Index Only Scan using tenk1_unique1 on tenk1 a
+               Index Cond: (unique1 = x.unique1)
+(10 rows)
+
+-- test that pathkeys from a materialized CTE are propagated up to the
+-- outer query
+explain (costs off)
+with x as materialized (select unique1 from tenk1 b order by unique1)
+select count(*) from tenk1 a
+  where unique1 in (select * from x);
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Aggregate
+   CTE x
+     ->  Index Only Scan using tenk1_unique1 on tenk1 b
+   ->  Merge Semi Join
+         Merge Cond: (a.unique1 = x.unique1)
+         ->  Index Only Scan using tenk1_unique1 on tenk1 a
+         ->  CTE Scan on x
+(7 rows)
 
 -- SEARCH clause
 create temp table graph0( f int, t int, label text );
@@ -2248,8 +2322,8 @@ select agg from b;
                  QUERY PLAN                 
 --------------------------------------------
  Aggregate
-   Output: max($0)
-   InitPlan 1 (returns $0)
+   Output: max((InitPlan expr_1).col1)
+   InitPlan expr_1
      ->  Aggregate
            Output: sum("*VALUES*".column1)
            ->  Values Scan on "*VALUES*"
@@ -3178,7 +3252,7 @@ WHEN NOT MATCHED THEN INSERT VALUES(o.k, o.v);
                      Output: o.k, o.v, o.*
                      ->  Result
                            Output: 0, 'merge source SubPlan'::text
-   SubPlan 2
+   SubPlan expr_1
      ->  Limit
            Output: ((cte_basic.b || ' merge update'::text))
            ->  CTE Scan on cte_basic
@@ -3210,7 +3284,7 @@ WHEN NOT MATCHED THEN INSERT VALUES(o.k, o.v);
    CTE cte_init
      ->  Result
            Output: 1, 'cte_init val'::text
-   InitPlan 2 (returns $1)
+   InitPlan expr_1
      ->  Limit
            Output: ((cte_init.b || ' merge update'::text))
            ->  CTE Scan on cte_init
@@ -3253,11 +3327,11 @@ WHEN NOT MATCHED THEN INSERT VALUES(o.a, o.b || (SELECT merge_source_cte.*::text
    CTE merge_source_cte
      ->  Result
            Output: 15, 'merge_source_cte val'::text
-   InitPlan 2 (returns $1)
+   InitPlan expr_1
      ->  CTE Scan on merge_source_cte merge_source_cte_1
            Output: ((merge_source_cte_1.b || (merge_source_cte_1.*)::text) || ' merge update'::text)
            Filter: (merge_source_cte_1.a = 15)
-   InitPlan 3 (returns $2)
+   InitPlan expr_2
      ->  CTE Scan on merge_source_cte merge_source_cte_2
            Output: ((merge_source_cte_2.*)::text || ' merge insert'::text)
    ->  Hash Right Join
@@ -3603,6 +3677,16 @@ SELECT * FROM t;
 ERROR:  WITH query "t" does not have a RETURNING clause
 LINE 4: SELECT * FROM t;
                       ^
+-- RETURNING tries to return its own output
+WITH RECURSIVE t(action, a) AS (
+	MERGE INTO y USING (VALUES (11)) v(a) ON y.a = v.a
+		WHEN NOT MATCHED THEN INSERT VALUES (v.a)
+		RETURNING merge_action(), (SELECT a FROM t)
+)
+SELECT * FROM t;
+ERROR:  recursive query "t" must not contain data-modifying statements
+LINE 1: WITH RECURSIVE t(action, a) AS (
+                       ^
 -- data-modifying WITH allowed only at the top level
 SELECT * FROM (
 	WITH t AS (UPDATE y SET a=a+1 RETURNING *)

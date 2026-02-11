@@ -1,0 +1,3 @@
+    Finished `release` profile [optimized] target(s) in 0.06s
+     Running `target/release/pg_server '127.0.0.1:55433'`
+postgrust pgwire listening on 127.0.0.1:55433

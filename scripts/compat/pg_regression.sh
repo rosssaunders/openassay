@@ -2,7 +2,7 @@
 #
 # PostgreSQL Regression Test Compatibility Runner
 #
-# This script runs PostgreSQL regression tests against postrust to measure
+# This script runs PostgreSQL 19 (devel) regression tests against postrust to measure
 # compatibility. It builds postrust, starts pg_server on a temporary port,
 # runs each test .sql file, and compares output against expected results.
 #

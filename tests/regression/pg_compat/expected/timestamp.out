@@ -591,6 +591,18 @@ SELECT date_trunc( 'week', timestamp '2004-02-29 15:44:17.71393' ) AS week_trunc
  Mon Feb 23 00:00:00 2004
 (1 row)
 
+SELECT date_trunc( 'week', timestamp 'infinity' ) AS inf_trunc;
+ inf_trunc 
+-----------
+ infinity
+(1 row)
+
+SELECT date_trunc( 'timezone', timestamp '2004-02-29 15:44:17.71393' ) AS notsupp_trunc;
+ERROR:  unit "timezone" not supported for type timestamp without time zone
+SELECT date_trunc( 'timezone', timestamp 'infinity' ) AS notsupp_inf_trunc;
+ERROR:  unit "timezone" not supported for type timestamp without time zone
+SELECT date_trunc( 'ago', timestamp 'infinity' ) AS invalid_trunc;
+ERROR:  unit "ago" not recognized for type timestamp without time zone
 -- verify date_bin behaves the same as date_trunc for relevant intervals
 -- case 1: AD dates, origin < input
 SELECT
@@ -2139,3 +2151,78 @@ select * from generate_series('2020-01-01 00:00'::timestamp,
                               '2020-01-02 03:00'::timestamp,
                               '0 hour'::interval);
 ERROR:  step size cannot equal zero
+select generate_series(timestamp '1995-08-06 12:12:12', timestamp '1996-08-06 12:12:12', interval 'infinity');
+ERROR:  step size cannot be infinite
+select generate_series(timestamp '1995-08-06 12:12:12', timestamp '1996-08-06 12:12:12', interval '-infinity');
+ERROR:  step size cannot be infinite
+-- test arithmetic with infinite timestamps
+select timestamp 'infinity' - timestamp 'infinity';
+ERROR:  interval out of range
+select timestamp 'infinity' - timestamp '-infinity';
+ ?column? 
+----------
+ infinity
+(1 row)
+
+select timestamp '-infinity' - timestamp 'infinity';
+ ?column?  
+-----------
+ -infinity
+(1 row)
+
+select timestamp '-infinity' - timestamp '-infinity';
+ERROR:  interval out of range
+select timestamp 'infinity' - timestamp '1995-08-06 12:12:12';
+ ?column? 
+----------
+ infinity
+(1 row)
+
+select timestamp '-infinity' - timestamp '1995-08-06 12:12:12';
+ ?column?  
+-----------
+ -infinity
+(1 row)
+
+-- test age() with infinite timestamps
+select age(timestamp 'infinity');
+    age    
+-----------
+ -infinity
+(1 row)
+
+select age(timestamp '-infinity');
+   age    
+----------
+ infinity
+(1 row)
+
+select age(timestamp 'infinity', timestamp 'infinity');
+ERROR:  interval out of range
+select age(timestamp 'infinity', timestamp '-infinity');
+   age    
+----------
+ infinity
+(1 row)
+
+select age(timestamp '-infinity', timestamp 'infinity');
+    age    
+-----------
+ -infinity
+(1 row)
+
+select age(timestamp '-infinity', timestamp '-infinity');
+ERROR:  interval out of range
+-- test timestamp near POSTGRES_EPOCH_JDATE
+select timestamp '1999-12-31 24:00:00';
+        timestamp         
+--------------------------
+ Sat Jan 01 00:00:00 2000
+(1 row)
+
+select make_timestamp(1999, 12, 31, 24, 0, 0);
+      make_timestamp      
+--------------------------
+ Sat Jan 01 00:00:00 2000
+(1 row)
+

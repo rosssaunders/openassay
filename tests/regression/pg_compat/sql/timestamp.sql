@@ -175,6 +175,10 @@ SELECT d1 - timestamp without time zone '1997-01-02' AS diff
    FROM TIMESTAMP_TBL WHERE d1 BETWEEN '1902-01-01' AND '2038-01-01';
 
 SELECT date_trunc( 'week', timestamp '2004-02-29 15:44:17.71393' ) AS week_trunc;
+SELECT date_trunc( 'week', timestamp 'infinity' ) AS inf_trunc;
+SELECT date_trunc( 'timezone', timestamp '2004-02-29 15:44:17.71393' ) AS notsupp_trunc;
+SELECT date_trunc( 'timezone', timestamp 'infinity' ) AS notsupp_inf_trunc;
+SELECT date_trunc( 'ago', timestamp 'infinity' ) AS invalid_trunc;
 
 -- verify date_bin behaves the same as date_trunc for relevant intervals
 
@@ -405,3 +409,26 @@ select generate_series('2022-01-01 00:00'::timestamp,
 select * from generate_series('2020-01-01 00:00'::timestamp,
                               '2020-01-02 03:00'::timestamp,
                               '0 hour'::interval);
+select generate_series(timestamp '1995-08-06 12:12:12', timestamp '1996-08-06 12:12:12', interval 'infinity');
+select generate_series(timestamp '1995-08-06 12:12:12', timestamp '1996-08-06 12:12:12', interval '-infinity');
+
+
+-- test arithmetic with infinite timestamps
+select timestamp 'infinity' - timestamp 'infinity';
+select timestamp 'infinity' - timestamp '-infinity';
+select timestamp '-infinity' - timestamp 'infinity';
+select timestamp '-infinity' - timestamp '-infinity';
+select timestamp 'infinity' - timestamp '1995-08-06 12:12:12';
+select timestamp '-infinity' - timestamp '1995-08-06 12:12:12';
+
+-- test age() with infinite timestamps
+select age(timestamp 'infinity');
+select age(timestamp '-infinity');
+select age(timestamp 'infinity', timestamp 'infinity');
+select age(timestamp 'infinity', timestamp '-infinity');
+select age(timestamp '-infinity', timestamp 'infinity');
+select age(timestamp '-infinity', timestamp '-infinity');
+
+-- test timestamp near POSTGRES_EPOCH_JDATE
+select timestamp '1999-12-31 24:00:00';
+select make_timestamp(1999, 12, 31, 24, 0, 0);

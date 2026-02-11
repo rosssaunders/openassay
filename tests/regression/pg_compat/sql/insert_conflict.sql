@@ -3,6 +3,11 @@
 --
 create table insertconflicttest(key int4, fruit text);
 
+-- invalid clauses
+insert into insertconflicttest values (1) on conflict (key int4_ops (fillfactor=10)) do nothing;
+insert into insertconflicttest values (1) on conflict (key asc) do nothing;
+insert into insertconflicttest values (1) on conflict (key nulls last) do nothing;
+
 -- These things should work through a view, as well
 create view insertconflictview as select * from insertconflicttest;
 
@@ -121,6 +126,9 @@ insert into insertconflicttest values (6, 'Passionfruit') on conflict (lower(fru
 insert into insertconflicttest AS ict values (6, 'Passionfruit') on conflict (key) do update set fruit = excluded.fruit; -- ok, no reference to target table
 insert into insertconflicttest AS ict values (6, 'Passionfruit') on conflict (key) do update set fruit = ict.fruit; -- ok, alias
 insert into insertconflicttest AS ict values (6, 'Passionfruit') on conflict (key) do update set fruit = insertconflicttest.fruit; -- error, references aliased away name
+
+-- Check helpful hint when qualifying set column with target table
+insert into insertconflicttest values (3, 'Kiwi') on conflict (key, fruit) do update set insertconflicttest.fruit = 'Mango';
 
 drop index key_index;
 

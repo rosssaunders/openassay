@@ -1,6 +1,6 @@
 # PostgreSQL Regression Test Compatibility
 
-This directory contains PostgreSQL regression tests from PostgreSQL 16 that have been filtered to match postrust's supported feature set.
+This directory contains PostgreSQL regression tests from PostgreSQL 19 (development branch) that have been filtered to match postrust's supported feature set.
 
 ## Test Structure
 
@@ -10,7 +10,7 @@ This directory contains PostgreSQL regression tests from PostgreSQL 16 that have
 
 ## Test Files
 
-The following PostgreSQL regression tests have been included based on postrust's supported features:
+The following PostgreSQL 19 (development branch) regression tests have been included based on postrust's supported features:
 
 ### Core SQL Operations
 - `select.sql` - Basic SELECT queries, expressions
@@ -93,14 +93,14 @@ If you have PostgreSQL client tools installed:
   - `CURRENT_DATE` function - not yet implemented
 
 ### Full PostgreSQL Regression Test Results
-- **Total tests:** 38 PostgreSQL regression test files
+- **Total tests:** 38 PostgreSQL 19 (devel) regression test files
 - **Expected compatibility:** Variable (many tests require PostgreSQL-specific setup)
 - **Purpose:** Measure compatibility against real PostgreSQL test suite
 - **Note:** 0% pass rate is expected due to missing test table structures and advanced features
 
 ## Test Methodology
 
-1. **PostgreSQL Test Selection:** Tests were filtered from PostgreSQL 16's `src/test/regress/` directory based on postrust's claimed feature support from the README.md
+1. **PostgreSQL Test Selection:** Tests were filtered from PostgreSQL 19 (devel)'s `src/test/regress/` directory based on postrust's claimed feature support from the README.md
 
 2. **Feature Mapping:** Each test file was selected if it primarily tests features that postrust claims to support:
    - SELECT queries and expressions
