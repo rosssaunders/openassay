@@ -1983,7 +1983,17 @@ impl PostgresSession {
 
         self.xact_started = false;
         self.copy_in_state = None;
-        self.tx_state.mark_failed();
+        
+        // Auto-rollback for implicit transactions to prevent cascade failures
+        if !self.tx_state.in_explicit_block() {
+            // If we're not in an explicit BEGIN/COMMIT block, rollback and restore state
+            if let Some(snapshot) = self.tx_state.rollback() {
+                restore_state(snapshot);
+            }
+        } else {
+            // In explicit transaction, mark as failed but don't rollback
+            self.tx_state.mark_failed();
+        }
     }
 }
 
@@ -4760,6 +4770,55 @@ mod tests {
                 msg,
                 BackendMessage::ErrorResponse { message, .. }
                     if message.contains("does not exist")
+            )
+        }));
+    }
+
+    #[test]
+    fn implicit_transaction_auto_rollback_prevents_cascade_failures() {
+        let out = with_isolated_state(|| {
+            let mut session = PostgresSession::new();
+            session.run_sync([
+                FrontendMessage::Query {
+                    sql: "CREATE TABLE t1 (id int)".to_string(),
+                },
+                FrontendMessage::Query {
+                    sql: "INSERT INTO t1 VALUES (1)".to_string(),
+                },
+                FrontendMessage::Query {
+                    // This should fail (invalid SQL)
+                    sql: "INSERT INTO t1 VALUES invalid".to_string(),
+                },
+                FrontendMessage::Query {
+                    // This should succeed (not in aborted transaction)
+                    sql: "SELECT * FROM t1".to_string(),
+                },
+            ])
+        });
+
+        // Should have an error for the invalid INSERT
+        assert!(out.iter().any(|msg| {
+            matches!(
+                msg,
+                BackendMessage::ErrorResponse { .. }
+            )
+        }));
+
+        // Should have a successful SELECT result after the error
+        assert!(out.iter().any(|msg| {
+            matches!(
+                msg,
+                BackendMessage::DataRow { values }
+                    if values == &vec!["1".to_string()]
+            )
+        }));
+
+        // Should not have "current transaction is aborted" error
+        assert!(!out.iter().any(|msg| {
+            matches!(
+                msg,
+                BackendMessage::ErrorResponse { message, .. }
+                    if message.contains("current transaction is aborted")
             )
         }));
     }
