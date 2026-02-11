@@ -97,14 +97,12 @@ pub(crate) fn eval_width_bucket(args: &[ScalarValue]) -> Result<ScalarValue, Eng
         } else {
             (((value - min) * buckets) / (max - min)).floor() as i64 + 1
         }
+    } else if value > min {
+        0
+    } else if value <= max {
+        count + 1
     } else {
-        if value > min {
-            0
-        } else if value <= max {
-            count + 1
-        } else {
-            (((min - value) * buckets) / (min - max)).floor() as i64 + 1
-        }
+        (((min - value) * buckets) / (min - max)).floor() as i64 + 1
     };
     Ok(ScalarValue::Int(bucket))
 }

@@ -4983,3 +4983,75 @@ fn create_sequence_if_not_exists() {
     assert_eq!(results[1].command_tag, "CREATE SEQUENCE"); // Should succeed silently
     assert_eq!(results[2].rows[0][0], ScalarValue::Int(1));
 }
+
+#[test]
+fn create_unlogged_table() {
+    let results = run_batch(&[
+        "CREATE UNLOGGED TABLE unlog_test (id int, note text)",
+        "INSERT INTO unlog_test VALUES (1, 'abc')",
+        "SELECT * FROM unlog_test",
+    ]);
+    assert_eq!(results[0].command_tag, "CREATE TABLE");
+    assert_eq!(results[1].rows_affected, 1);
+    assert_eq!(results[2].rows.len(), 1);
+    assert_eq!(results[2].rows[0][0], ScalarValue::Int(1));
+    assert_eq!(results[2].rows[0][1], ScalarValue::Text("abc".to_string()));
+}
+
+#[test]
+fn drop_table_if_exists() {
+    let results = run_batch(&[
+        "DROP TABLE IF EXISTS nonexistent",
+        "CREATE TABLE t1 (id int)",
+        "DROP TABLE IF EXISTS t1",
+        "DROP TABLE IF EXISTS t1",  // Should succeed silently
+    ]);
+    assert_eq!(results[0].command_tag, "DROP TABLE");
+    assert_eq!(results[1].command_tag, "CREATE TABLE");
+    assert_eq!(results[2].command_tag, "DROP TABLE");
+    assert_eq!(results[3].command_tag, "DROP TABLE");
+}
+
+#[test]
+fn drop_view_if_exists() {
+    let results = run_batch(&[
+        "DROP VIEW IF EXISTS nonexistent",
+        "CREATE TABLE t (x int)",
+        "CREATE VIEW v AS SELECT * FROM t",
+        "DROP VIEW IF EXISTS v",
+        "DROP VIEW IF EXISTS v",  // Should succeed silently
+    ]);
+    assert_eq!(results[0].command_tag, "DROP VIEW");
+    assert_eq!(results[2].command_tag, "CREATE VIEW");
+    assert_eq!(results[3].command_tag, "DROP VIEW");
+    assert_eq!(results[4].command_tag, "DROP VIEW");
+}
+
+#[test]
+fn drop_index_if_exists() {
+    let results = run_batch(&[
+        "DROP INDEX IF EXISTS nonexistent",
+        "CREATE TABLE t (id int)",
+        "CREATE INDEX idx ON t(id)",
+        "DROP INDEX IF EXISTS idx",
+        "DROP INDEX IF EXISTS idx",  // Should succeed silently
+    ]);
+    assert_eq!(results[0].command_tag, "DROP INDEX");
+    assert_eq!(results[2].command_tag, "CREATE INDEX");
+    assert_eq!(results[3].command_tag, "DROP INDEX");
+    assert_eq!(results[4].command_tag, "DROP INDEX");
+}
+
+#[test]
+fn drop_sequence_if_exists() {
+    let results = run_batch(&[
+        "DROP SEQUENCE IF EXISTS nonexistent",
+        "CREATE SEQUENCE seq",
+        "DROP SEQUENCE IF EXISTS seq",
+        "DROP SEQUENCE IF EXISTS seq",  // Should succeed silently
+    ]);
+    assert_eq!(results[0].command_tag, "DROP SEQUENCE");
+    assert_eq!(results[1].command_tag, "CREATE SEQUENCE");
+    assert_eq!(results[2].command_tag, "DROP SEQUENCE");
+    assert_eq!(results[3].command_tag, "DROP SEQUENCE");
+}

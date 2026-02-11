@@ -760,34 +760,32 @@ impl Parser {
                             "expected UPDATE, DELETE, or DO NOTHING for WHEN NOT MATCHED BY SOURCE",
                         ));
                     }
-                } else {
-                    if self.consume_keyword(Keyword::Insert) {
-                        let columns = if matches!(self.current_kind(), TokenKind::LParen) {
-                            self.parse_identifier_list_in_parens()?
-                        } else {
-                            Vec::new()
-                        };
-                        self.expect_keyword(
-                            Keyword::Values,
-                            "expected VALUES in MERGE INSERT clause",
-                        )?;
-                        let values = self.parse_insert_values_row()?;
-                        when_clauses.push(MergeWhenClause::NotMatchedInsert {
-                            condition,
-                            columns,
-                            values,
-                        });
-                    } else if self.consume_keyword(Keyword::Do) {
-                        self.expect_keyword(
-                            Keyword::Nothing,
-                            "expected NOTHING after DO in MERGE clause",
-                        )?;
-                        when_clauses.push(MergeWhenClause::NotMatchedDoNothing { condition });
+                } else if self.consume_keyword(Keyword::Insert) {
+                    let columns = if matches!(self.current_kind(), TokenKind::LParen) {
+                        self.parse_identifier_list_in_parens()?
                     } else {
-                        return Err(self.error_at_current(
-                            "expected INSERT or DO NOTHING for WHEN NOT MATCHED",
-                        ));
-                    }
+                        Vec::new()
+                    };
+                    self.expect_keyword(
+                        Keyword::Values,
+                        "expected VALUES in MERGE INSERT clause",
+                    )?;
+                    let values = self.parse_insert_values_row()?;
+                    when_clauses.push(MergeWhenClause::NotMatchedInsert {
+                        condition,
+                        columns,
+                        values,
+                    });
+                } else if self.consume_keyword(Keyword::Do) {
+                    self.expect_keyword(
+                        Keyword::Nothing,
+                        "expected NOTHING after DO in MERGE clause",
+                    )?;
+                    when_clauses.push(MergeWhenClause::NotMatchedDoNothing { condition });
+                } else {
+                    return Err(self.error_at_current(
+                        "expected INSERT or DO NOTHING for WHEN NOT MATCHED",
+                    ));
                 }
                 continue;
             }

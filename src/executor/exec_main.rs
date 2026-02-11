@@ -1032,8 +1032,10 @@ fn eval_generate_series(
                 });
             }
         }
+    } else if start <= stop {
+        1.0
     } else {
-        if start <= stop { 1.0 } else { -1.0 }
+        -1.0
     };
     if step == 0.0 {
         return Err(EngineError {
