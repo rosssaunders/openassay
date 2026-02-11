@@ -476,14 +476,20 @@
 
     const t0 = performance.now();
     try {
-      // If saving as table, wrap in CREATE TABLE ... AS
-      if (saveAs) {
+      // Run the query first, then materialise as a table if @name was used
+      var result = await sql(query);
+
+      if (saveAs && result && !result.error && result.columns && result.columns.length > 0) {
+        // Materialise result into a real table so later cells can reference it
         await sql(`DROP TABLE IF EXISTS "${saveAs}"`);
-        await sql(`CREATE TABLE "${saveAs}" AS ${query}`);
-        // Then select from it for display
-        var result = await sql(`SELECT * FROM "${saveAs}"`);
-      } else {
-        var result = await sql(query);
+        const colDefs = result.columns.map(c => `"${c}" text`).join(', ');
+        await sql(`CREATE TABLE "${saveAs}" (${colDefs})`);
+        if (result.rows && result.rows.length > 0) {
+          const valuesStr = result.rows.map(row =>
+            '(' + row.map(v => v === null ? 'NULL' : `'${String(v).replace(/'/g, "''")}'`).join(', ') + ')'
+          ).join(', ');
+          await sql(`INSERT INTO "${saveAs}" VALUES ${valuesStr}`);
+        }
       }
       const elapsed = ((performance.now() - t0)).toFixed(1);
 
@@ -497,7 +503,7 @@
       const columns = result.columns || [];
 
       if (columns.length === 0) {
-        const msg = saveAs ? `Saved as "${saveAs}"` : (result.command_tag || 'OK');
+        const msg = saveAs ? `@${saveAs.toUpperCase()}` : (result.command_tag || 'OK');
         output.innerHTML = `<div class="info">${escapeHtml(msg)}</div>
           <div class="timing">${elapsed}ms</div>`;
         return;
@@ -507,7 +513,8 @@
       cell._lastResult = { columns, rows };
 
       // Render table
-      let html = renderTable(columns, rows);
+      let html = saveAs ? `<div class="info">@${saveAs.toUpperCase()}</div>` : '';
+      html += renderTable(columns, rows);
 
       // Auto-chart if we have 2 columns (label + number) and <= 20 rows
       if (columns.length === 2 && rows.length <= 30 && rows.length > 0) {
