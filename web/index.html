@@ -449,8 +449,14 @@
                 ? executionPayload.rendered
                 : JSON.stringify(executionPayload, null, 2);
             setResult(rendered);
-            renderGridFromExecutionPayload(executionPayload);
-            if (executionPayload.ok) {
+            if (!executionPayload.ok) {
+              // Show error in result area when grid has nothing
+              resultEditorEl.style.display = "block";
+              resultGridEl.style.display = "none";
+            } else {
+              resultEditorEl.style.display = "none";
+              resultGridEl.style.display = "block";
+              renderGridFromExecutionPayload(executionPayload);
               await persistSnapshotToLocalStorage();
             }
             return;
