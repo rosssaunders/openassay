@@ -155,20 +155,104 @@ cargo run --bin web_server -- 8080
 
 ## Logical replication
 
-Postrust can subscribe to a PostgreSQL publication and keep an in-memory replica of the published
-tables. Example:
+Postrust can act as a **logical replication target** for a real PostgreSQL database. It subscribes to a publication and keeps an in-memory replica of the published tables, streaming INSERTs, UPDATEs, and DELETEs in real time via the pgoutput protocol.
 
-```sql
-CREATE SUBSCRIPTION local_sub
-  CONNECTION 'host=upstream dbname=app user=replicator password=secret'
-  PUBLICATION app_pub
-  WITH (copy_data = true, slot_name = 'postrust_sub');
+This means you can point Postrust at a production Postgres and query a live, read-only copy of your data — joined with external API data — without touching the source database.
+
+### Setting up the upstream (PostgreSQL)
+
+Your upstream PostgreSQL needs logical replication enabled:
+
+```ini
+# postgresql.conf
+wal_level = logical
+max_replication_slots = 4
+max_wal_senders = 4
 ```
 
-The subscription worker runs in the background: it validates table schemas, creates a logical slot
-with pgoutput, performs the optional COPY sync, then streams WAL changes into the in-memory tables.
+Create a publication for the tables you want to replicate:
 
-Run the integration test with `cd tests/integration && node replication_test.js`.
+```sql
+-- On upstream PostgreSQL
+CREATE PUBLICATION my_pub FOR TABLE users, orders;
+-- Or replicate everything:
+-- CREATE PUBLICATION my_pub FOR ALL TABLES;
+```
+
+Create a replication user (or use an existing superuser for testing):
+
+```sql
+CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'secret';
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO replicator;
+```
+
+### Starting Postrust as a replication target
+
+```bash
+# Start the Postrust wire-protocol server
+cargo run --bin pg_server -- 127.0.0.1:55432
+```
+
+Connect to Postrust (via `psql`, DBeaver, or any PG client) and create matching target tables:
+
+```sql
+-- On Postrust (psql -h 127.0.0.1 -p 55432)
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE orders (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER,
+  amount NUMERIC(10,2) NOT NULL,
+  status TEXT DEFAULT 'pending'
+);
+```
+
+Then create the subscription:
+
+```sql
+CREATE SUBSCRIPTION my_sub
+  CONNECTION 'host=your-pg-host port=5432 dbname=mydb user=replicator password=secret'
+  PUBLICATION my_pub
+  WITH (copy_data = true);
+```
+
+### What happens next
+
+1. **Initial sync** (`copy_data = true`): Postrust copies all existing rows from the published tables
+2. **Streaming**: Postrust creates a logical replication slot and streams WAL changes — every INSERT, UPDATE, and DELETE on the upstream is applied to the in-memory tables in real time
+3. **Query freely**: The replicated tables are now queryable with full SQL, including joins with HTTP data sources
+
+```sql
+-- Join replicated production data with a live API
+CREATE EXTENSION http;
+
+SELECT u.name, u.email, o.amount,
+       http_get('https://api.example.com/enrichment/' || u.id) AS profile
+FROM users u
+JOIN orders o ON o.user_id = u.id
+WHERE o.status = 'pending';
+```
+
+### Limitations
+
+- **In-memory only** — if Postrust restarts, it re-syncs from scratch (initial copy + streaming catch-up)
+- **Read-only replica** — writes to replicated tables in Postrust don't propagate back to upstream
+- **Schema changes** — DDL on the upstream (e.g. `ALTER TABLE`) requires manually updating the Postrust target tables and re-subscribing
+
+### Running the integration test
+
+The test suite spins up a real PostgreSQL in Docker, creates tables and a publication, starts Postrust, subscribes, and verifies initial sync + streaming INSERT/UPDATE/DELETE:
+
+```bash
+cd tests/integration
+npm install
+npm test
+```
 
 ## Project Layout
 
