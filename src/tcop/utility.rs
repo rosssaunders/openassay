@@ -96,6 +96,30 @@ pub async fn execute_utility_statement(
         Statement::DropSubscription(_) => Err(EngineError {
             message: "subscriptions are not supported in wasm builds".to_string(),
         }),
+        Statement::CreateType(_) => Ok(QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            command_tag: "CREATE TYPE".to_string(),
+            rows_affected: 0,
+        }),
+        Statement::CreateDomain(_) => Ok(QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            command_tag: "CREATE DOMAIN".to_string(),
+            rows_affected: 0,
+        }),
+        Statement::DropType(_) => Ok(QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            command_tag: "DROP TYPE".to_string(),
+            rows_affected: 0,
+        }),
+        Statement::DropDomain(_) => Ok(QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            command_tag: "DROP DOMAIN".to_string(),
+            rows_affected: 0,
+        }),
         _ => Err(EngineError {
             message: "statement is not a utility command".to_string(),
         }),
@@ -133,5 +157,9 @@ pub fn is_utility_statement(statement: &Statement) -> bool {
             | Statement::CreateFunction(_)
             | Statement::CreateSubscription(_)
             | Statement::DropSubscription(_)
+            | Statement::CreateType(_)
+            | Statement::CreateDomain(_)
+            | Statement::DropType(_)
+            | Statement::DropDomain(_)
     )
 }

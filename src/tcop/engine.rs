@@ -250,6 +250,10 @@ pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError>
             };
             (Vec::new(), Vec::new(), false, tag.to_string())
         }
+        Statement::CreateType(_) => (Vec::new(), Vec::new(), false, "CREATE TYPE".to_string()),
+        Statement::CreateDomain(_) => (Vec::new(), Vec::new(), false, "CREATE DOMAIN".to_string()),
+        Statement::DropType(_) => (Vec::new(), Vec::new(), false, "DROP TYPE".to_string()),
+        Statement::DropDomain(_) => (Vec::new(), Vec::new(), false, "DROP DOMAIN".to_string()),
     };
     Ok(PlannedQuery {
         plan,

@@ -40,6 +40,10 @@ pub enum Statement {
     Revoke(RevokeStatement),
     Copy(CopyStatement),
     Transaction(TransactionStatement),
+    CreateType(CreateTypeStatement),
+    CreateDomain(CreateDomainStatement),
+    DropType(DropTypeStatement),
+    DropDomain(DropDomainStatement),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -376,6 +380,33 @@ pub struct DropTableStatement {
 pub struct CreateSchemaStatement {
     pub name: String,
     pub if_not_exists: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateTypeStatement {
+    pub name: Vec<String>,
+    pub as_enum: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateDomainStatement {
+    pub name: Vec<String>,
+    pub base_type: TypeName,
+    pub check_constraint: Option<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropTypeStatement {
+    pub name: Vec<String>,
+    pub if_exists: bool,
+    pub behavior: DropBehavior,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropDomainStatement {
+    pub name: Vec<String>,
+    pub if_exists: bool,
+    pub behavior: DropBehavior,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

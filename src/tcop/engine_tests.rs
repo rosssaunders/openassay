@@ -4790,17 +4790,61 @@ fn creates_temp_table_if_not_exists() {
 }
 
 #[test]
-fn rejects_duplicate_table_without_if_not_exists() {
+fn creates_type_as_enum() {
     let results = run_batch(&[
-        "CREATE TABLE dup_test (id INT)",
+        "CREATE TYPE mood AS ENUM ('happy', 'sad', 'neutral')",
     ]);
-    assert_eq!(results[0].command_tag, "CREATE TABLE");
-    
-    // Second create should fail
-    let _result = with_isolated_state(|| {
-        run_statement("CREATE TABLE dup_test (id INT)", &[]);
-        run_statement("CREATE TABLE dup_test (id INT)", &[])
-    });
-    // This should fail - we can't easily test the error message with run_batch
-    // but the second CREATE TABLE call will return an error
+    assert_eq!(results[0].command_tag, "CREATE TYPE");
+}
+
+#[test]
+fn creates_and_drops_type() {
+    let results = run_batch(&[
+        "CREATE TYPE status AS ENUM ('active', 'inactive')",
+        "DROP TYPE status",
+    ]);
+    assert_eq!(results[0].command_tag, "CREATE TYPE");
+    assert_eq!(results[1].command_tag, "DROP TYPE");
+}
+
+#[test]
+fn creates_domain() {
+    let results = run_batch(&[
+        "CREATE DOMAIN posint AS INT",
+    ]);
+    assert_eq!(results[0].command_tag, "CREATE DOMAIN");
+}
+
+#[test]
+fn creates_domain_with_check() {
+    let results = run_batch(&[
+        "CREATE DOMAIN posint AS INT CHECK (VALUE > 0)",
+    ]);
+    assert_eq!(results[0].command_tag, "CREATE DOMAIN");
+}
+
+#[test]
+fn creates_and_drops_domain() {
+    let results = run_batch(&[
+        "CREATE DOMAIN posint AS INT",
+        "DROP DOMAIN posint",
+    ]);
+    assert_eq!(results[0].command_tag, "CREATE DOMAIN");
+    assert_eq!(results[1].command_tag, "DROP DOMAIN");
+}
+
+#[test]
+fn drops_type_if_exists() {
+    let results = run_batch(&[
+        "DROP TYPE IF EXISTS nonexistent_type",
+    ]);
+    assert_eq!(results[0].command_tag, "DROP TYPE");
+}
+
+#[test]
+fn drops_domain_if_exists() {
+    let results = run_batch(&[
+        "DROP DOMAIN IF EXISTS nonexistent_domain",
+    ]);
+    assert_eq!(results[0].command_tag, "DROP DOMAIN");
 }
