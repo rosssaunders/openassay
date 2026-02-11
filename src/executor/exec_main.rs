@@ -1720,21 +1720,38 @@ async fn project_select_row(
                     message: "qualified wildcard target requires FROM support".to_string(),
                 });
             };
-            let qualifier_lower = qualifier.last()
-                .map(|s| s.to_ascii_lowercase())
-                .unwrap_or_default();
-            for col in expanded {
-                // Match columns that have the qualifier in their lookup path
-                if col.lookup_parts.len() >= 2 
-                    && col.lookup_parts[0].to_ascii_lowercase() == qualifier_lower {
-                    row.push(scope.lookup_identifier(&col.lookup_parts)?);
-                }
-            }
+            expand_qualified_wildcard(qualifier, expanded, scope, &mut row)?;
             continue;
         }
         row.push(eval_expr(&target.expr, scope, params).await?);
     }
     Ok(row)
+}
+
+// Helper function to expand qualified wildcards (e.g., t.*, schema.table.*)
+fn expand_qualified_wildcard(
+    qualifier: &[String],
+    expanded: &[ExpandedFromColumn],
+    scope: &EvalScope,
+    row: &mut Vec<ScalarValue>,
+) -> Result<(), EngineError> {
+    // Use the last part of the qualifier as the table/alias name
+    // For t.*, qualifier = ["t"], we match lookup_parts[0] == "t"
+    // For schema.table.*, qualifier = ["schema", "table"], we match lookup_parts[0] == "table"
+    let qualifier_lower = qualifier
+        .last()
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    
+    for col in expanded {
+        // Match columns where the first lookup part (table/alias) equals the qualifier
+        if col.lookup_parts.len() >= 2
+            && col.lookup_parts[0].to_ascii_lowercase() == qualifier_lower
+        {
+            row.push(scope.lookup_identifier(&col.lookup_parts)?);
+        }
+    }
+    Ok(())
 }
 
 async fn project_select_row_with_window(
@@ -1764,16 +1781,7 @@ async fn project_select_row_with_window(
                     message: "qualified wildcard target requires FROM support".to_string(),
                 });
             };
-            let qualifier_lower = qualifier.last()
-                .map(|s| s.to_ascii_lowercase())
-                .unwrap_or_default();
-            for col in expanded {
-                // Match columns that have the qualifier in their lookup path
-                if col.lookup_parts.len() >= 2 
-                    && col.lookup_parts[0].to_ascii_lowercase() == qualifier_lower {
-                    row.push(scope.lookup_identifier(&col.lookup_parts)?);
-                }
-            }
+            expand_qualified_wildcard(qualifier, expanded, scope, &mut row)?;
             continue;
         }
         row.push(eval_expr_with_window(&target.expr, scope, row_idx, all_rows, params).await?);

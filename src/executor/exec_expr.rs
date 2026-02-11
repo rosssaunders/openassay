@@ -1084,8 +1084,17 @@ async fn window_frame_rows(
             Ok(out)
         }
         WindowFrameUnits::Groups => {
-            // For now, treat GROUPS the same as ROWS
-            // Full implementation would require peer group detection
+            // FIXME: GROUPS frame mode is partially implemented
+            // Currently treats GROUPS the same as ROWS, which is semantically incorrect.
+            // 
+            // PostgreSQL GROUPS mode operates on peer groups (rows with equal ORDER BY values),
+            // not individual rows. Proper implementation would require:
+            // 1. Detecting peer groups based on ORDER BY expressions
+            // 2. Computing frame bounds in units of peer groups, not rows
+            // 3. Including/excluding entire peer groups atomically
+            //
+            // This simplified implementation will produce incorrect results when ORDER BY
+            // contains non-unique values. Use ROWS or RANGE modes for correct behavior.
             let start = frame_row_position(
                 &frame.start,
                 current_pos,
