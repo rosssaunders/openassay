@@ -8,8 +8,8 @@ use crate::executor::exec_main::{
     parse_non_negative_int, row_key,
 };
 use crate::parser::ast::{
-    BinaryOp, ComparisonQuantifier, Expr, OrderByExpr, UnaryOp, WindowFrameBound, WindowFrameUnits,
-    WindowSpec,
+    BinaryOp, ComparisonQuantifier, Expr, OrderByExpr, UnaryOp, WindowFrameBound,
+    WindowFrameExclusion, WindowFrameUnits, WindowSpec,
 };
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{
@@ -1080,6 +1080,41 @@ async fn window_frame_rows(
                     continue;
                 }
                 out.push(*row_idx);
+            }
+            Ok(out)
+        }
+        WindowFrameUnits::Groups => {
+            // For now, treat GROUPS the same as ROWS
+            // Full implementation would require peer group detection
+            let start = frame_row_position(
+                &frame.start,
+                current_pos,
+                partition.len(),
+                &all_rows[partition[current_pos]],
+                params,
+            )
+            .await?;
+            let end = frame_row_position(
+                &frame.end,
+                current_pos,
+                partition.len(),
+                &all_rows[partition[current_pos]],
+                params,
+            )
+            .await?;
+            let mut out = Vec::new();
+            for idx in start..=end {
+                let row_idx = partition[idx];
+                // Skip current row if exclusion applies
+                if idx == current_pos {
+                    if matches!(
+                        frame.exclusion,
+                        Some(WindowFrameExclusion::CurrentRow) | Some(WindowFrameExclusion::Group)
+                    ) {
+                        continue;
+                    }
+                }
+                out.push(row_idx);
             }
             Ok(out)
         }

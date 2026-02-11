@@ -716,17 +716,11 @@ pub struct WindowSpec {
     pub frame: Option<WindowFrame>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct WindowFrame {
-    pub units: WindowFrameUnits,
-    pub start: WindowFrameBound,
-    pub end: WindowFrameBound,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowFrameUnits {
     Rows,
     Range,
+    Groups,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -736,6 +730,22 @@ pub enum WindowFrameBound {
     CurrentRow,
     OffsetFollowing(Expr),
     UnboundedFollowing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowFrameExclusion {
+    CurrentRow,
+    Group,
+    Ties,
+    NoOthers,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WindowFrame {
+    pub units: WindowFrameUnits,
+    pub start: WindowFrameBound,
+    pub end: WindowFrameBound,
+    pub exclusion: Option<WindowFrameExclusion>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

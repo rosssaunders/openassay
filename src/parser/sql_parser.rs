@@ -20,7 +20,7 @@ use crate::parser::ast::{
     Statement, SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression,
     TableFunctionRef, TablePrivilegeKind, TableRef, TransactionStatement, TruncateStatement,
     TypeName, UnaryOp, UnlistenStatement, UpdateStatement, WindowFrame, WindowFrameBound,
-    WindowFrameUnits, WindowSpec, WithClause,
+    WindowFrameExclusion, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::parser::lexer::{Keyword, LexError, Token, TokenKind, lex_sql};
 
@@ -3043,7 +3043,10 @@ impl Parser {
             order_by = self.parse_order_by_list()?;
         }
 
-        if self.peek_keyword(Keyword::Rows) || self.peek_keyword(Keyword::Range) {
+        if self.peek_keyword(Keyword::Rows)
+            || self.peek_keyword(Keyword::Range)
+            || self.peek_keyword(Keyword::Groups)
+        {
             frame = Some(self.parse_window_frame()?);
         }
 
@@ -3062,12 +3065,14 @@ impl Parser {
     fn parse_window_frame(&mut self) -> Result<WindowFrame, ParseError> {
         let units = if self.consume_keyword(Keyword::Rows) {
             WindowFrameUnits::Rows
-        } else {
-            self.expect_keyword(
-                Keyword::Range,
-                "expected ROWS or RANGE in window frame clause",
-            )?;
+        } else if self.consume_keyword(Keyword::Range) {
             WindowFrameUnits::Range
+        } else if self.consume_keyword(Keyword::Groups) {
+            WindowFrameUnits::Groups
+        } else {
+            return Err(self.error_at_current(
+                "expected ROWS, RANGE, or GROUPS in window frame clause",
+            ));
         };
 
         self.expect_keyword(Keyword::Between, "expected BETWEEN in window frame clause")?;
@@ -3075,7 +3080,38 @@ impl Parser {
         self.expect_keyword(Keyword::And, "expected AND in window frame clause")?;
         let end = self.parse_window_frame_bound()?;
 
-        Ok(WindowFrame { units, start, end })
+        // Optional EXCLUDE clause
+        let exclusion = if self.consume_keyword(Keyword::Exclude) {
+            if self.consume_keyword(Keyword::Current) {
+                self.expect_window_row_keyword("expected ROW after EXCLUDE CURRENT")?;
+                Some(WindowFrameExclusion::CurrentRow)
+            } else if self.consume_keyword(Keyword::Group) {
+                Some(WindowFrameExclusion::Group)
+            } else if matches!(self.current_kind(), TokenKind::Identifier(id) if id.eq_ignore_ascii_case("ties"))
+            {
+                self.advance();
+                Some(WindowFrameExclusion::Ties)
+            } else if self.consume_keyword(Keyword::No) {
+                if matches!(self.current_kind(), TokenKind::Identifier(id) if id.eq_ignore_ascii_case("others"))
+                {
+                    self.advance();
+                }
+                Some(WindowFrameExclusion::NoOthers)
+            } else {
+                return Err(self.error_at_current(
+                    "expected CURRENT ROW, GROUP, TIES, or NO OTHERS after EXCLUDE",
+                ));
+            }
+        } else {
+            None
+        };
+
+        Ok(WindowFrame {
+            units,
+            start,
+            end,
+            exclusion,
+        })
     }
 
     fn parse_window_frame_bound(&mut self) -> Result<WindowFrameBound, ParseError> {
@@ -6198,5 +6234,61 @@ mod tests {
         assert!(matches!(&select.targets[0].expr, Expr::QualifiedWildcard(_)));
         assert!(matches!(&select.targets[1].expr, Expr::QualifiedWildcard(_)));
         assert!(matches!(&select.targets[2].expr, Expr::Wildcard));
+    }
+
+    #[test]
+    fn parses_window_frame_with_groups() {
+        let stmt = parse_statement(
+            "SELECT id, sum(amount) OVER (ORDER BY date GROUPS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM sales"
+        ).expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        if let Expr::FunctionCall { over: Some(window), .. } = &select.targets[1].expr {
+            let frame = window.frame.as_ref().expect("should have frame");
+            assert!(matches!(frame.units, WindowFrameUnits::Groups));
+        } else {
+            panic!("expected window function");
+        }
+    }
+
+    #[test]
+    fn parses_window_frame_with_exclude() {
+        let stmt = parse_statement(
+            "SELECT id, sum(amount) OVER (ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) FROM sales"
+        ).expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        if let Expr::FunctionCall { over: Some(window), .. } = &select.targets[1].expr {
+            let frame = window.frame.as_ref().expect("should have frame");
+            assert!(matches!(frame.units, WindowFrameUnits::Rows));
+            assert!(matches!(
+                frame.exclusion,
+                Some(WindowFrameExclusion::CurrentRow)
+            ));
+        } else {
+            panic!("expected window function");
+        }
+    }
+
+    #[test]
+    fn parses_window_frame_with_exclude_group() {
+        let stmt = parse_statement(
+            "SELECT id, rank() OVER (ORDER BY date RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE GROUP) FROM sales"
+        ).expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        if let Expr::FunctionCall { over: Some(window), .. } = &select.targets[1].expr {
+            let frame = window.frame.as_ref().expect("should have frame");
+            assert!(matches!(frame.units, WindowFrameUnits::Range));
+            assert!(matches!(frame.exclusion, Some(WindowFrameExclusion::Group)));
+        } else {
+            panic!("expected window function");
+        }
     }
 }
