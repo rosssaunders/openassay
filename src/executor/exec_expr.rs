@@ -381,6 +381,29 @@ pub(crate) fn eval_expr<'a>(
             Expr::QualifiedWildcard(_) => Err(EngineError {
                 message: "qualified wildcard expression requires FROM support".to_string(),
             }),
+            Expr::ArraySubscript { expr, index } => {
+                let array_value = eval_expr(expr, scope, params).await?;
+                let index_value = eval_expr(index, scope, params).await?;
+                eval_array_subscript(array_value, index_value)
+            }
+            Expr::ArraySlice { expr, start, end } => {
+                let array_value = eval_expr(expr, scope, params).await?;
+                let start_value = if let Some(start_expr) = start {
+                    Some(eval_expr(start_expr, scope, params).await?)
+                } else {
+                    None
+                };
+                let end_value = if let Some(end_expr) = end {
+                    Some(eval_expr(end_expr, scope, params).await?)
+                } else {
+                    None
+                };
+                eval_array_slice(array_value, start_value, end_value)
+            }
+            Expr::TypedLiteral { type_name, value } => {
+                // Evaluate typed literals as CAST(value AS type_name)
+                eval_cast_scalar(ScalarValue::Text(value.clone()), type_name)
+            }
         }
     })
 }
@@ -656,6 +679,29 @@ pub(crate) fn eval_expr_with_window<'a>(
             Expr::QualifiedWildcard(_) => Err(EngineError {
                 message: "qualified wildcard expression requires FROM support".to_string(),
             }),
+            Expr::ArraySubscript { expr, index } => {
+                let array_value = eval_expr_with_window(expr, scope, row_idx, all_rows, params).await?;
+                let index_value = eval_expr_with_window(index, scope, row_idx, all_rows, params).await?;
+                eval_array_subscript(array_value, index_value)
+            }
+            Expr::ArraySlice { expr, start, end } => {
+                let array_value = eval_expr_with_window(expr, scope, row_idx, all_rows, params).await?;
+                let start_value = if let Some(start_expr) = start {
+                    Some(eval_expr_with_window(start_expr, scope, row_idx, all_rows, params).await?)
+                } else {
+                    None
+                };
+                let end_value = if let Some(end_expr) = end {
+                    Some(eval_expr_with_window(end_expr, scope, row_idx, all_rows, params).await?)
+                } else {
+                    None
+                };
+                eval_array_slice(array_value, start_value, end_value)
+            }
+            Expr::TypedLiteral { type_name, value } => {
+                // Evaluate typed literals as CAST(value AS type_name)
+                eval_cast_scalar(ScalarValue::Text(value.clone()), type_name)
+            }
         }
     })
 }
@@ -1328,9 +1374,19 @@ pub(crate) fn eval_cast_scalar(
             let dt = parse_datetime_scalar(&value)?;
             Ok(ScalarValue::Text(format_date(dt.date)))
         }
+        "time" => {
+            // For now, just return the text representation
+            // A full implementation would parse and format time properly
+            Ok(ScalarValue::Text(value.render()))
+        }
         "timestamp" => {
             let dt = parse_datetime_scalar(&value)?;
             Ok(ScalarValue::Text(format_timestamp(dt)))
+        }
+        "interval" => {
+            // For now, just return the text representation
+            // A full implementation would parse and format intervals properly
+            Ok(ScalarValue::Text(value.render()))
         }
         "json" | "jsonb" => {
             // For JSON/JSONB casts, validate that the input is valid JSON
@@ -2106,4 +2162,121 @@ pub async fn ws_simulate_message(
         }
     }
     Ok(results)
+}
+
+fn eval_array_subscript(
+    array: ScalarValue,
+    index: ScalarValue,
+) -> Result<ScalarValue, EngineError> {
+    // Get the array elements
+    let elements = match array {
+        ScalarValue::Array(ref arr) => arr,
+        ScalarValue::Null => return Ok(ScalarValue::Null),
+        _ => {
+            return Err(EngineError {
+                message: "subscript operation requires array type".to_string(),
+            })
+        }
+    };
+
+    // Parse the index (PostgreSQL arrays are 1-indexed)
+    let idx = match index {
+        ScalarValue::Int(i) => i,
+        ScalarValue::Null => return Ok(ScalarValue::Null),
+        _ => {
+            return Err(EngineError {
+                message: "array subscript must be type integer".to_string(),
+            })
+        }
+    };
+
+    // Convert 1-indexed to 0-indexed
+    if idx == 0 {
+        return Err(EngineError {
+            message: "array index 0 is invalid (PostgreSQL arrays are 1-indexed)".to_string(),
+        });
+    }
+    let zero_idx = if idx > 0 {
+        (idx - 1) as usize
+    } else {
+        // Negative indices count from the end
+        let abs_idx = (-idx) as usize;
+        if abs_idx > elements.len() {
+            return Ok(ScalarValue::Null);
+        }
+        elements.len() - abs_idx
+    };
+
+    // Return the element or null if out of bounds
+    Ok(elements.get(zero_idx).cloned().unwrap_or(ScalarValue::Null))
+}
+
+fn eval_array_slice(
+    array: ScalarValue,
+    start: Option<ScalarValue>,
+    end: Option<ScalarValue>,
+) -> Result<ScalarValue, EngineError> {
+    // Get the array elements
+    let elements = match array {
+        ScalarValue::Array(ref arr) => arr,
+        ScalarValue::Null => return Ok(ScalarValue::Null),
+        _ => {
+            return Err(EngineError {
+                message: "slice operation requires array type".to_string(),
+            })
+        }
+    };
+
+    // Parse start index (1-indexed, default to 1 if not provided)
+    let start_idx = if let Some(start_val) = start {
+        match start_val {
+            ScalarValue::Int(i) => {
+                if i <= 0 {
+                    0
+                } else {
+                    (i - 1) as usize
+                }
+            }
+            ScalarValue::Null => return Ok(ScalarValue::Null),
+            _ => {
+                return Err(EngineError {
+                    message: "array slice bounds must be type integer".to_string(),
+                })
+            }
+        }
+    } else {
+        0
+    };
+
+    // Parse end index (1-indexed, inclusive, default to array length if not provided)
+    let end_idx = if let Some(end_val) = end {
+        match end_val {
+            ScalarValue::Int(i) => {
+                if i <= 0 {
+                    0
+                } else {
+                    i as usize
+                }
+            }
+            ScalarValue::Null => return Ok(ScalarValue::Null),
+            _ => {
+                return Err(EngineError {
+                    message: "array slice bounds must be type integer".to_string(),
+                })
+            }
+        }
+    } else {
+        elements.len()
+    };
+
+    // Extract the slice
+    let start_idx = start_idx.min(elements.len());
+    let end_idx = end_idx.min(elements.len());
+    
+    if start_idx >= end_idx {
+        return Ok(ScalarValue::Array(Vec::new()));
+    }
+    
+    let sliced = elements[start_idx..end_idx].to_vec();
+    Ok(ScalarValue::Array(sliced))
 }

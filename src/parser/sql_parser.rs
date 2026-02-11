@@ -2000,6 +2000,7 @@ impl Parser {
             "json" => TypeName::Json,
             "jsonb" => TypeName::Jsonb,
             "date" => TypeName::Date,
+            "time" => TypeName::Time,
             "timestamp" => {
                 // Check for WITH TIME ZONE / WITHOUT TIME ZONE
                 if let TokenKind::Keyword(Keyword::With) = self.current_kind() {
@@ -2700,6 +2701,62 @@ impl Parser {
                 };
                 continue;
             }
+            // Array subscript: arr[1] or arr[1:3]
+            if self
+                .peek_nth_kind(0)
+                .is_some_and(|k| matches!(k, TokenKind::LBracket))
+            {
+                let l_bp = 12; // Same precedence as typecast
+                if l_bp < min_bp {
+                    break;
+                }
+                self.advance(); // consume '['
+                
+                // Parse first expression
+                let first_expr = self.parse_expr()?;
+                
+                // Check for slice syntax ':'
+                if self.peek_nth_kind(0).is_some_and(|k| matches!(k, TokenKind::Colon)) {
+                    self.advance(); // consume ':'
+                    
+                    // Check for end expression
+                    if self.peek_nth_kind(0).is_some_and(|k| matches!(k, TokenKind::RBracket)) {
+                        // arr[start:]
+                        self.expect_token(
+                            |k| matches!(k, TokenKind::RBracket),
+                            "expected ']' after array slice",
+                        )?;
+                        lhs = Expr::ArraySlice {
+                            expr: Box::new(lhs),
+                            start: Some(Box::new(first_expr)),
+                            end: None,
+                        };
+                    } else {
+                        // arr[start:end]
+                        let end_expr = self.parse_expr()?;
+                        self.expect_token(
+                            |k| matches!(k, TokenKind::RBracket),
+                            "expected ']' after array slice",
+                        )?;
+                        lhs = Expr::ArraySlice {
+                            expr: Box::new(lhs),
+                            start: Some(Box::new(first_expr)),
+                            end: Some(Box::new(end_expr)),
+                        };
+                    }
+                } else {
+                    // Simple subscript: arr[index]
+                    self.expect_token(
+                        |k| matches!(k, TokenKind::RBracket),
+                        "expected ']' after array subscript",
+                    )?;
+                    lhs = Expr::ArraySubscript {
+                        expr: Box::new(lhs),
+                        index: Box::new(first_expr),
+                    };
+                }
+                continue;
+            }
             if self.peek_keyword(Keyword::Not) && self.peek_nth_keyword(1, Keyword::In) {
                 let l_bp = 5;
                 if l_bp < min_bp {
@@ -2878,6 +2935,38 @@ impl Parser {
             }
             return Err(self.error_at_current("expected ARRAY[ or ARRAY("));
         }
+        // Typed literals: DATE 'literal', TIME 'literal', TIMESTAMP 'literal', INTERVAL 'literal'
+        // Only match if followed by a string literal (not a parenthesis for function calls)
+        if (self.peek_keyword(Keyword::Date)
+            || self.peek_keyword(Keyword::Time)
+            || self.peek_keyword(Keyword::Timestamp)
+            || self.peek_keyword(Keyword::Interval))
+            && self.peek_nth_kind(1).is_some_and(|k| matches!(k, TokenKind::String(_)))
+        {
+            let type_name = if self.consume_keyword(Keyword::Date) {
+                "date"
+            } else if self.consume_keyword(Keyword::Time) {
+                "time"
+            } else if self.consume_keyword(Keyword::Timestamp) {
+                "timestamp"
+            } else if self.consume_keyword(Keyword::Interval) {
+                "interval"
+            } else {
+                unreachable!()
+            };
+            
+            // Get the string literal
+            if let Some(TokenKind::String(value)) = self.peek_nth_kind(0) {
+                let value_str = value.clone();
+                self.advance();
+                return Ok(Expr::TypedLiteral {
+                    type_name: type_name.to_string(),
+                    value: value_str,
+                });
+            } else {
+                unreachable!() // We already checked for string literal above
+            }
+        }
         if self.consume_keyword(Keyword::Cast) {
             self.expect_token(
                 |k| matches!(k, TokenKind::LParen),
@@ -2993,7 +3082,11 @@ impl Parser {
                 | Keyword::Right
                 | Keyword::Replace
                 | Keyword::Filter
-                | Keyword::Grouping,
+                | Keyword::Grouping
+                | Keyword::Date
+                | Keyword::Time
+                | Keyword::Timestamp
+                | Keyword::Interval,
             ) => self.parse_identifier_expr(),
             _ => Err(self.error_at_current("expected expression")),
         }
@@ -3538,6 +3631,22 @@ impl Parser {
                 self.advance();
                 Ok("with".to_string())
             }
+            TokenKind::Keyword(Keyword::Date) => {
+                self.advance();
+                Ok("date".to_string())
+            }
+            TokenKind::Keyword(Keyword::Time) => {
+                self.advance();
+                Ok("time".to_string())
+            }
+            TokenKind::Keyword(Keyword::Timestamp) => {
+                self.advance();
+                Ok("timestamp".to_string())
+            }
+            TokenKind::Keyword(Keyword::Interval) => {
+                self.advance();
+                Ok("interval".to_string())
+            }
             _ => Err(self.error_at_current("expected type name")),
         }
     }
@@ -3568,6 +3677,22 @@ impl Parser {
             TokenKind::Keyword(Keyword::Grouping) => {
                 self.advance();
                 Ok("grouping".to_string())
+            }
+            TokenKind::Keyword(Keyword::Date) => {
+                self.advance();
+                Ok("date".to_string())
+            }
+            TokenKind::Keyword(Keyword::Time) => {
+                self.advance();
+                Ok("time".to_string())
+            }
+            TokenKind::Keyword(Keyword::Timestamp) => {
+                self.advance();
+                Ok("timestamp".to_string())
+            }
+            TokenKind::Keyword(Keyword::Interval) => {
+                self.advance();
+                Ok("interval".to_string())
             }
             _ => Err(self.error_at_current("expected identifier")),
         }
@@ -3648,6 +3773,22 @@ impl Parser {
             TokenKind::Keyword(Keyword::Filter) => {
                 self.advance();
                 Ok("filter".to_string())
+            }
+            TokenKind::Keyword(Keyword::Date) => {
+                self.advance();
+                Ok("date".to_string())
+            }
+            TokenKind::Keyword(Keyword::Time) => {
+                self.advance();
+                Ok("time".to_string())
+            }
+            TokenKind::Keyword(Keyword::Timestamp) => {
+                self.advance();
+                Ok("timestamp".to_string())
+            }
+            TokenKind::Keyword(Keyword::Interval) => {
+                self.advance();
+                Ok("interval".to_string())
             }
             _ => Err(self.error_at_current("expected identifier")),
         }
@@ -6677,5 +6818,140 @@ mod tests {
         };
         assert_eq!(name, &vec!["trim".to_string()]);
         assert_eq!(args.len(), 3); // mode, chars, string
+    }
+
+    #[test]
+    fn parses_date_literal() {
+        let stmt = parse_statement("SELECT DATE '2024-01-15'").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::TypedLiteral { type_name, value } = &select.targets[0].expr else {
+            panic!("expected typed literal, got {:?}", select.targets[0].expr);
+        };
+        assert_eq!(type_name, "date");
+        assert_eq!(value, "2024-01-15");
+    }
+
+    #[test]
+    fn parses_time_literal() {
+        let stmt = parse_statement("SELECT TIME '12:34:56'").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::TypedLiteral { type_name, value } = &select.targets[0].expr else {
+            panic!("expected typed literal");
+        };
+        assert_eq!(type_name, "time");
+        assert_eq!(value, "12:34:56");
+    }
+
+    #[test]
+    fn parses_timestamp_literal() {
+        let stmt = parse_statement("SELECT TIMESTAMP '2024-01-15 12:34:56'")
+            .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::TypedLiteral { type_name, value } = &select.targets[0].expr else {
+            panic!("expected typed literal");
+        };
+        assert_eq!(type_name, "timestamp");
+        assert_eq!(value, "2024-01-15 12:34:56");
+    }
+
+    #[test]
+    fn parses_interval_literal() {
+        let stmt = parse_statement("SELECT INTERVAL '1 day'").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::TypedLiteral { type_name, value } = &select.targets[0].expr else {
+            panic!("expected typed literal");
+        };
+        assert_eq!(type_name, "interval");
+        assert_eq!(value, "1 day");
+    }
+
+    #[test]
+    fn parses_array_subscript() {
+        let stmt = parse_statement("SELECT arr[1]").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::ArraySubscript { expr, index } = &select.targets[0].expr else {
+            panic!("expected array subscript, got {:?}", select.targets[0].expr);
+        };
+        let Expr::Identifier(parts) = &**expr else {
+            panic!("expected identifier for array");
+        };
+        assert_eq!(parts, &vec!["arr".to_string()]);
+        let Expr::Integer(idx) = &**index else {
+            panic!("expected integer index");
+        };
+        assert_eq!(*idx, 1);
+    }
+
+    #[test]
+    fn parses_array_slice() {
+        let stmt = parse_statement("SELECT arr[1:3]").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::ArraySlice { expr, start, end } = &select.targets[0].expr else {
+            panic!("expected array slice, got {:?}", select.targets[0].expr);
+        };
+        let Expr::Identifier(parts) = &**expr else {
+            panic!("expected identifier for array");
+        };
+        assert_eq!(parts, &vec!["arr".to_string()]);
+        assert!(start.is_some());
+        assert!(end.is_some());
+        if let Some(start_expr) = start {
+            let Expr::Integer(idx) = &**start_expr else {
+                panic!("expected integer start");
+            };
+            assert_eq!(*idx, 1);
+        }
+        if let Some(end_expr) = end {
+            let Expr::Integer(idx) = &**end_expr else {
+                panic!("expected integer end");
+            };
+            assert_eq!(*idx, 3);
+        }
+    }
+
+    #[test]
+    fn parses_array_slice_open_end() {
+        let stmt = parse_statement("SELECT arr[2:]").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::ArraySlice { expr: _, start, end } = &select.targets[0].expr else {
+            panic!("expected array slice");
+        };
+        assert!(start.is_some());
+        assert!(end.is_none());
     }
 }

@@ -438,7 +438,21 @@ fn collect_window_exprs(expr: &Expr, out: &mut Vec<Expr>) {
         | Expr::Null
         | Expr::Parameter(_)
         | Expr::Wildcard
-        | Expr::QualifiedWildcard(_) => {}
+        | Expr::QualifiedWildcard(_)
+        | Expr::TypedLiteral { .. } => {}
+        Expr::ArraySubscript { expr, index } => {
+            collect_window_exprs(expr, out);
+            collect_window_exprs(index, out);
+        }
+        Expr::ArraySlice { expr, start, end } => {
+            collect_window_exprs(expr, out);
+            if let Some(start) = start {
+                collect_window_exprs(start, out);
+            }
+            if let Some(end) = end {
+                collect_window_exprs(end, out);
+            }
+        }
     }
 }
 

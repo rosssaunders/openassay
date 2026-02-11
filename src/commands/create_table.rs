@@ -309,7 +309,8 @@ pub(crate) fn type_signature_from_ast(ty: TypeName) -> TypeSignature {
         | TypeName::Uuid
         | TypeName::Json
         | TypeName::Jsonb
-        | TypeName::Interval => TypeSignature::Text,
+        | TypeName::Interval
+        | TypeName::Time => TypeSignature::Text,
         TypeName::Date => TypeSignature::Date,
         TypeName::Timestamp | TypeName::TimestampTz => TypeSignature::Timestamp,
     }
