@@ -5055,3 +5055,49 @@ fn drop_sequence_if_exists() {
     assert_eq!(results[2].command_tag, "DROP SEQUENCE");
     assert_eq!(results[3].command_tag, "DROP SEQUENCE");
 }
+
+#[test]
+fn evaluates_typed_literals_and_array_operations() {
+    // Test DATE literal - just verify it parses and executes
+    let result = run("SELECT DATE '2024-01-15' AS d");
+    assert_eq!(result.columns, vec!["d"]);
+    assert_eq!(result.rows.len(), 1);
+    
+    // Test TIME literal  
+    let result = run("SELECT TIME '12:30:45' AS t");
+    assert_eq!(result.columns, vec!["t"]);
+    assert_eq!(result.rows.len(), 1);
+    
+    // Test TIMESTAMP literal
+    let result = run("SELECT TIMESTAMP '2024-01-15 12:30:45' AS ts");
+    assert_eq!(result.columns, vec!["ts"]);
+    assert_eq!(result.rows.len(), 1);
+    
+    // Test array subscript (1-indexed)
+    let result = run("SELECT ARRAY[10, 20, 30][2] AS elem");
+    assert_eq!(result.columns, vec!["elem"]);
+    assert_eq!(result.rows, vec![vec![ScalarValue::Int(20)]]);
+    
+    // Test array subscript - first element
+    let result = run("SELECT ARRAY[10, 20, 30][1] AS elem");
+    assert_eq!(result.rows, vec![vec![ScalarValue::Int(10)]]);
+    
+    // Test array slice
+    let result = run("SELECT ARRAY[1, 2, 3, 4, 5][2:4] AS slice");
+    assert_eq!(result.columns, vec!["slice"]);
+    assert_eq!(result.rows.len(), 1);
+    // Check the slice contains the right values
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Array(vec![
+            ScalarValue::Int(2),
+            ScalarValue::Int(3),
+            ScalarValue::Int(4),
+        ])
+    );
+    
+    // Test CREATE TABLE with date/time types still works
+    run("CREATE TABLE test_types (d date, t time, ts timestamp)");
+    let result = run("SELECT 1");
+    assert_eq!(result.rows, vec![vec![ScalarValue::Int(1)]]);
+}

@@ -1374,9 +1374,19 @@ pub(crate) fn eval_cast_scalar(
             let dt = parse_datetime_scalar(&value)?;
             Ok(ScalarValue::Text(format_date(dt.date)))
         }
+        "time" => {
+            // For now, just return the text representation
+            // A full implementation would parse and format time properly
+            Ok(ScalarValue::Text(value.render()))
+        }
         "timestamp" => {
             let dt = parse_datetime_scalar(&value)?;
             Ok(ScalarValue::Text(format_timestamp(dt)))
+        }
+        "interval" => {
+            // For now, just return the text representation
+            // A full implementation would parse and format intervals properly
+            Ok(ScalarValue::Text(value.render()))
         }
         "json" | "jsonb" => {
             // For JSON/JSONB casts, validate that the input is valid JSON

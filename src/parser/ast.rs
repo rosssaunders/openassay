@@ -240,6 +240,7 @@ pub enum TypeName {
     Json,
     Jsonb,
     Date,
+    Time,
     Timestamp,
     TimestampTz,
     Interval,

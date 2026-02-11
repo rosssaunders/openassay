@@ -2000,6 +2000,7 @@ impl Parser {
             "json" => TypeName::Json,
             "jsonb" => TypeName::Jsonb,
             "date" => TypeName::Date,
+            "time" => TypeName::Time,
             "timestamp" => {
                 // Check for WITH TIME ZONE / WITHOUT TIME ZONE
                 if let TokenKind::Keyword(Keyword::With) = self.current_kind() {
