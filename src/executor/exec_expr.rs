@@ -1539,6 +1539,7 @@ pub(crate) fn eval_binary(
         JsonHasKey => eval_json_has_key_operator(left, right),
         JsonHasAny => eval_json_has_any_all_operator(left, right, true),
         JsonHasAll => eval_json_has_any_all_operator(left, right, false),
+        JsonDelete => eval_json_delete_operator(left, right),
         JsonDeletePath => eval_json_delete_path_operator(left, right),
     }
 }

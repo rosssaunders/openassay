@@ -1772,7 +1772,7 @@ pub(crate) fn eval_json_concat_operator(
     if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
-    match (left, right) {
+    match (left.clone(), right.clone()) {
         (ScalarValue::Array(mut left_items), ScalarValue::Array(right_items)) => {
             left_items.extend(right_items);
             Ok(ScalarValue::Array(left_items))
@@ -1785,7 +1785,20 @@ pub(crate) fn eval_json_concat_operator(
             right_items.insert(0, other);
             Ok(ScalarValue::Array(right_items))
         }
+        (ScalarValue::Text(left_str), ScalarValue::Text(right_str)) => {
+            // Try to parse as JSON first, if both parse successfully, do JSON concat
+            if let (Ok(lhs), Ok(rhs)) = (
+                parse_json_document_arg(&left, "json operator ||", 1),
+                parse_json_document_arg(&right, "json operator ||", 2),
+            ) {
+                Ok(ScalarValue::Text(json_concat(lhs, rhs).to_string()))
+            } else {
+                // Otherwise, do string concatenation
+                Ok(ScalarValue::Text(format!("{}{}", left_str, right_str)))
+            }
+        }
         (left, right) => {
+            // Try JSON concat for non-text types
             let lhs = parse_json_document_arg(&left, "json operator ||", 1)?;
             let rhs = parse_json_document_arg(&right, "json operator ||", 2)?;
             Ok(ScalarValue::Text(json_concat(lhs, rhs).to_string()))

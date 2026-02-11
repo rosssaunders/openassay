@@ -335,6 +335,14 @@ fn collect_query_expr_relation_refs(
             collect_query_expr_relation_refs(right, ctes, out);
         }
         QueryExpr::Nested(query) => collect_query_relation_refs(query, ctes, out),
+        QueryExpr::Values(rows) => {
+            // Collect relation references from value expressions
+            for row in rows {
+                for expr in row {
+                    collect_expr_relation_refs(expr, ctes, out);
+                }
+            }
+        }
     }
 }
 

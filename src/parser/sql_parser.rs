@@ -2168,7 +2168,7 @@ impl Parser {
         }
 
         if self.consume_keyword(Keyword::Values) {
-            // VALUES (expr, ...), (expr, ...) -> converted to UNION ALL of SELECTs
+            // VALUES (expr, ...), (expr, ...) as a standalone query
             let mut all_rows = Vec::new();
             loop {
                 self.expect_token(|k| matches!(k, TokenKind::LParen), "expected '(' in VALUES")?;
@@ -2179,53 +2179,7 @@ impl Parser {
                     break;
                 }
             }
-            // Generate column names: column1, column2, ...
-            let ncols = all_rows.first().map(|r| r.len()).unwrap_or(0);
-            let _targets: Vec<SelectItem> = (0..ncols)
-                .map(|i| SelectItem {
-                    expr: Expr::Identifier(vec![format!("column{}", i + 1)]),
-                    alias: Some(format!("column{}", i + 1)),
-                })
-                .collect();
-            // For first row, create a SELECT with literal values
-            let mut result: Option<QueryExpr> = None;
-            for row_values in all_rows {
-                let row_targets: Vec<SelectItem> = row_values
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, expr)| SelectItem {
-                        expr,
-                        alias: Some(format!("column{}", i + 1)),
-                    })
-                    .collect();
-                let select = QueryExpr::Select(SelectStatement {
-                    quantifier: None,
-                    distinct_on: Vec::new(),
-                    targets: row_targets,
-                    from: Vec::new(),
-                    where_clause: None,
-                    group_by: Vec::new(),
-                    having: None,
-                });
-                result = Some(match result {
-                    None => select,
-                    Some(left) => QueryExpr::SetOperation {
-                        left: Box::new(left),
-                        op: SetOperator::Union,
-                        quantifier: SetQuantifier::All,
-                        right: Box::new(select),
-                    },
-                });
-            }
-            return Ok(result.unwrap_or(QueryExpr::Select(SelectStatement {
-                quantifier: None,
-                distinct_on: Vec::new(),
-                targets: Vec::new(),
-                from: Vec::new(),
-                where_clause: None,
-                group_by: Vec::new(),
-                having: None,
-            })));
+            return Ok(QueryExpr::Values(all_rows));
         }
 
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
@@ -2428,9 +2382,6 @@ impl Parser {
             }
             return Ok(inner);
         }
-        if lateral {
-            return Err(self.error_at_current("expected subquery after LATERAL"));
-        }
 
         let name = self.parse_qualified_name()?;
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
@@ -2453,7 +2404,11 @@ impl Parser {
                 alias,
                 column_aliases,
                 column_alias_types,
+                lateral,
             }));
+        }
+        if lateral {
+            return Err(self.error_at_current("expected subquery or function after LATERAL"));
         }
         let alias = self.parse_optional_alias()?;
         Ok(TableExpression::Relation(TableRef { name, alias }))

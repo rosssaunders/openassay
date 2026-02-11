@@ -74,6 +74,13 @@ fn describe_statement_plan(stmt: &Statement, lines: &mut Vec<String>, indent: us
             QueryExpr::Nested(inner) => {
                 describe_statement_plan(&Statement::Query((**inner).clone()), lines, indent);
             }
+            QueryExpr::Values(rows) => {
+                lines.push(format!(
+                    "{}Values Scan  (cost=0.00..0.01 rows={} width=0)",
+                    prefix,
+                    rows.len()
+                ));
+            }
         },
         Statement::Insert(_) => {
             lines.push(format!(

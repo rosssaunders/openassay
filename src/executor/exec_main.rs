@@ -198,7 +198,42 @@ fn execute_query_expr_with_outer<'a>(
                 quantifier,
                 right,
             } => execute_set_operation(left, *op, *quantifier, right, params, outer_scope).await,
+            QueryExpr::Values(rows) => execute_values(rows, params, outer_scope).await,
         }
+    })
+}
+
+async fn execute_values(
+    rows: &[Vec<Expr>],
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+) -> Result<QueryResult, EngineError> {
+    // Execute VALUES query - return all rows with column names column1, column2, etc.
+    let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
+    
+    // Generate column names: column1, column2, ...
+    let columns = (1..=ncols)
+        .map(|i| format!("column{}", i))
+        .collect::<Vec<_>>();
+    
+    let mut result_rows = Vec::new();
+    let scope = outer_scope.cloned().unwrap_or_default();
+    
+    for row_exprs in rows {
+        let mut row_values = Vec::new();
+        for expr in row_exprs {
+            let value = eval_expr(expr, &scope, params).await?;
+            row_values.push(value);
+        }
+        result_rows.push(row_values);
+    }
+    
+    let row_count = result_rows.len() as u64;
+    Ok(QueryResult {
+        columns,
+        rows: result_rows,
+        command_tag: String::new(),
+        rows_affected: row_count,
     })
 }
 
