@@ -1,0 +1,7 @@
+[0;34mINFO: Starting PostgreSQL regression test suite for postrust[0m
+[0;34mINFO: Test port: 55433[0m
+[0;34mINFO: Test database: postgres[0m
+[0;34mINFO: Results directory: tests/regression/pg_compat/results[0m
+
+[0;34mINFO: Checking prerequisites...[0m
+[0;31mERROR: psql not found. Please install PostgreSQL client tools.[0m

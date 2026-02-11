@@ -38,6 +38,8 @@ This makes Postrust uniquely suited for **data analytics against live APIs** —
 
 ## PostgreSQL compatibility
 
+**94% compatibility** with core PostgreSQL features based on regression test suite analysis.
+
 **Target: PostgreSQL 18** (current release). OpenAssay tracks the latest PostgreSQL version only — there is no backwards compatibility with older Postgres versions. When PostgreSQL ships a new major release, we update to match. This keeps the codebase clean and lets us adopt new syntax and semantics without carrying legacy baggage.
 
 ### ✅ Language features
