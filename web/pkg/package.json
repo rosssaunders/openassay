@@ -1,0 +1,15 @@
+{
+  "name": "postgrust",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "postgrust_bg.wasm",
+    "postgrust.js",
+    "postgrust.d.ts"
+  ],
+  "main": "postgrust.js",
+  "types": "postgrust.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
