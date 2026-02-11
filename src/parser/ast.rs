@@ -268,6 +268,7 @@ pub struct CreateTableStatement {
     pub constraints: Vec<TableConstraint>,
     pub if_not_exists: bool,
     pub temporary: bool,
+    pub unlogged: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

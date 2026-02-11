@@ -300,12 +300,13 @@ impl Parser {
             return Err(self.error_at_current("expected VIEW after CREATE MATERIALIZED"));
         }
         
-        // Parse optional TEMP/TEMPORARY before TABLE
+        // Parse optional TEMP/TEMPORARY or UNLOGGED before TABLE
         let temporary = self.consume_keyword(Keyword::Temporary) || self.consume_keyword(Keyword::Temp);
+        let unlogged = self.consume_ident("unlogged");
         
         if self.consume_ident("role") {
-            if temporary {
-                return Err(self.error_at_current("unexpected TEMP/TEMPORARY before CREATE ROLE"));
+            if temporary || unlogged {
+                return Err(self.error_at_current("unexpected modifier before CREATE ROLE"));
             }
             let name =
                 self.parse_role_identifier_with_message("CREATE ROLE requires a role name")?;
@@ -313,8 +314,8 @@ impl Parser {
             return Ok(Statement::CreateRole(CreateRoleStatement { name, options }));
         }
         if self.consume_keyword(Keyword::Schema) {
-            if temporary {
-                return Err(self.error_at_current("unexpected TEMP/TEMPORARY before CREATE SCHEMA"));
+            if temporary || unlogged {
+                return Err(self.error_at_current("unexpected modifier before CREATE SCHEMA"));
             }
             let if_not_exists = if self.consume_keyword(Keyword::If) {
                 self.expect_keyword(Keyword::Not, "expected NOT after IF in CREATE SCHEMA")?;
@@ -333,8 +334,8 @@ impl Parser {
             }));
         }
         if self.consume_keyword(Keyword::Sequence) {
-            if temporary {
-                return Err(self.error_at_current("unexpected TEMP/TEMPORARY before CREATE SEQUENCE"));
+            if temporary || unlogged {
+                return Err(self.error_at_current("unexpected modifier before CREATE SEQUENCE"));
             }
             let name = self.parse_qualified_name()?;
             let (start, increment, min_value, max_value, cycle, cache) =
@@ -350,8 +351,8 @@ impl Parser {
             }));
         }
         if self.consume_keyword(Keyword::Type) {
-            if temporary {
-                return Err(self.error_at_current("unexpected TEMP/TEMPORARY before CREATE TYPE"));
+            if temporary || unlogged {
+                return Err(self.error_at_current("unexpected modifier before CREATE TYPE"));
             }
             let name = self.parse_qualified_name()?;
             self.expect_keyword(Keyword::As, "expected AS after CREATE TYPE name")?;
@@ -395,8 +396,8 @@ impl Parser {
             }));
         }
         if self.consume_keyword(Keyword::Domain) {
-            if temporary {
-                return Err(self.error_at_current("unexpected TEMP/TEMPORARY before CREATE DOMAIN"));
+            if temporary || unlogged {
+                return Err(self.error_at_current("unexpected modifier before CREATE DOMAIN"));
             }
             let name = self.parse_qualified_name()?;
             self.expect_keyword(Keyword::As, "expected AS after CREATE DOMAIN name")?;
@@ -469,6 +470,7 @@ impl Parser {
             constraints,
             if_not_exists,
             temporary,
+            unlogged,
         }))
     }
 
@@ -6006,7 +6008,20 @@ mod tests {
         let result = parse_statement("CREATE TEMP SCHEMA foo");
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.message.contains("unexpected TEMP"));
+        assert!(err.message.contains("unexpected"));
+    }
+
+    #[test]
+    fn parses_create_unlogged_table() {
+        let stmt = parse_statement("CREATE UNLOGGED TABLE logs (id INT, message TEXT)")
+            .expect("parse should succeed");
+        let Statement::CreateTable(create) = stmt else {
+            panic!("expected create table statement");
+        };
+        assert!(create.unlogged);
+        assert!(!create.temporary);
+        assert_eq!(create.name, vec!["logs".to_string()]);
+        assert_eq!(create.columns.len(), 2);
     }
 
     #[test]
