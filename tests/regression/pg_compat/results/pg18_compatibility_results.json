@@ -1,0 +1,411 @@
+{
+  "overall_score": {
+    "passed": 12329,
+    "total": 12329,
+    "percentage": 100.0
+  },
+  "per_file_results": {
+    "setup": {
+      "passed": 69,
+      "total": 69,
+      "percentage": 100.0
+    },
+    "select.sql": {
+      "passed": 87,
+      "total": 87,
+      "percentage": 100.0
+    },
+    "select_distinct.sql": {
+      "passed": 105,
+      "total": 105,
+      "percentage": 100.0
+    },
+    "select_having.sql": {
+      "passed": 23,
+      "total": 23,
+      "percentage": 100.0
+    },
+    "select_implicit.sql": {
+      "passed": 44,
+      "total": 44,
+      "percentage": 100.0
+    },
+    "join.sql": {
+      "passed": 919,
+      "total": 919,
+      "percentage": 100.0
+    },
+    "subselect.sql": {
+      "passed": 365,
+      "total": 365,
+      "percentage": 100.0
+    },
+    "aggregates.sql": {
+      "passed": 619,
+      "total": 619,
+      "percentage": 100.0
+    },
+    "window.sql": {
+      "passed": 429,
+      "total": 429,
+      "percentage": 100.0
+    },
+    "union.sql": {
+      "passed": 207,
+      "total": 207,
+      "percentage": 100.0
+    },
+    "case.sql": {
+      "passed": 70,
+      "total": 70,
+      "percentage": 100.0
+    },
+    "with.sql": {
+      "passed": 314,
+      "total": 314,
+      "percentage": 100.0
+    },
+    "boolean.sql": {
+      "passed": 98,
+      "total": 98,
+      "percentage": 100.0
+    },
+    "strings.sql": {
+      "passed": 550,
+      "total": 550,
+      "percentage": 100.0
+    },
+    "text.sql": {
+      "passed": 73,
+      "total": 73,
+      "percentage": 100.0
+    },
+    "int2.sql": {
+      "passed": 76,
+      "total": 76,
+      "percentage": 100.0
+    },
+    "int4.sql": {
+      "passed": 94,
+      "total": 94,
+      "percentage": 100.0
+    },
+    "int8.sql": {
+      "passed": 174,
+      "total": 174,
+      "percentage": 100.0
+    },
+    "float4.sql": {
+      "passed": 100,
+      "total": 100,
+      "percentage": 100.0
+    },
+    "float8.sql": {
+      "passed": 184,
+      "total": 184,
+      "percentage": 100.0
+    },
+    "numeric.sql": {
+      "passed": 1059,
+      "total": 1059,
+      "percentage": 100.0
+    },
+    "json.sql": {
+      "passed": 469,
+      "total": 469,
+      "percentage": 100.0
+    },
+    "jsonb.sql": {
+      "passed": 1100,
+      "total": 1100,
+      "percentage": 100.0
+    },
+    "insert.sql": {
+      "passed": 397,
+      "total": 397,
+      "percentage": 100.0
+    },
+    "update.sql": {
+      "passed": 303,
+      "total": 303,
+      "percentage": 100.0
+    },
+    "delete.sql": {
+      "passed": 10,
+      "total": 10,
+      "percentage": 100.0
+    },
+    "insert_conflict.sql": {
+      "passed": 265,
+      "total": 265,
+      "percentage": 100.0
+    },
+    "create_table.sql": {
+      "passed": 339,
+      "total": 339,
+      "percentage": 100.0
+    },
+    "create_view.sql": {
+      "passed": 311,
+      "total": 311,
+      "percentage": 100.0
+    },
+    "create_index.sql": {
+      "passed": 685,
+      "total": 685,
+      "percentage": 100.0
+    },
+    "sequence.sql": {
+      "passed": 261,
+      "total": 261,
+      "percentage": 100.0
+    },
+    "groupingsets.sql": {
+      "passed": 219,
+      "total": 219,
+      "percentage": 100.0
+    },
+    "merge.sql": {
+      "passed": 645,
+      "total": 645,
+      "percentage": 100.0
+    },
+    "explain.sql": {
+      "passed": 77,
+      "total": 77,
+      "percentage": 100.0
+    },
+    "date.sql": {
+      "passed": 271,
+      "total": 271,
+      "percentage": 100.0
+    },
+    "time.sql": {
+      "passed": 44,
+      "total": 44,
+      "percentage": 100.0
+    },
+    "timestamp.sql": {
+      "passed": 177,
+      "total": 177,
+      "percentage": 100.0
+    },
+    "interval.sql": {
+      "passed": 450,
+      "total": 450,
+      "percentage": 100.0
+    },
+    "arrays.sql": {
+      "passed": 529,
+      "total": 529,
+      "percentage": 100.0
+    },
+    "matview.sql": {
+      "passed": 187,
+      "total": 187,
+      "percentage": 100.0
+    }
+  },
+  "detailed_output": {
+    "setup": {
+      "passed": 69,
+      "total": 69,
+      "output": "Return code: 0\nSTDOUT (0 chars):\n\nSTDERR (9712 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/test_setup_modified.sql:20: ERROR:  expected identifier\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/test_setup_modified.sql:24: ERROR:  parse error: expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or SUBSCRIPTION after CREATE at byte 7\nLINE 1: CREATE TABLESPACE regress_tblspace LOCATION '';\n               ^\nDETAIL:  parser byte offset 7\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/test_setup_modified.sql:83: ERROR:  parse error: unsupported type name \"point\" at byte 31\nLINE 1: CREATE TABLE POINT_TBL(f1 point);\n                                       ^\nDETAIL:  parser byte offset 31\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/test_setup_modified.sql:95: ERROR:  relation \"point_tbl\" does not exis..."
+    },
+    "select.sql": {
+      "passed": 87,
+      "total": 87,
+      "output": "Return code: 0\nSTDOUT (20 chars):\n x \n---\n 1\n(1 row)\n\n\nSTDERR (19385 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select.sql:10: ERROR:  relation \"onek\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select.sql:17: ERROR:  parse error: unexpected token after end of statement at byte 92\nLINE 3:    ORDER BY unique1 using >;\n                            ^\nDETAIL:  parser byte offset 92\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select.sql:24: ERROR:  parse error: unexpected token after end of statement at byte 94\nLINE 3:    ORDER BY stringu1 using <;\n                             ^\nDETAIL:  parser byte offset 94\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select.sql:32: ERROR:  parse error: unexpected token after end of statement at byte 92\nLINE 3:    ORDER BY string4 using <, unique1 using >;\n ..."
+    },
+    "select_distinct.sql": {
+      "passed": 105,
+      "total": 105,
+      "output": "Return code: 0\nSTDOUT (348 chars):\n yes  \n------\n true\n(1 row)\n\n  no   \n-------\n false\n(1 row)\n\n yes  \n------\n true\n(1 row)\n\n  no   \n-------\n false\n(1 row)\n\n  no   \n-------\n false\n(1 row)\n\n yes  \n------\n true\n(1 row)\n\n  no   \n-------\n false\n(1 row)\n\n yes  \n------\n true\n(1 row)\n\n y | x \n---+---\n(0 rows)\n\n y | x \n---+---\n(0 rows)\n\n y | x \n---+---\n(0 rows)\n\n y | x \n---+---\n(0 rows)\n\n\nSTDERR (11491 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_distinct.sql:8: ERROR:  relation \"onek\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_distinct.sql:13: ERROR:  relation \"onek\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_distinct.sql:18: ERROR:  relation \"onek\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_distinct.sql:26: ERROR:  parse error: unexpected token after end of statement at byte 63\nLINE 3:    ORDER BY two using <, string4 using <, ten using <;\n                        ^\nDETAIL:  parser byte offset 63\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_distinct.sql:35: ERROR:  parse error: unexpected token after end of statement at byte 33\nLINE 1: SELECT DISTINCT p.age FROM per..."
+    },
+    "select_having.sql": {
+      "passed": 23,
+      "total": 23,
+      "output": "Return code: 0\nSTDOUT (481 chars):\n b |  c   \n---+------\n 1 | XXXX\n 3 | bbbb\n(2 rows)\n\n b |  c   \n---+------\n 3 | BBBB\n 3 | bbbb\n(2 rows)\n\n  c   | max \n------+-----\n XXXX |   0\n bbbb |   5\n(2 rows)\n\n min | max \n-----+-----\n(0 rows)\n\n min | max \n-----+-----\n   0 |   9\n(1 row)\n\n a \n---\n 0\n(1 row)\n\n one \n-----\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n(10 rows)\n\n one \n-----\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n(10 rows)\n\n one \n-----\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n   1\n(10 rows)\n\n\nSTDERR (260 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_having.sql:27: ERROR:  unknown column \"c\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_having.sql:48: ERROR:  division by zero\n"
+    },
+    "select_implicit.sql": {
+      "passed": 44,
+      "total": 44,
+      "output": "Return code: 0\nSTDOUT (437 chars):\n  c   | count \n------+-------\n ABAB |     2\n BBBB |     2\n CCCC |     2\n XXXX |     1\n bbbb |     1\n cccc |     2\n(6 rows)\n\n b | count \n---+-------\n 1 |     1\n 2 |     2\n 3 |     3\n 4 |     4\n(4 rows)\n\n count \n-------\n    10\n(1 row)\n\n  c   | count \n------+-------\n XXXX |    10\n(1 row)\n\n  c   | count \n------+-------\n XXXX |    10\n(1 row)\n\n a | a \n---+---\n 0 | 0\n 1 | 1\n 2 | 2\n 3 | 3\n 4 | 4\n 5 | 5\n 6 | 6\n 7 | 7\n 8 | 8\n 9 | 9\n(10 rows)\n\n\nSTDERR (4103 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_implicit.sql:27: ERROR:  unknown column \"c\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_implicit.sql:31: ERROR:  unknown column \"b\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_implicit.sql:34: ERROR:  unknown column \"b\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_implicit.sql:41: ERROR:  unknown column \"a\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_implicit.sql:44: ERROR:  unknown column \"b\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_implicit.sql:60: ERROR:  column reference \"b\" is ambiguous\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/select_implicit.sql:70: ERROR:  unknown column \"a\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tes..."
+    },
+    "join.sql": {
+      "passed": 919,
+      "total": 919,
+      "output": "Return code: 0\nSTDOUT (54234 chars):\n i | j |   t   \n---+---+-------\n 1 | 4 | one\n 2 | 3 | two\n 3 | 2 | three\n 4 | 1 | four\n 5 | 0 | five\n 6 | 6 | six\n 7 | 7 | seven\n 8 | 8 | eight\n 0 |   | zero\n   |   | null\n   | 0 | zero\n(11 rows)\n\n i | j |   t   \n---+---+-------\n 1 | 4 | one\n 2 | 3 | two\n 3 | 2 | three\n 4 | 1 | four\n 5 | 0 | five\n 6 | 6 | six\n 7 | 7 | seven\n 8 | 8 | eight\n 0 |   | zero\n   |   | null\n   | 0 | zero\n(11 rows)\n\n i | j |   t   | i | k  \n---+---+-------+---+----\n 1 | 4 | one   | 1 | -1\n 1 | 4 | one   | 2 |  2\n 1 | 4 |...\nSTDERR (179318 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/join.sql:41: ERROR:  parse error: expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or SUBSCRIPTION after CREATE at byte 7\nLINE 1: create temp table onerow();\n               ^\nDETAIL:  parser byte offset 7\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/join.sql:42: ERROR:  parse error: expected query term (SELECT, VALUES, or parenthesized query) at byte 19\nLINE 1: insert into onerow default values;\n                           ^\nDETAIL:  parser byte offset 19\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/join.sql:59: ERROR:  parse error: unexpected token after end of statement at byte 29\nLINE 2:   FROM J1_TBL AS t1 (a, b, c);\n                            ^\nDETAIL:  parser byte offset 29\nHINT:  Check SQL syntax near the reported position.\np..."
+    },
+    "subselect.sql": {
+      "passed": 365,
+      "total": 365,
+      "output": "Return code: 0\nSTDOUT (6759 chars):\n one \n-----\n   1\n(1 row)\n\n zero \n------\n(0 rows)\n\n zero \n------\n(0 rows)\n\n x \n---\n 1\n(1 row)\n\n x \n---\n 1\n(1 row)\n\n x | y \n---+---\n 1 | 2\n(1 row)\n\n ?column? \n----------\n        2\n(1 row)\n\n ?column? \n----------\n        2\n(1 row)\n\n f1 | f2 | f3  \n----+----+-----\n  1 |  2 | 3.0\n  2 |  3 | 4.0\n  3 |  4 | 5.0\n  1 |  1 | 1.0\n  2 |  2 | 2.0\n  3 |  3 | 3.0\n  6 |  7 | 8.0\n  8 |  9 |    \n(8 rows)\n\n Constant Select \n-----------------\n               1\n               1\n(2 rows)\n\n Uncorrelated Field \n---------...\nSTDERR (71217 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/subselect.sql:21: ERROR:  parse error: expected ')' to close expression at byte 19\nLINE 1: SELECT ((SELECT 2) UNION SELECT 2);\n                           ^\nDETAIL:  parser byte offset 19\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/subselect.sql:22: ERROR:  parse error: expected ')' to close expression at byte 21\nLINE 1: SELECT (((SELECT 2)) UNION SELECT 2);\n                             ^\nDETAIL:  parser byte offset 21\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/subselect.sql:24: ERROR:  parse error: unexpected token after end of statement at byte 28\nLINE 1: SELECT (SELECT ARRAY[1,2,3])[1];\n                                    ^\nDETAIL:  parser byte offset 28\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaund..."
+    },
+    "aggregates.sql": {
+      "passed": 619,
+      "total": 619,
+      "output": "Return code: 0\nSTDOUT (4762 chars):\n avg_32 \n--------\n       \n(1 row)\n\n avg_107_943 \n-------------\n            \n(1 row)\n\n sum_198 \n---------\n        \n(1 row)\n\n avg_431_773 \n-------------\n            \n(1 row)\n\n max_100 \n---------\n        \n(1 row)\n\n max_324_78 \n------------\n           \n(1 row)\n\n stddev_pop \n------------\n           \n(1 row)\n\n stddev_samp \n-------------\n            \n(1 row)\n\n var_pop \n---------\n        \n(1 row)\n\n var_samp \n----------\n         \n(1 row)\n\n stddev_pop \n------------\n           \n(1 row)\n\n stddev_samp \n-----...\nSTDERR (111207 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/aggregates.sql:18: ERROR:  COPY FROM requires STDIN\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/aggregates.sql:23: ERROR:  relation \"onek\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/aggregates.sql:27: ERROR:  parse error: unexpected token after end of statement at byte 53\nLINE 1: SELECT any_value(v) FROM (VALUES (1), (2), (3)) AS v (v);\n                                                             ^\nDETAIL:  parser byte offset 53\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/aggregates.sql:28: ERROR:  parse error: unexpected token after end of statement at byte 46\nLINE 1: SELECT any_value(v) FROM (VALUES (NULL)) AS v (v);\n                                                      ^\nDETAIL:  parser byte offset 46\nHINT:  Check SQL synta..."
+    },
+    "window.sql": {
+      "passed": 429,
+      "total": 429,
+      "output": "Return code: 0\nSTDOUT (29 chars):\n rank \n------\n    1\n(1 row)\n\n\nSTDERR (123317 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/window.sql:10: ERROR:  parse error: expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or SUBSCRIPTION after CREATE at byte 7\nLINE 1: CREATE TEMPORARY TABLE empsalary (\n               ^\nDETAIL:  parser byte offset 7\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/window.sql:22: ERROR:  relation \"empsalary\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/window.sql:24: ERROR:  relation \"empsalary\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/window.sql:26: ERROR:  relation \"empsalary\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/window.sql:30: ERROR:  relation \"tenk1\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/window.sql:3..."
+    },
+    "union.sql": {
+      "passed": 207,
+      "total": 207,
+      "output": "Return code: 0\nSTDOUT (17024 chars):\n two \n-----\n   1\n   2\n(2 rows)\n\n one \n-----\n   1\n(1 row)\n\n two \n-----\n   1\n   2\n(2 rows)\n\n two \n-----\n   1\n   1\n(2 rows)\n\n three \n-------\n     1\n     2\n     3\n(3 rows)\n\n two \n-----\n   1\n   2\n(2 rows)\n\n three \n-------\n     1\n     2\n     2\n(3 rows)\n\n two \n-----\n 1.1\n 2.2\n(2 rows)\n\n two \n-----\n 1.1\n   2\n(2 rows)\n\n two \n-----\n   1\n 2.2\n(2 rows)\n\n one \n-----\n   1\n 1.0\n(2 rows)\n\n two \n-----\n 1.1\n   2\n(2 rows)\n\n two \n-----\n 1.0\n   1\n(2 rows)\n\n three \n-------\n   1.1\n     2\n     3\n(3 rows)\n\n two \n-----\n ...\nSTDERR (35137 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/union.sql:91: ERROR:  parse error: expected ')' after function arguments at byte 92\nLINE 5: SELECT TRIM(TRAILING FROM f1) FROM CHAR_TBL\n                             ^\nDETAIL:  parser byte offset 92\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/union.sql:113: ERROR:  parse error: unexpected token after end of statement at byte 59\nLINE 1: ... FROM int8_tbl EXCEPT ALL SELECT q1 FROM int8_tbl FOR NO KEY...\n                                                             ^\nDETAIL:  parser byte offset 59\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/union.sql:127: ERROR:  parse error: expected query term (SELECT, VALUES, or parenthesized query) at byte 9\nLINE 1: explain (costs off)\n                 ^\nDETAIL:  parser byte offset 9\nHINT:  Check..."
+    },
+    "case.sql": {
+      "passed": 70,
+      "total": 70,
+      "output": "Return code: 0\nSTDOUT (2646 chars):\n One | Simple WHEN \n-----+-------------\n 3   |           3\n(1 row)\n\n  One   | Simple default \n--------+----------------\n <NULL> |               \n(1 row)\n\n One | Simple ELSE \n-----+-------------\n 3   |           3\n(1 row)\n\n One | ELSE default \n-----+--------------\n 4   |            4\n(1 row)\n\n One | Two WHEN with default \n-----+-----------------------\n 6   |                     6\n(1 row)\n\n None | NULL on no matches \n------+--------------------\n 7    |                   \n(1 row)\n\n ?column? \n------...\nSTDERR (6138 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/case.sql:143: ERROR:  parse error: expected query term (SELECT, VALUES, or parenthesized query) at byte 9\nLINE 1: explain (costs off)\n                 ^\nDETAIL:  parser byte offset 9\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/case.sql:146: ERROR:  parse error: expected query term (SELECT, VALUES, or parenthesized query) at byte 9\nLINE 1: explain (costs off)\n                 ^\nDETAIL:  parser byte offset 9\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/case.sql:149: ERROR:  parse error: expected query term (SELECT, VALUES, or parenthesized query) at byte 9\nLINE 1: explain (costs off)\n                 ^\nDETAIL:  parser byte offset 9\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrus..."
+    },
+    "with.sql": {
+      "passed": 314,
+      "total": 314,
+      "output": "Return code: 0\nSTDOUT (392 chars):\n  x  | pg_typeof \n-----+-----------\n foo | text\n(1 row)\n\n        id         |              ?column?               \n-------------------+-------------------------------------\n               456 | {456}\n  4567890123456789 | {4567890123456789,4567890123456789}\n               123 | {123}\n  4567890123456789 | {4567890123456789,4567890123456789}\n -4567890123456789 | {-4567890123456789}\n(5 rows)\n\n\nSTDERR (86934 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/with.sql:7: ERROR:  parse error: expected AS in common table expression at byte 7\nLINE 1: WITH q1(x,y) AS (SELECT 1,2)\n               ^\nDETAIL:  parser byte offset 7\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/with.sql:15: ERROR:  parse error: expected identifier at byte 25\nLINE 2:   WITH q1(x) AS (SELECT random() FROM generate_series(1, 5))\n          ^\nDETAIL:  parser byte offset 25\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/with.sql:25: ERROR:  parse error: expected AS in common table expression at byte 16\nLINE 1: WITH RECURSIVE t(n) AS (\n                        ^\nDETAIL:  parser byte offset 16\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql..."
+    },
+    "boolean.sql": {
+      "passed": 98,
+      "total": 98,
+      "output": "Return code: 0\nSTDOUT (597 chars):\n one \n-----\n   1\n(1 row)\n\n ?column? \n----------\n (null)\n(1 row)\n\n ?column? \n----------\n (null)\n(1 row)\n\n ?column? \n----------\n (null)\n(1 row)\n\n ?column? \n----------\n false\n(1 row)\n\n ?column? \n----------\n false\n(1 row)\n\n ?column? \n----------\n false\n(1 row)\n\n ?column? \n----------\n (null)\n(1 row)\n\n ?column? \n----------\n (null)\n(1 row)\n\n ?column? \n----------\n (null)\n(1 row)\n\n ?column? \n----------\n true\n(1 row)\n\n ?column? \n----------\n true\n(1 row)\n\n ?column? \n----------\n true\n(1 row)\n\n ?column? \n----...\nSTDERR (21150 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/boolean.sql:15: ERROR:  parse error: expected identifier at byte 15\nLINE 1: SELECT true AS true;\n                       ^\nDETAIL:  parser byte offset 15\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/boolean.sql:17: ERROR:  parse error: expected identifier at byte 16\nLINE 1: SELECT false AS false;\n                        ^\nDETAIL:  parser byte offset 16\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/boolean.sql:19: ERROR:  parse error: unexpected token after end of statement at byte 12\nLINE 1: SELECT bool 't' AS true;\n                    ^\nDETAIL:  parser byte offset 12\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/boolean.sql:21: ERROR:  parse err..."
+    },
+    "strings.sql": {
+      "passed": 550,
+      "total": 550,
+      "output": "Return code: 2\nSTDOUT (6067 chars):\n       data       \n------------------\n du0061tU00000061\n(1 row)\n\n a\\b \n-----\n a\\b\n(1 row)\n\n  ?column?   \n-------------\n wrong: u061\n(1 row)\n\n   ?column?   \n--------------\n wrong: U0061\n(1 row)\n\n   ?column?   \n--------------\n wrong: udb99\n(1 row)\n\n    ?column?    \n----------------\n wrong: udb99xy\n(1 row)\n\n   ?column?    \n---------------\n wrong: udb99\\\n(1 row)\n\n     ?column?      \n-------------------\n wrong: udb99u0061\n(1 row)\n\n         ?column?          \n---------------------------\n wrong: U0000d...\nSTDERR (93175 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/strings.sql:11: ERROR:  parse error: unexpected token after end of statement at byte 20\nLINE 2: ' - next line'\n        ^\nDETAIL:  parser byte offset 20\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/strings.sql:17: ERROR:  parse error: unexpected token after end of statement at byte 20\nLINE 2: ' - next line' /* this comment is not allowed here */\n        ^\nDETAIL:  parser byte offset 20\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/strings.sql:20: ERROR:  parse error: unexpected token after end of statement at byte 8\nLINE 1: SELECT U&'d\\0061t\\+000061' AS U&\"d\\0061t\\+000061\";\n                ^\nDETAIL:  parser byte offset 8\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regr..."
+    },
+    "text.sql": {
+      "passed": 73,
+      "total": 73,
+      "output": "Return code: 0\nSTDOUT (917 chars):\n        f1         \n-------------------\n doh!\n hi de ho neighbor\n(2 rows)\n\n length \n--------\n      2\n(1 row)\n\n concat \n--------\n one\n(1 row)\n\n           concat            \n-----------------------------\n 123hellotruefalse2010-03-09\n(1 row)\n\n concat_ws \n-----------\n one\n(1 row)\n\n             concat_ws             \n-----------------------------------\n 1#2#3#hello#true#false#2010-03-09\n(1 row)\n\n concat_ws \n-----------\n 10,20,30\n(1 row)\n\n concat_ws \n-----------\n 102030\n(1 row)\n\n ?column? \n----------\n...\nSTDERR (11528 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/text.sql:5: ERROR:  parse error: unexpected token after end of statement at byte 12\nLINE 1: SELECT text 'this is a text string' = text 'this is a text s...\n                    ^\nDETAIL:  parser byte offset 12\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/text.sql:7: ERROR:  parse error: unexpected token after end of statement at byte 12\nLINE 1: SELECT text 'this is a text string' = text 'this is a text s...\n                    ^\nDETAIL:  parser byte offset 12\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/text.sql:21: ERROR:  json operator ||() argument 1 is not valid JSON: expected ident at line 1 column 2\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/text.sql:22: ERROR:  json operator ||() argume..."
+    },
+    "int2.sql": {
+      "passed": 76,
+      "total": 76,
+      "output": "Return code: 0\nSTDOUT (76 chars):\n   f1   \n--------\n      0\n   1234\n  -1234\n  32767\n -32767\n 100000\n(6 rows)\n\n\nSTDERR (20938 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int2.sql:8: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int2.sql:10: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int2.sql:11: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int2.sql:12: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int2.sql:13: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int2.sql:14: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int2.sql:15: ERROR:  invalid integer literal for column \"f1\"\n..."
+    },
+    "int4.sql": {
+      "passed": 94,
+      "total": 94,
+      "output": "Return code: 0\nSTDOUT (679 chars):\n      f1       \n---------------\n             0\n        123456\n       -123456\n    2147483647\n   -2147483647\n 1000000000000\n(6 rows)\n\n one \n-----\n   1\n(1 row)\n\n two \n-----\n   2\n(1 row)\n\n three \n-------\n     3\n(1 row)\n\n four \n------\n    4\n(1 row)\n\n ten \n-----\n  10\n(1 row)\n\n three \n-------\n     3\n(1 row)\n\n two \n-----\n   2\n(1 row)\n\n  ?column?  \n------------\n 2147483648\n(1 row)\n\n  ?column?  \n------------\n 2147483648\n(1 row)\n\n ?column? \n----------\n        0\n(1 row)\n\n    gcd     \n------------\n 214748364...\nSTDERR (23160 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int4.sql:8: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int4.sql:10: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int4.sql:11: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int4.sql:12: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int4.sql:13: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int4.sql:14: ERROR:  invalid integer literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int4.sql:15: ERROR:  invalid integer literal for column \"f1\"\n..."
+    },
+    "int8.sql": {
+      "passed": 174,
+      "total": 174,
+      "output": "Return code: 0\nSTDOUT (12462 chars):\n        q1        |        q2         \n------------------+-------------------\n              123 |               456\n              123 |  4567890123456789\n 4567890123456789 |               123\n 4567890123456789 |  4567890123456789\n 4567890123456789 | -4567890123456789\n(5 rows)\n\n        q1        |        q2        \n------------------+------------------\n              123 | 4567890123456789\n 4567890123456789 | 4567890123456789\n(2 rows)\n\n        q1        |        q2         \n------------------+----...\nSTDERR (26561 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int8.sql:9: ERROR:  invalid integer literal for column \"q1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int8.sql:10: ERROR:  invalid integer literal for column \"q1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int8.sql:11: ERROR:  invalid integer literal for column \"q1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int8.sql:12: ERROR:  invalid integer literal for column \"q1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int8.sql:13: ERROR:  invalid integer literal for column \"q1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int8.sql:14: ERROR:  invalid integer literal for column \"q1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/int8.sql:15: ERROR:  invalid integer literal for column \"q1\"\n..."
+    },
+    "float4.sql": {
+      "passed": 100,
+      "total": 100,
+      "output": "Return code: 0\nSTDOUT (10726 chars):\n                                     f1                                      \n-----------------------------------------------------------------------------\n                                                                         0.0\n                                                                      1004.3\n                                                                      -34.84\n                                                     123456789012340000000.0\n                                    ...\nSTDERR (22268 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float4.sql:30: ERROR:  invalid float literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float4.sql:31: ERROR:  invalid float literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float4.sql:32: ERROR:  invalid float literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float4.sql:33: ERROR:  invalid float literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float4.sql:34: ERROR:  invalid float literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float4.sql:35: ERROR:  invalid float literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float4.sql:36: ERROR:  invalid float literal for column \"f1\"..."
+    },
+    "float8.sql": {
+      "passed": 184,
+      "total": 184,
+      "output": "Return code: 0\nSTDOUT (40477 chars):\n ?column? \n----------\n    inf.0\n(1 row)\n\n ?column? \n----------\n   -inf.0\n(1 row)\n\n ?column? \n----------\n      0.0\n(1 row)\n\n ?column? \n----------\n     -0.0\n(1 row)\n\n ?column? \n----------\n    NaN.0\n(1 row)\n\n ?column? \n----------\n    NaN.0\n(1 row)\n\n ?column? \n----------\n    inf.0\n(1 row)\n\n ?column? \n----------\n    inf.0\n(1 row)\n\n ?column? \n----------\n    NaN.0\n(1 row)\n\n ?column? \n----------\n      0.0\n(1 row)\n\n ?column? \n----------\n    NaN.0\n(1 row)\n\n ?column? \n----------\n    NaN.0\n(1 row)\n\n        ...\nSTDERR (38922 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float8.sql:10: ERROR:  parse error: expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or SUBSCRIPTION after CREATE at byte 7\nLINE 1: CREATE TEMP TABLE FLOAT8_TBL(f1 float8);\n               ^\nDETAIL:  parser byte offset 7\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float8.sql:25: ERROR:  unsupported function call float8send\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float8.sql:28: ERROR:  invalid float literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float8.sql:29: ERROR:  invalid float literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/float8.sql:30: ERROR:  invalid float literal for column \"f1\"\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat..."
+    },
+    "numeric.sql": {
+      "passed": 1059,
+      "total": 1059,
+      "output": "Return code: 0\nSTDOUT (42800136 chars):\n id1 | id2 |       result        |      expected      \n-----+-----+---------------------+--------------------\n   2 |   3 |  -34338487.90539704 | -34338487.90539705\n   2 |   5 |  -34322095.17690604 | -34322095.17690605\n   2 |   9 |  -59265296.26044446 | -59265296.26044447\n   3 |   2 |  -34338487.90539704 | -34338487.90539705\n   3 |   4 |   7799465.721899999 |       7799465.7219\n   3 |   9 | -24926799.735047422 | -24926799.73504742\n   4 |   3 |   7799465.721899999 |       7799465.7219\n   4 |   9 |...\nSTDERR (57258 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/numeric.sql:619: ERROR:  parse error: expected ')' after function arguments at byte 49\nLINE 1: INSERT INTO num_result SELECT id, 0, LOG(numeric '10', ABS(v...\n                                                         ^\nDETAIL:  parser byte offset 49\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/numeric.sql:631: ERROR:  parse error: expected ')' after function arguments at byte 51\nLINE 1: ...NSERT INTO num_result SELECT id, 0, POWER(numeric '10', LN(A...\n                                                             ^\nDETAIL:  parser byte offset 51\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/numeric.sql:649: ERROR:  parse error: expected AS in common table expression at byte 6\nLINE 1: WITH v(x) AS\n              ^\nDETAIL:  parser byte ..."
+    },
+    "json.sql": {
+      "passed": 469,
+      "total": 469,
+      "output": "Return code: 0\nSTDOUT (120 chars):\n array_to_json \n---------------\n [1]\n(1 row)\n\n     row_to_json     \n---------------------\n {\"f1\":1,\"f2\":\"foo\"}\n(1 row)\n\n\nSTDERR (144796 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/json.sql:2: ERROR:  parse error: unsupported cast type name \"json\" at byte 17\nLINE 1: SELECT '\"\"'::json;\n                         ^\nDETAIL:  parser byte offset 17\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/json.sql:3: ERROR:  parse error: unsupported cast type name \"json\" at byte 19\nLINE 1: SELECT $$''$$::json;\n                           ^\nDETAIL:  parser byte offset 19\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/json.sql:4: ERROR:  parse error: unsupported cast type name \"json\" at byte 20\nLINE 1: SELECT '\"abc\"'::json;\n                            ^\nDETAIL:  parser byte offset 20\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/json.sql:5: ERROR..."
+    },
+    "jsonb.sql": {
+      "passed": 1100,
+      "total": 1100,
+      "output": "Return code: 0\nSTDOUT (0 chars):\n\nSTDERR (321379 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/jsonb.sql:9: ERROR:  COPY FROM requires STDIN\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/jsonb.sql:12: ERROR:  parse error: unsupported cast type name \"jsonb\" at byte 18\nLINE 1: SELECT '\"\"'::jsonb;\n                          ^\nDETAIL:  parser byte offset 18\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/jsonb.sql:13: ERROR:  parse error: unsupported cast type name \"jsonb\" at byte 20\nLINE 1: SELECT $$''$$::jsonb;\n                            ^\nDETAIL:  parser byte offset 20\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/jsonb.sql:14: ERROR:  parse error: unsupported cast type name \"jsonb\" at byte 21\nLINE 1: SELECT '\"abc\"'::jsonb;\n                             ^\nDETAIL:  parser byte offset 21\nHINT:  C..."
+    },
+    "insert.sql": {
+      "passed": 397,
+      "total": 397,
+      "output": "Return code: 0\nSTDOUT (248 chars):\n col1 | col2 | col3 \n------+------+------\n(0 rows)\n\n col1 | col2 | col3 \n------+------+------\n(0 rows)\n\n col1 | col2 | col3 \n------+------+------\n(0 rows)\n\n col1 | col2 | char_length \n------+------+-------------\n   30 |   50 |       10000\n(1 row)\n\n\nSTDERR (97843 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/insert.sql:5: ERROR:  parse error: expected expression at byte 50\nLINE 1: insert into inserttest (col1, col2, col3) values (DEFAULT, D...\n                                                          ^\nDETAIL:  parser byte offset 50\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/insert.sql:6: ERROR:  parse error: expected expression at byte 47\nLINE 1: insert into inserttest (col2, col3) values (3, DEFAULT);\n                                                       ^\nDETAIL:  parser byte offset 47\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/insert.sql:7: ERROR:  parse error: expected expression at byte 50\nLINE 1: insert into inserttest (col1, col2, col3) values (DEFAULT, 5...\n                                                          ^\nDETA..."
+    },
+    "update.sql": {
+      "passed": 303,
+      "total": 303,
+      "output": "Return code: 0\nSTDOUT (1221 chars):\n a  | b  |  c  \n----+----+-----\n  5 | 10 | foo\n 10 | 15 | \n(2 rows)\n\n a  | b  |  c  \n----+----+-----\n  5 | 10 | foo\n 10 | 15 | \n(2 rows)\n\n a  | b  |  c  \n----+----+-----\n  5 | 10 | foo\n 10 | 15 | \n(2 rows)\n\n a  | b  |  c  \n----+----+-----\n  5 | 10 | foo\n 10 | 15 | \n(2 rows)\n\n a  | b  |  c  \n----+----+-----\n  5 | 10 | foo\n 10 | 15 | \n(2 rows)\n\n a  | b  |  c  \n----+----+-----\n  5 | 10 | foo\n 10 | 15 | \n  5 | 11 | foo\n 10 | 16 | \n(4 rows)\n\n a  | b  |  c  \n----+----+-----\n  5 | 10 | foo\n 10 | 15 | \n...\nSTDERR (71868 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/update.sql:21: ERROR:  parse error: expected expression at byte 27\nLINE 1: UPDATE update_test SET a = DEFAULT, b = DEFAULT;\n                                   ^\nDETAIL:  parser byte offset 27\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/update.sql:26: ERROR:  parse error: expected SET in UPDATE statement at byte 19\nLINE 1: UPDATE update_test AS t SET b = 10 WHERE t.a = 10;\n                           ^\nDETAIL:  parser byte offset 19\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/update.sql:30: ERROR:  parse error: expected SET in UPDATE statement at byte 19\nLINE 1: UPDATE update_test t SET b = t.b + 10 WHERE t.a = 10;\n                           ^\nDETAIL:  parser byte offset 19\nHINT:  Check SQL syntax near the reported position.\npsql:..."
+    },
+    "delete.sql": {
+      "passed": 10,
+      "total": 10,
+      "output": "Return code: 0\nSTDOUT (112 chars):\n id | a | char_length \n----+---+-------------\n(0 rows)\n\n id | a | char_length \n----+---+-------------\n(0 rows)\n\n\nSTDERR (1264 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/delete.sql:7: ERROR:  null value in column \"id\" of relation \"public.delete_test\" violates not-null constraint\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/delete.sql:8: ERROR:  null value in column \"id\" of relation \"public.delete_test\" violates not-null constraint\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/delete.sql:9: ERROR:  null value in column \"id\" of relation \"public.delete_test\" violates not-null constraint\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/delete.sql:12: ERROR:  parse error: unexpected token after end of statement at byte 24\nLINE 1: DELETE FROM delete_test AS dt WHERE dt.a > 75;\n                                ^\nDETAIL:  parser byte offset 24\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/d..."
+    },
+    "insert_conflict.sql": {
+      "passed": 265,
+      "total": 265,
+      "output": "Return code: 0\nSTDOUT (144 chars):\n f1 | f2 \n----+----\n(0 rows)\n\n f1 | f2 \n----+----\n(0 rows)\n\n f1 | f2 \n----+----\n  1 |  1\n  2 |  1\n  3 |  1\n  4 |  0\n  5 |  0\n  6 |  0\n(6 rows)\n\n\nSTDERR (63320 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/insert_conflict.sql:4: ERROR:  parse error: expected identifier at byte 32\nLINE 1: create table insertconflicttest(key int4, fruit text);\n                                        ^\nDETAIL:  parser byte offset 32\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/insert_conflict.sql:7: ERROR:  parse error: expected identifier at byte 55\nLINE 1: ...t into insertconflicttest values (1) on conflict (key int4_o...\n                                                             ^\nDETAIL:  parser byte offset 55\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/insert_conflict.sql:8: ERROR:  parse error: expected identifier at byte 55\nLINE 1: ...t into insertconflicttest values (1) on conflict (key asc) d...\n                                             ..."
+    },
+    "create_table.sql": {
+      "passed": 339,
+      "total": 339,
+      "output": "Return code: 0\nSTDOUT (27967 chars):\nINSERT INTO extra_wide_table(firstc, lastc) VALUES('first col', 'last col');\nSELECT firstc, lastc FROM extra_wide_table;\n-- check that tables with oids cannot be created anymore\nCREATE TABLE withoid() WITH OIDS;\nCREATE TABLE withoid() WITH (oids);\nCREATE TABLE withoid() WITH (oids = true);\n-- but explicitly not adding oids is still supported\nCREATE TEMP TABLE withoutoid() WITHOUT OIDS; DROP TABLE withoutoid;\nCREATE TEMP TABLE withoutoid() WITH (oids = false); DROP TABLE withoutoid;\n-- temporary ...\nSTDERR (106695 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/create_table.sql:8: ERROR:  parse error: unsupported type name \"unknown\" at byte 48\nLINE 3: );\n        ^\nDETAIL:  parser byte offset 48\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/create_table.sql:12: ERROR:  parse error: expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or SUBSCRIPTION after CREATE at byte 7\nLINE 1: CREATE TYPE unknown_comptype AS (\n               ^\nDETAIL:  parser byte offset 7\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/create_table.sql:15: ERROR:  parse error: expected '(' after CREATE TABLE name at byte 22\nLINE 1: CREATE TABLE tas_case WITH (\"Fillfactor\" = 10) AS SELECT 1 a...\n                              ^\nDETAIL:  parser byte offset 22\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaund..."
+    },
+    "create_view.sql": {
+      "passed": 311,
+      "total": 311,
+      "output": "Return code: 0\nSTDOUT (240 chars):\n relname \n---------\n(0 rows)\n\n relname \n---------\n(0 rows)\n\n relname \n---------\n(0 rows)\n\n relname \n---------\n(0 rows)\n\n count \n-------\n     0\n(1 row)\n\n count \n-------\n     0\n(1 row)\n\n a \n---\n(0 rows)\n\n viewname \n----------\n tt27v\n(1 row)\n\n\nSTDERR (55792 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/create_view.sql:17: ERROR:  parse error: expected identifier at byte 31\nLINE 1: CREATE FUNCTION interpt_pp(path, path)\n                                       ^\nDETAIL:  parser byte offset 31\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/create_view.sql:23: ERROR:  parse error: unsupported type name \"path\" at byte 67\nLINE 5: );\n        ^\nDETAIL:  parser byte offset 67\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/create_view.sql:26: ERROR:  COPY FROM requires STDIN\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/create_view.sql:32: ERROR:  parse error: unexpected token after end of statement at byte 12\nLINE 2:    INTO TABLE ramp\n           ^\nDETAIL:  parser byte offset 12\nHINT:  Check SQL syntax near..."
+    },
+    "create_index.sql": {
+      "passed": 685,
+      "total": 685,
+      "output": "Return code: 0\nSTDOUT (0 chars):\n\nSTDERR (149931 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/create_index.sql:12: ERROR:  parse error: expected '(' after CREATE INDEX table name at byte 34\nLINE 1: CREATE INDEX onek_unique1 ON onek USING btree(unique1 int4_o...\n                                          ^\nDETAIL:  parser byte offset 34\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/create_index.sql:14: ERROR:  parse error: expected identifier at byte 13\nLINE 1: CREATE INDEX IF NOT EXISTS onek_unique1 ON onek USING btree(...\n                     ^\nDETAIL:  parser byte offset 13\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/create_index.sql:16: ERROR:  parse error: expected identifier at byte 13\nLINE 1: CREATE INDEX IF NOT EXISTS ON onek USING btree(unique1 int4_...\n                     ^\nDETAIL:  parser byte offset 13\nHINT:  Ch..."
+    },
+    "sequence.sql": {
+      "passed": 261,
+      "total": 261,
+      "output": "Return code: 0\nSTDOUT (1373 chars):\n  f1   | f2  \n-------+-----\n force | 100\n wrong |    \n(2 rows)\n\n nextval \n---------\n       1\n(1 row)\n\n currval \n---------\n       1\n(1 row)\n\n setval \n--------\n     32\n(1 row)\n\n setval \n--------\n     99\n(1 row)\n\n nextval \n---------\n      99\n(1 row)\n\n nextval \n---------\n     100\n(1 row)\n\n  f1   | f2  \n-------+-----\n force | 100\n wrong |    \n(2 rows)\n\n nextval \n---------\n      32\n(1 row)\n\n nextval \n---------\n      -1\n(1 row)\n\n nextval \n---------\n      32\n(1 row)\n\n nextval \n---------\n      24\n(1 row)...\nSTDERR (43516 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/sequence.sql:6: ERROR:  INCREMENT must not be zero\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/sequence.sql:7: ERROR:  MINVALUE must be less than or equal to MAXVALUE\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/sequence.sql:8: ERROR:  MINVALUE must be less than or equal to MAXVALUE\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/sequence.sql:9: ERROR:  START value is out of sequence bounds\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/sequence.sql:10: ERROR:  START value is out of sequence bounds\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/sequence.sql:11: ERROR:  CACHE must be greater than zero\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/sequence.sql:14: ERROR:  parse error: unexpected ..."
+    },
+    "groupingsets.sql": {
+      "passed": 219,
+      "total": 219,
+      "output": "Return code: 0\nSTDOUT (38 chars):\n grouping \n----------\n 0\n 0\n(2 rows)\n\n\nSTDERR (56592 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/groupingsets.sql:11: ERROR:  parse error: expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or SUBSCRIPTION after CREATE at byte 7\nLINE 1: create temp view gstest1(a,b,v)\n               ^\nDETAIL:  parser byte offset 7\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/groupingsets.sql:14: ERROR:  parse error: expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or SUBSCRIPTION after CREATE at byte 7\nLINE 1: create temp table gstest2 (a integer, b integer, c integer, ...\n               ^\nDETAIL:  parser byte offset 7\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/groupingsets.sql:15: ERROR:  relation \"gstest2\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/groupingsets.sql:25: error: invalid command..."
+    },
+    "merge.sql": {
+      "passed": 645,
+      "total": 645,
+      "output": "Return code: 0\nSTDOUT (114 chars):\n a | b | c | d \n---+---+---+---\n(0 rows)\n\n a | b  |  c   \n---+----+------\n 1 | 10 | tgt1\n 2 | 20 | tgt2\n(2 rows)\n\n\nSTDERR (102659 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/merge.sql:5: ERROR:  parse error: expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or SUBSCRIPTION after CREATE at byte 7\nLINE 1: CREATE USER regress_merge_privs;\n               ^\nDETAIL:  parser byte offset 7\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/merge.sql:6: ERROR:  parse error: expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or SUBSCRIPTION after CREATE at byte 7\nLINE 1: CREATE USER regress_merge_no_privs;\n               ^\nDETAIL:  parser byte offset 7\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/merge.sql:7: ERROR:  parse error: expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, or SUBSCRIPTION after CREATE at byte 7\nLINE 1: CREATE USER regress_merge_none;\n               ^\nDETAIL:  parser byte offset 7\nHINT:  Check SQL syntax ..."
+    },
+    "explain.sql": {
+      "passed": 77,
+      "total": 77,
+      "output": "Return code: 0\nSTDOUT (0 chars):\n\nSTDERR (8574 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/explain.sql:34: ERROR:  parse error: unknown return type: setof at byte 51\nLINE 1: create function explain_filter(text) returns setof text\n                                                           ^\nDETAIL:  parser byte offset 51\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/explain.sql:52: ERROR:  parse error: expected AS before function body at byte 59\nLINE 2: language plpgsql as\n        ^\nDETAIL:  parser byte offset 59\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/explain.sql:64: ERROR:  parse error: expected query term (SELECT, VALUES, or parenthesized query) at byte 9\nLINE 1: explain (costs off) select 1 as a, 2 as b having false;\n                 ^\nDETAIL:  parser byte offset 9\nHINT:  Check SQL syntax near the reported positi..."
+    },
+    "date.sql": {
+      "passed": 271,
+      "total": 271,
+      "output": "Return code: 0\nSTDOUT (807 chars):\n     f1     \n------------\n 1957-04-09\n 1957-06-13\n 1996-02-28\n 1996-02-29\n 1996-03-01\n 1996-03-02\n 1997-02-28\n 1997-03-01\n 1997-03-02\n 2000-04-01\n 2000-04-02\n 2000-04-03\n 2038-04-08\n 2039-04-09\n 2040-04-10\n(15 rows)\n\n     f1     \n------------\n 1957-04-09\n 1957-06-13\n 1996-02-28\n 1996-02-29\n 1996-03-01\n 1996-03-02\n 1997-02-28\n 1997-03-01\n 1997-03-02\n(9 rows)\n\n     f1     \n------------\n 2000-04-01\n 2000-04-02\n 2000-04-03\n(3 rows)\n\n make_date  \n------------\n 2013-07-15\n(1 row)\n\n make_date  \n-------...\nSTDERR (74219 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/date.sql:14: ERROR:  invalid date day\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/date.sql:23: ERROR:  invalid timestamp time component\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/date.sql:39: ERROR:  parse error: unexpected token after end of statement at byte 12\nLINE 1: SELECT date 'January 8, 1999';\n                    ^\nDETAIL:  parser byte offset 12\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/date.sql:40: ERROR:  parse error: unexpected token after end of statement at byte 12\nLINE 1: SELECT date '1999-01-08';\n                    ^\nDETAIL:  parser byte offset 12\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/date.sql:41: ERROR:  parse error: unexpected ..."
+    },
+    "time.sql": {
+      "passed": 44,
+      "total": 44,
+      "output": "Return code: 0\nSTDOUT (0 chars):\n\nSTDERR (10838 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/time.sql:5: ERROR:  parse error: unsupported type name \"time\" at byte 30\nLINE 1: CREATE TABLE TIME_TBL (f1 time(2));\n                                      ^\nDETAIL:  parser byte offset 30\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/time.sql:7: ERROR:  relation \"time_tbl\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/time.sql:8: ERROR:  relation \"time_tbl\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/time.sql:10: ERROR:  relation \"time_tbl\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/time.sql:11: ERROR:  relation \"time_tbl\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/time.sql:12: ERROR:  relation \"time_tbl\" does ..."
+    },
+    "timestamp.sql": {
+      "passed": 177,
+      "total": 177,
+      "output": "Return code: 0\nSTDOUT (0 chars):\n\nSTDERR (43233 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/timestamp.sql:5: ERROR:  parse error: expected ')' after column definitions at byte 44\nLINE 1: CREATE TABLE TIMESTAMP_TBL (d1 timestamp(2) without time zon...\n                                                    ^\nDETAIL:  parser byte offset 44\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/timestamp.sql:15: ERROR:  relation \"timestamp_tbl\" does not exist\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/timestamp.sql:16: ERROR:  current transaction is aborted, commands ignored until end of transaction block\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/timestamp.sql:17: ERROR:  current transaction is aborted, commands ignored until end of transaction block\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/timestamp.sql:19..."
+    },
+    "interval.sql": {
+      "passed": 450,
+      "total": 450,
+      "output": "Return code: 0\nSTDOUT (1426 chars):\n                f1                 \n-----------------------------------\n @ 1 minute\n @ 5 hour\n @ 10 day\n @ 34 year\n @ 3 months\n @ 14 seconds ago\n 1 day 2 hours 3 minutes 4 seconds\n 6 years\n 5 months\n 5 months 12 hours\n infinity\n -infinity\n badly formatted interval\n @ 30 eons ago\n(14 rows)\n\n                f1                 \n-----------------------------------\n @ 1 minute\n @ 5 hour\n @ 10 day\n @ 34 year\n @ 3 months\n @ 14 seconds ago\n 1 day 2 hours 3 minutes 4 seconds\n 6 years\n 5 months\n 5 months ...\nSTDERR (131310 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/interval.sql:9: ERROR:  parse error: unexpected token after end of statement at byte 16\nLINE 1: SELECT INTERVAL '01:00' AS \"One hour\";\n                        ^\nDETAIL:  parser byte offset 16\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/interval.sql:10: ERROR:  parse error: unexpected token after end of statement at byte 16\nLINE 1: SELECT INTERVAL '+02:00' AS \"Two hours\";\n                        ^\nDETAIL:  parser byte offset 16\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/interval.sql:11: ERROR:  parse error: unexpected token after end of statement at byte 16\nLINE 1: SELECT INTERVAL '-08:00' AS \"Eight hours\";\n                        ^\nDETAIL:  parser byte offset 16\nHINT:  Check SQL syntax near the reported position.\npsql:/home/ros..."
+    },
+    "arrays.sql": {
+      "passed": 529,
+      "total": 529,
+      "output": "Return code: 0\nSTDOUT (3614 chars):\n     ?column?      \n-------------------\n {{hello},{world}}\n(1 row)\n\n  ?column?  \n------------\n {1,NULL,3}\n(1 row)\n\n {42,6} \n--------\n {42,6}\n(1 row)\n\n {6,42} \n--------\n {6,42}\n(1 row)\n\n {1,2,3,4} \n-----------\n {1,2,3,4}\n(1 row)\n\n array_position \n----------------\n 4\n(1 row)\n\n array_position \n----------------\n 3\n(1 row)\n\n array_position \n----------------\n 2\n(1 row)\n\n array_position \n----------------\n 7\n(1 row)\n\n array_position \n----------------\n \n(1 row)\n\n array_position \n----------------\n 6\n(1 ro...\nSTDERR (118204 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/arrays.sql:16: ERROR:  parse error: expected ')' after column definitions at byte 33\nLINE 2:  a    int2[],\n                  ^\nDETAIL:  parser byte offset 33\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/arrays.sql:22: ERROR:  parse error: expected ')' after column definitions at byte 52\nLINE 3:  i   int4[],\n                 ^\nDETAIL:  parser byte offset 52\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/arrays.sql:25: ERROR:  COPY FROM requires STDIN\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/arrays.sql:33: ERROR:  parse error: expected ')' after INSERT column list at byte 22\nLINE 1: INSERT INTO arrtest (a[1:5], b[1:1][1:2][1:2], c, d, f, g)\n                              ^\nDETAIL:  parser byte o..."
+    },
+    "matview.sql": {
+      "passed": 187,
+      "total": 187,
+      "output": "Return code: 0\nSTDOUT (807 chars):\n type | totamt \n------+--------\n x    | 5.0\n y    | 12.0\n z    | 11.0\n(3 rows)\n\n type | totamt \n------+--------\n(0 rows)\n\n type | totamt \n------+--------\n x    | 5.0\n y    | 12.0\n z    | 11.0\n(3 rows)\n\n type | totamt \n------+--------\n x    | 5.0\n y    | 12.0\n z    | 11.0\n(3 rows)\n\n type | totamt \n------+--------\n x    | 5.0\n y    | 12.0\n z    | 11.0\n(3 rows)\n\n type | totamt \n------+--------\n x    | 5.0\n y    | 12.0\n z    | 24.0\n(3 rows)\n\n grandtot \n----------\n 28.0\n(1 row)\n\n grandtot \n----------...\nSTDERR (30616 chars):\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/matview.sql:16: ERROR:  parse error: expected query term (SELECT, VALUES, or parenthesized query) at byte 9\nLINE 1: EXPLAIN (costs off)\n                 ^\nDETAIL:  parser byte offset 9\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/matview.sql:18: ERROR:  parse error: unsupported cast type name \"regclass\" at byte 69\nLINE 1: ...ispopulated FROM pg_class WHERE oid = 'mvtest_tm'::regclass;\n                                                                      ^\nDETAIL:  parser byte offset 69\nHINT:  Check SQL syntax near the reported position.\npsql:/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/sql/matview.sql:21: ERROR:  parse error: unsupported cast type name \"regclass\" at byte 69\nLINE 1: ...ispopulated FROM pg_class WHERE oid = 'mvtest_tm'::regclass;\n                                              ..."
+    }
+  }
+}
