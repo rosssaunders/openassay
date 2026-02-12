@@ -155,6 +155,7 @@ pub enum Keyword {
     Time,
     Timestamp,
     Interval,
+    Window,
 }
 
 impl Keyword {
@@ -311,6 +312,7 @@ impl Keyword {
             "time" => Some(Self::Time),
             "timestamp" => Some(Self::Timestamp),
             "interval" => Some(Self::Interval),
+            "window" => Some(Self::Window),
             _ => None,
         }
     }

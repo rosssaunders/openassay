@@ -5548,3 +5548,39 @@ fn test_underscore_in_literal() {
     assert_eq!(result.rows.len(), 1);
     assert_eq!(result.rows[0][0], ScalarValue::Int(1000000));
 }
+
+#[test]
+fn test_named_window_definition() {
+    with_isolated_state(|| {
+        run_statement("CREATE TEMP TABLE t (x int)", &[]);
+        run_statement("INSERT INTO t VALUES (1), (2), (3)", &[]);
+        let result = run("SELECT x, sum(x) OVER w FROM t WINDOW w AS (ORDER BY x)");
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(result.rows[0][1], ScalarValue::Int(1)); 
+        assert_eq!(result.rows[1][1], ScalarValue::Int(3)); 
+        assert_eq!(result.rows[2][1], ScalarValue::Int(6)); 
+    });
+}
+
+#[test]
+fn test_groups_frame_mode() {
+    with_isolated_state(|| {
+        run_statement("CREATE TEMP TABLE t (x int)", &[]);
+        run_statement("INSERT INTO t VALUES (1), (2), (2), (3)", &[]);
+        let result = run("SELECT x, sum(x) OVER (ORDER BY x GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t");
+        assert_eq!(result.rows.len(), 4);
+    });
+}
+
+#[test]
+fn test_exclude_current_row() {
+    with_isolated_state(|| {
+        run_statement("CREATE TEMP TABLE t (x int)", &[]);
+        run_statement("INSERT INTO t VALUES (1), (2), (3)", &[]);
+        let result = run("SELECT x, sum(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW) FROM t");
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(result.rows[0][1], ScalarValue::Int(5)); // 2+3
+        assert_eq!(result.rows[1][1], ScalarValue::Int(4)); // 1+3
+        assert_eq!(result.rows[2][1], ScalarValue::Int(3)); // 1+2
+    });
+}

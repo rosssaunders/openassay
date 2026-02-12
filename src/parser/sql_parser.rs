@@ -19,7 +19,7 @@ use crate::parser::ast::{
     SelectQuantifier, SelectStatement, SetOperator, SetQuantifier, SetStatement, ShowStatement,
     Statement, SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression,
     TableFunctionRef, TablePrivilegeKind, TableRef, TransactionStatement, TruncateStatement,
-    TypeName, UnaryOp, UnlistenStatement, UpdateStatement, WindowFrame, WindowFrameBound,
+    TypeName, UnaryOp, UnlistenStatement, UpdateStatement, WindowDefinition, WindowFrame, WindowFrameBound,
     WindowFrameExclusion, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::parser::lexer::{Keyword, LexError, Token, TokenKind, lex_sql};
@@ -2243,6 +2243,12 @@ impl Parser {
             None
         };
 
+        let window_definitions = if self.consume_keyword(Keyword::Window) {
+            self.parse_window_definitions()?
+        } else {
+            Vec::new()
+        };
+
         Ok(SelectStatement {
             quantifier,
             distinct_on,
@@ -2251,6 +2257,7 @@ impl Parser {
             where_clause,
             group_by,
             having,
+            window_definitions,
         })
     }
 
@@ -3284,7 +3291,30 @@ impl Parser {
                 None
             };
             let over = if self.consume_keyword(Keyword::Over) {
-                Some(Box::new(self.parse_window_spec()?))
+                // OVER can be followed by:
+                // 1. Window name: OVER window_name
+                // 2. Window spec: OVER (...)
+                if matches!(self.current_kind(), TokenKind::Identifier(_))
+                {
+                    // Check if next token is LParen - if not, this is OVER window_name
+                    let next_is_lparen = matches!(self.peek_nth_kind(1), Some(TokenKind::LParen));
+                    if !next_is_lparen {
+                        // OVER window_name (no parentheses)
+                        let window_name = self.parse_identifier()?;
+                        Some(Box::new(WindowSpec {
+                            name: Some(window_name),
+                            partition_by: Vec::new(),
+                            order_by: Vec::new(),
+                            frame: None,
+                        }))
+                    } else {
+                        // OVER (...)
+                        Some(Box::new(self.parse_window_spec()?))
+                    }
+                } else {
+                    // OVER (...)
+                    Some(Box::new(self.parse_window_spec()?))
+                }
             } else {
                 None
             };
@@ -3302,11 +3332,80 @@ impl Parser {
         Ok(Expr::Identifier(name))
     }
 
+    fn parse_window_definitions(&mut self) -> Result<Vec<WindowDefinition>, ParseError> {
+        let mut definitions = Vec::new();
+        loop {
+            let name = self.parse_identifier()?;
+            self.expect_keyword(Keyword::As, "expected AS after window name")?;
+            self.expect_token(
+                |k| matches!(k, TokenKind::LParen),
+                "expected '(' after AS in window definition",
+            )?;
+            let spec = self.parse_window_spec_body()?;
+            self.expect_token(
+                |k| matches!(k, TokenKind::RParen),
+                "expected ')' to close window definition",
+            )?;
+            definitions.push(WindowDefinition { name, spec });
+            
+            if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                break;
+            }
+        }
+        Ok(definitions)
+    }
+
     fn parse_window_spec(&mut self) -> Result<WindowSpec, ParseError> {
         self.expect_token(
             |k| matches!(k, TokenKind::LParen),
             "expected '(' after OVER",
         )?;
+        
+        // Check for a named window reference: OVER (window_name) or OVER (window_name ORDER BY ...)
+        let name = if matches!(self.current_kind(), TokenKind::Identifier(_)) 
+            && !self.peek_keyword(Keyword::Partition)
+            && !self.peek_keyword(Keyword::Order)
+            && !self.peek_keyword(Keyword::Rows)
+            && !self.peek_keyword(Keyword::Range)
+            && !self.peek_keyword(Keyword::Groups)
+        {
+            // Try to parse as window name
+            let ident = self.parse_identifier()?;
+            // If next is ), this is just a window name reference: OVER (w)
+            // If next is ORDER BY or frame clause, this is refinement: OVER (w ORDER BY ...)
+            if matches!(self.current_kind(), TokenKind::RParen) {
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' to close OVER clause",
+                )?;
+                return Ok(WindowSpec {
+                    name: Some(ident),
+                    partition_by: Vec::new(),
+                    order_by: Vec::new(),
+                    frame: None,
+                });
+            }
+            Some(ident)
+        } else {
+            None
+        };
+        
+        let spec = self.parse_window_spec_body()?;
+        
+        self.expect_token(
+            |k| matches!(k, TokenKind::RParen),
+            "expected ')' to close OVER clause",
+        )?;
+
+        Ok(WindowSpec {
+            name,
+            partition_by: spec.partition_by,
+            order_by: spec.order_by,
+            frame: spec.frame,
+        })
+    }
+
+    fn parse_window_spec_body(&mut self) -> Result<WindowSpec, ParseError> {
         let mut partition_by = Vec::new();
         let mut order_by = Vec::new();
         let mut frame = None;
@@ -3328,12 +3427,8 @@ impl Parser {
             frame = Some(self.parse_window_frame()?);
         }
 
-        self.expect_token(
-            |k| matches!(k, TokenKind::RParen),
-            "expected ')' to close OVER clause",
-        )?;
-
         Ok(WindowSpec {
+            name: None,
             partition_by,
             order_by,
             frame,

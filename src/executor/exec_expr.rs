@@ -8,7 +8,7 @@ use crate::executor::exec_main::{
     parse_non_negative_int, row_key,
 };
 use crate::parser::ast::{
-    BinaryOp, ComparisonQuantifier, Expr, OrderByExpr, UnaryOp, WindowFrameBound,
+    BinaryOp, ComparisonQuantifier, Expr, OrderByExpr, UnaryOp, WindowDefinition, WindowFrameBound,
     WindowFrameExclusion, WindowFrameUnits, WindowSpec,
 };
 use crate::storage::tuple::ScalarValue;
@@ -413,6 +413,7 @@ pub(crate) fn eval_expr_with_window<'a>(
     scope: &'a EvalScope,
     row_idx: usize,
     all_rows: &'a [EvalScope],
+    window_definitions: &'a [WindowDefinition],
     params: &'a [Option<String>],
 ) -> EngineFuture<'a, Result<ScalarValue, EngineError>> {
     Box::pin(async move {
@@ -430,12 +431,12 @@ pub(crate) fn eval_expr_with_window<'a>(
             Expr::Parameter(idx) => parse_param(*idx, params),
             Expr::Identifier(parts) => scope.lookup_identifier(parts),
             Expr::Unary { op, expr } => {
-                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, params).await?;
+                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
                 eval_unary(op.clone(), value)
             }
             Expr::Binary { left, op, right } => {
-                let lhs = eval_expr_with_window(left, scope, row_idx, all_rows, params).await?;
-                let rhs = eval_expr_with_window(right, scope, row_idx, all_rows, params).await?;
+                let lhs = eval_expr_with_window(left, scope, row_idx, all_rows, window_definitions, params).await?;
+                let rhs = eval_expr_with_window(right, scope, row_idx, all_rows, window_definitions, params).await?;
                 eval_binary(op.clone(), lhs, rhs)
             }
             Expr::AnyAll {
@@ -444,8 +445,8 @@ pub(crate) fn eval_expr_with_window<'a>(
                 right,
                 quantifier,
             } => {
-                let lhs = eval_expr_with_window(left, scope, row_idx, all_rows, params).await?;
-                let rhs = eval_expr_with_window(right, scope, row_idx, all_rows, params).await?;
+                let lhs = eval_expr_with_window(left, scope, row_idx, all_rows, window_definitions, params).await?;
+                let rhs = eval_expr_with_window(right, scope, row_idx, all_rows, window_definitions, params).await?;
                 eval_any_all(op.clone(), lhs, rhs, quantifier.clone())
             }
             Expr::Exists(query) => {
@@ -474,7 +475,7 @@ pub(crate) fn eval_expr_with_window<'a>(
                 let mut values = Vec::with_capacity(items.len());
                 for item in items {
                     values
-                        .push(eval_expr_with_window(item, scope, row_idx, all_rows, params).await?);
+                        .push(eval_expr_with_window(item, scope, row_idx, all_rows, window_definitions, params).await?);
                 }
                 Ok(ScalarValue::Array(values))
             }
@@ -496,10 +497,10 @@ pub(crate) fn eval_expr_with_window<'a>(
                 list,
                 negated,
             } => {
-                let lhs = eval_expr_with_window(expr, scope, row_idx, all_rows, params).await?;
+                let lhs = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
                 let mut rhs = Vec::with_capacity(list.len());
                 for item in list {
-                    rhs.push(eval_expr_with_window(item, scope, row_idx, all_rows, params).await?);
+                    rhs.push(eval_expr_with_window(item, scope, row_idx, all_rows, window_definitions, params).await?);
                 }
                 eval_in_membership(lhs, rhs, *negated)
             }
@@ -508,7 +509,7 @@ pub(crate) fn eval_expr_with_window<'a>(
                 subquery,
                 negated,
             } => {
-                let lhs = eval_expr_with_window(expr, scope, row_idx, all_rows, params).await?;
+                let lhs = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
                 let result = execute_query_with_outer(subquery, params, Some(scope)).await?;
                 if !result.columns.is_empty() && result.columns.len() != 1 {
                     return Err(EngineError {
@@ -528,11 +529,11 @@ pub(crate) fn eval_expr_with_window<'a>(
                 high,
                 negated,
             } => {
-                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, params).await?;
+                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
                 let low_value =
-                    eval_expr_with_window(low, scope, row_idx, all_rows, params).await?;
+                    eval_expr_with_window(low, scope, row_idx, all_rows, window_definitions, params).await?;
                 let high_value =
-                    eval_expr_with_window(high, scope, row_idx, all_rows, params).await?;
+                    eval_expr_with_window(high, scope, row_idx, all_rows, window_definitions, params).await?;
                 eval_between_predicate(value, low_value, high_value, *negated)
             }
             Expr::Like {
@@ -541,13 +542,13 @@ pub(crate) fn eval_expr_with_window<'a>(
                 case_insensitive,
                 negated,
             } => {
-                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, params).await?;
+                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
                 let pattern_value =
-                    eval_expr_with_window(pattern, scope, row_idx, all_rows, params).await?;
+                    eval_expr_with_window(pattern, scope, row_idx, all_rows, window_definitions, params).await?;
                 eval_like_predicate(value, pattern_value, *case_insensitive, *negated)
             }
             Expr::IsNull { expr, negated } => {
-                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, params).await?;
+                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
                 let is_null = matches!(value, ScalarValue::Null);
                 Ok(ScalarValue::Bool(if *negated { !is_null } else { is_null }))
             }
@@ -557,9 +558,9 @@ pub(crate) fn eval_expr_with_window<'a>(
                 negated,
             } => {
                 let left_value =
-                    eval_expr_with_window(left, scope, row_idx, all_rows, params).await?;
+                    eval_expr_with_window(left, scope, row_idx, all_rows, window_definitions, params).await?;
                 let right_value =
-                    eval_expr_with_window(right, scope, row_idx, all_rows, params).await?;
+                    eval_expr_with_window(right, scope, row_idx, all_rows, window_definitions, params).await?;
                 eval_is_distinct_from(left_value, right_value, *negated)
             }
             Expr::CaseSimple {
@@ -568,10 +569,10 @@ pub(crate) fn eval_expr_with_window<'a>(
                 else_expr,
             } => {
                 let operand_value =
-                    eval_expr_with_window(operand, scope, row_idx, all_rows, params).await?;
+                    eval_expr_with_window(operand, scope, row_idx, all_rows, window_definitions, params).await?;
                 for (when_expr, then_expr) in when_then {
                     let when_value =
-                        eval_expr_with_window(when_expr, scope, row_idx, all_rows, params).await?;
+                        eval_expr_with_window(when_expr, scope, row_idx, all_rows, window_definitions, params).await?;
                     if matches!(operand_value, ScalarValue::Null)
                         || matches!(when_value, ScalarValue::Null)
                     {
@@ -579,12 +580,12 @@ pub(crate) fn eval_expr_with_window<'a>(
                     }
                     if compare_values_for_predicate(&operand_value, &when_value)? == Ordering::Equal
                     {
-                        return eval_expr_with_window(then_expr, scope, row_idx, all_rows, params)
+                        return eval_expr_with_window(then_expr, scope, row_idx, all_rows, window_definitions, params)
                             .await;
                     }
                 }
                 if let Some(else_expr) = else_expr {
-                    eval_expr_with_window(else_expr, scope, row_idx, all_rows, params).await
+                    eval_expr_with_window(else_expr, scope, row_idx, all_rows, window_definitions, params).await
                 } else {
                     Ok(ScalarValue::Null)
                 }
@@ -595,20 +596,20 @@ pub(crate) fn eval_expr_with_window<'a>(
             } => {
                 for (when_expr, then_expr) in when_then {
                     let condition =
-                        eval_expr_with_window(when_expr, scope, row_idx, all_rows, params).await?;
+                        eval_expr_with_window(when_expr, scope, row_idx, all_rows, window_definitions, params).await?;
                     if truthy(&condition) {
-                        return eval_expr_with_window(then_expr, scope, row_idx, all_rows, params)
+                        return eval_expr_with_window(then_expr, scope, row_idx, all_rows, window_definitions, params)
                             .await;
                     }
                 }
                 if let Some(else_expr) = else_expr {
-                    eval_expr_with_window(else_expr, scope, row_idx, all_rows, params).await
+                    eval_expr_with_window(else_expr, scope, row_idx, all_rows, window_definitions, params).await
                 } else {
                     Ok(ScalarValue::Null)
                 }
             }
             Expr::Cast { expr, type_name } => {
-                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, params).await?;
+                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
                 eval_cast_scalar(value, type_name)
             }
             Expr::FunctionCall {
@@ -633,6 +634,7 @@ pub(crate) fn eval_expr_with_window<'a>(
                         order_by,
                         filter.as_deref(),
                         window,
+                        window_definitions,
                         row_idx,
                         all_rows,
                         params,
@@ -667,7 +669,7 @@ pub(crate) fn eval_expr_with_window<'a>(
                     let mut values = Vec::with_capacity(args.len());
                     for arg in args {
                         values.push(
-                            eval_expr_with_window(arg, scope, row_idx, all_rows, params).await?,
+                            eval_expr_with_window(arg, scope, row_idx, all_rows, window_definitions, params).await?,
                         );
                     }
                     eval_scalar_function(&fn_name, &values).await
@@ -680,19 +682,19 @@ pub(crate) fn eval_expr_with_window<'a>(
                 message: "qualified wildcard expression requires FROM support".to_string(),
             }),
             Expr::ArraySubscript { expr, index } => {
-                let array_value = eval_expr_with_window(expr, scope, row_idx, all_rows, params).await?;
-                let index_value = eval_expr_with_window(index, scope, row_idx, all_rows, params).await?;
+                let array_value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
+                let index_value = eval_expr_with_window(index, scope, row_idx, all_rows, window_definitions, params).await?;
                 eval_array_subscript(array_value, index_value)
             }
             Expr::ArraySlice { expr, start, end } => {
-                let array_value = eval_expr_with_window(expr, scope, row_idx, all_rows, params).await?;
+                let array_value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
                 let start_value = if let Some(start_expr) = start {
-                    Some(eval_expr_with_window(start_expr, scope, row_idx, all_rows, params).await?)
+                    Some(eval_expr_with_window(start_expr, scope, row_idx, all_rows, window_definitions, params).await?)
                 } else {
                     None
                 };
                 let end_value = if let Some(end_expr) = end {
-                    Some(eval_expr_with_window(end_expr, scope, row_idx, all_rows, params).await?)
+                    Some(eval_expr_with_window(end_expr, scope, row_idx, all_rows, window_definitions, params).await?)
                 } else {
                     None
                 };
@@ -706,6 +708,53 @@ pub(crate) fn eval_expr_with_window<'a>(
     })
 }
 
+fn resolve_window_spec(
+    spec: &WindowSpec,
+    definitions: &[WindowDefinition],
+) -> Result<WindowSpec, EngineError> {
+    // If no name reference, return as-is
+    let Some(ref_name) = &spec.name else {
+        return Ok(spec.clone());
+    };
+    
+    // Find the named window definition
+    let def = definitions
+        .iter()
+        .find(|d| d.name == *ref_name)
+        .ok_or_else(|| EngineError {
+            message: format!("window \"{}\" does not exist", ref_name),
+        })?;
+    
+    // Merge: start with base definition, then apply refinements from spec
+    // PG rules: cannot override PARTITION BY, can add ORDER BY, can add frame
+    if !spec.partition_by.is_empty() {
+        return Err(EngineError {
+            message: format!(
+                "cannot override PARTITION BY clause of window \"{}\"",
+                ref_name
+            ),
+        });
+    }
+    
+    let mut resolved = def.spec.clone();
+    
+    // If spec adds ORDER BY, append to (or replace) the definition's ORDER BY
+    if !spec.order_by.is_empty() {
+        // PostgreSQL actually replaces, not appends
+        resolved.order_by = spec.order_by.clone();
+    }
+    
+    // If spec adds frame, use it (overrides definition's frame)
+    if spec.frame.is_some() {
+        resolved.frame = spec.frame.clone();
+    }
+    
+    // Clear the name reference since it's now resolved
+    resolved.name = None;
+    
+    Ok(resolved)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn eval_window_function(
     name: &[String],
@@ -714,16 +763,20 @@ async fn eval_window_function(
     order_by: &[OrderByExpr],
     filter: Option<&Expr>,
     window: &WindowSpec,
+    window_definitions: &[WindowDefinition],
     row_idx: usize,
     all_rows: &[EvalScope],
     params: &[Option<String>],
 ) -> Result<ScalarValue, EngineError> {
+    // Resolve any named window reference
+    let resolved_window = resolve_window_spec(window, window_definitions)?;
+    
     let fn_name = name
         .last()
         .map(|n| n.to_ascii_lowercase())
         .unwrap_or_default();
-    let mut partition = window_partition_rows(window, row_idx, all_rows, params).await?;
-    let order_keys = window_order_keys(window, &mut partition, all_rows, params).await?;
+    let mut partition = window_partition_rows(&resolved_window, row_idx, all_rows, params).await?;
+    let order_keys = window_order_keys(&resolved_window, &mut partition, all_rows, params).await?;
     let current_pos = partition
         .iter()
         .position(|entry| *entry == row_idx)
@@ -751,7 +804,7 @@ async fn eval_window_function(
             }
             let mut rank = 1usize;
             for idx in 1..=current_pos {
-                if compare_order_keys(&order_keys[idx - 1], &order_keys[idx], &window.order_by)
+                if compare_order_keys(&order_keys[idx - 1], &order_keys[idx], &resolved_window.order_by)
                     != Ordering::Equal
                 {
                     rank = idx + 1;
@@ -847,7 +900,7 @@ async fn eval_window_function(
             let mut rank = 1usize;
             if !order_keys.is_empty() {
                 for idx in 1..=current_pos {
-                    if compare_order_keys(&order_keys[idx - 1], &order_keys[idx], &window.order_by)
+                    if compare_order_keys(&order_keys[idx - 1], &order_keys[idx], &resolved_window.order_by)
                         != Ordering::Equal
                     {
                         rank = idx + 1;
@@ -872,7 +925,7 @@ async fn eval_window_function(
             let count_le = order_keys
                 .iter()
                 .filter(|k| {
-                    compare_order_keys(k, current_key, &window.order_by) != Ordering::Greater
+                    compare_order_keys(k, current_key, &resolved_window.order_by) != Ordering::Greater
                 })
                 .count();
             Ok(ScalarValue::Float(count_le as f64 / partition.len() as f64))
@@ -884,7 +937,7 @@ async fn eval_window_function(
                 });
             }
             let frame_rows = window_frame_rows(
-                window,
+                &resolved_window,
                 &partition,
                 &order_keys,
                 current_pos,
@@ -905,7 +958,7 @@ async fn eval_window_function(
                 });
             }
             let frame_rows = window_frame_rows(
-                window,
+                &resolved_window,
                 &partition,
                 &order_keys,
                 current_pos,
@@ -935,7 +988,7 @@ async fn eval_window_function(
                 });
             }
             let frame_rows = window_frame_rows(
-                window,
+                &resolved_window,
                 &partition,
                 &order_keys,
                 current_pos,
@@ -951,7 +1004,7 @@ async fn eval_window_function(
         }
         "sum" | "count" | "avg" | "min" | "max" | "string_agg" | "array_agg" => {
             let frame_rows = window_frame_rows(
-                window,
+                &resolved_window,
                 &partition,
                 &order_keys,
                 current_pos,
@@ -1066,7 +1119,50 @@ async fn window_frame_rows(
             if start > end {
                 return Ok(Vec::new());
             }
-            Ok(partition[start..=end].to_vec())
+            
+            // Apply EXCLUDE clause
+            let mut out = Vec::new();
+            for (idx, &row_idx) in partition.iter().enumerate().take(end + 1).skip(start) {
+                if let Some(exclusion) = frame.exclusion {
+                    match exclusion {
+                        WindowFrameExclusion::CurrentRow => {
+                            if idx == current_pos {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::Group => {
+                            // For ROWS mode, exclude peer group containing current row
+                            // Peers are rows with same ORDER BY values
+                            if let (Some(current_key), Some(row_key)) = 
+                                (order_keys.get(current_pos), order_keys.get(idx))
+                                && compare_order_keys(current_key, row_key, &window.order_by)
+                                    == Ordering::Equal
+                            {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::Ties => {
+                            // Exclude peers of current row (but not current row itself)
+                            if idx != current_pos
+                                && let (Some(current_key), Some(row_key)) = 
+                                    (order_keys.get(current_pos), order_keys.get(idx))
+                                && compare_order_keys(
+                                    current_key,
+                                    row_key,
+                                    &window.order_by,
+                                ) == Ordering::Equal
+                            {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::NoOthers => {
+                            // Don't exclude anything
+                        }
+                    }
+                }
+                out.push(row_idx);
+            }
+            Ok(out)
         }
         WindowFrameUnits::Range => {
             if window.order_by.is_empty() {
@@ -1125,52 +1221,167 @@ async fn window_frame_rows(
                 {
                     continue;
                 }
+                
+                // Apply EXCLUDE clause
+                if let Some(exclusion) = frame.exclusion {
+                    match exclusion {
+                        WindowFrameExclusion::CurrentRow => {
+                            if pos == current_pos {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::Group => {
+                            // Exclude peer group containing current row
+                            if let (Some(current_key), Some(row_key)) = 
+                                (order_keys.get(current_pos), order_keys.get(pos))
+                                && compare_order_keys(current_key, row_key, &window.order_by)
+                                    == Ordering::Equal
+                            {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::Ties => {
+                            // Exclude peers of current row (but not current row itself)
+                            if pos != current_pos
+                                && let (Some(current_key), Some(row_key)) = 
+                                    (order_keys.get(current_pos), order_keys.get(pos))
+                                && compare_order_keys(
+                                    current_key,
+                                    row_key,
+                                    &window.order_by,
+                                ) == Ordering::Equal
+                            {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::NoOthers => {
+                            // Don't exclude anything
+                        }
+                    }
+                }
+                
                 out.push(*row_idx);
             }
             Ok(out)
         }
         WindowFrameUnits::Groups => {
-            // FIXME: GROUPS frame mode is partially implemented
-            // Currently treats GROUPS the same as ROWS, which is semantically incorrect.
-            // 
-            // PostgreSQL GROUPS mode operates on peer groups (rows with equal ORDER BY values),
-            // not individual rows. Proper implementation would require:
-            // 1. Detecting peer groups based on ORDER BY expressions
-            // 2. Computing frame bounds in units of peer groups, not rows
-            // 3. Including/excluding entire peer groups atomically
-            //
-            // This simplified implementation will produce incorrect results when ORDER BY
-            // contains non-unique values. Use ROWS or RANGE modes for correct behavior.
-            let start = frame_row_position(
-                &frame.start,
-                current_pos,
-                partition.len(),
-                &all_rows[partition[current_pos]],
-                params,
-            )
-            .await?;
-            let end = frame_row_position(
-                &frame.end,
-                current_pos,
-                partition.len(),
-                &all_rows[partition[current_pos]],
-                params,
-            )
-            .await?;
-            let mut out = Vec::new();
-            for (idx, &row_idx) in partition.iter().enumerate().take(end + 1).skip(start) {
-                // Skip current row if exclusion applies
-                if idx == current_pos
-                    && matches!(
-                        frame.exclusion,
-                        Some(WindowFrameExclusion::CurrentRow) | Some(WindowFrameExclusion::Group)
-                    )
+            // GROUPS frame mode groups by peer rows (rows with same ORDER BY values)
+            // Build peer groups first
+            let mut peer_groups: Vec<Vec<usize>> = Vec::new();
+            let mut current_group = Vec::new();
+            let mut last_key: Option<&Vec<ScalarValue>> = None;
+            
+            for (idx, key) in order_keys.iter().enumerate() {
+                if let Some(prev_key) = last_key
+                    && compare_order_keys(key, prev_key, &window.order_by) != Ordering::Equal
                 {
-                    continue;
+                    // Start a new peer group
+                    if !current_group.is_empty() {
+                        peer_groups.push(std::mem::take(&mut current_group));
+                    }
                 }
-                out.push(row_idx);
+                current_group.push(idx);
+                last_key = Some(key);
+            }
+            if !current_group.is_empty() {
+                peer_groups.push(current_group);
+            }
+            
+            // Find which peer group contains current_pos
+            let current_group_idx = peer_groups
+                .iter()
+                .position(|group| group.contains(&current_pos))
+                .unwrap_or(0);
+            
+            // Compute frame bounds in units of peer groups
+            let start_group = groups_frame_boundary(
+                &frame.start,
+                current_group_idx,
+                peer_groups.len(),
+                &all_rows[partition[current_pos]],
+                params,
+            )
+            .await?;
+            
+            let end_group = groups_frame_boundary(
+                &frame.end,
+                current_group_idx,
+                peer_groups.len(),
+                &all_rows[partition[current_pos]],
+                params,
+            )
+            .await?;
+            
+            // Collect all rows from the peer groups in frame
+            let mut out = Vec::new();
+            for (group_idx, group) in peer_groups.iter().enumerate()
+                .skip(start_group)
+                .take(end_group.saturating_sub(start_group) + 1)
+            {
+                for &pos_idx in group {
+                    // Apply exclusion
+                    if let Some(exclusion) = frame.exclusion {
+                        match exclusion {
+                            WindowFrameExclusion::CurrentRow => {
+                                if pos_idx == current_pos {
+                                    continue;
+                                }
+                            }
+                            WindowFrameExclusion::Group => {
+                                // Exclude entire peer group containing current row
+                                if group_idx == current_group_idx {
+                                    continue;
+                                }
+                            }
+                            WindowFrameExclusion::Ties => {
+                                // Exclude peers of current row (but not current row itself)
+                                if group_idx == current_group_idx && pos_idx != current_pos {
+                                    continue;
+                                }
+                            }
+                            WindowFrameExclusion::NoOthers => {
+                                // Don't exclude anything
+                            }
+                        }
+                    }
+                    out.push(partition[pos_idx]);
+                }
             }
             Ok(out)
+        }
+    }
+}
+
+async fn groups_frame_boundary(
+    bound: &WindowFrameBound,
+    current_group: usize,
+    total_groups: usize,
+    current_row: &EvalScope,
+    params: &[Option<String>],
+) -> Result<usize, EngineError> {
+    match bound {
+        WindowFrameBound::UnboundedPreceding => Ok(0),
+        WindowFrameBound::UnboundedFollowing => Ok(total_groups.saturating_sub(1)),
+        WindowFrameBound::CurrentRow => Ok(current_group),
+        WindowFrameBound::OffsetPreceding(offset_expr) => {
+            let offset = eval_expr(offset_expr, current_row, params).await?;
+            let offset = parse_i64_scalar(&offset, "frame offset must be an integer")?;
+            if offset < 0 {
+                return Err(EngineError {
+                    message: "frame offset must be non-negative".to_string(),
+                });
+            }
+            Ok(current_group.saturating_sub(offset as usize))
+        }
+        WindowFrameBound::OffsetFollowing(offset_expr) => {
+            let offset = eval_expr(offset_expr, current_row, params).await?;
+            let offset = parse_i64_scalar(&offset, "frame offset must be an integer")?;
+            if offset < 0 {
+                return Err(EngineError {
+                    message: "frame offset must be non-negative".to_string(),
+                });
+            }
+            Ok((current_group + offset as usize).min(total_groups.saturating_sub(1)))
         }
     }
 }

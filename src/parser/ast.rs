@@ -640,6 +640,7 @@ pub struct SelectStatement {
     pub where_clause: Option<Expr>,
     pub group_by: Vec<GroupByExpr>,
     pub having: Option<Expr>,
+    pub window_definitions: Vec<WindowDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -721,7 +722,14 @@ pub struct OrderByExpr {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct WindowDefinition {
+    pub name: String,
+    pub spec: WindowSpec,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct WindowSpec {
+    pub name: Option<String>,           // Reference to a named window
     pub partition_by: Vec<Expr>,
     pub order_by: Vec<OrderByExpr>,
     pub frame: Option<WindowFrame>,
