@@ -413,6 +413,7 @@ async fn execute_select(
                 scope,
                 row_idx,
                 &filtered_rows,
+                &select.window_definitions,
                 params,
                 wildcard_columns.as_deref(),
             )
@@ -1796,6 +1797,7 @@ async fn project_select_row_with_window(
     scope: &EvalScope,
     row_idx: usize,
     all_rows: &[EvalScope],
+    window_definitions: &[crate::parser::ast::WindowDefinition],
     params: &[Option<String>],
     wildcard_columns: Option<&[ExpandedFromColumn]>,
 ) -> Result<Vec<ScalarValue>, EngineError> {
@@ -1821,7 +1823,7 @@ async fn project_select_row_with_window(
             expand_qualified_wildcard(qualifier, expanded, scope, &mut row)?;
             continue;
         }
-        row.push(eval_expr_with_window(&target.expr, scope, row_idx, all_rows, params).await?);
+        row.push(eval_expr_with_window(&target.expr, scope, row_idx, all_rows, window_definitions, params).await?);
     }
     Ok(row)
 }
