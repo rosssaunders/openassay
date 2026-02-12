@@ -249,6 +249,8 @@ fn test_analyze_cte_reference() {
                         limit: None,
                         offset: None,
                     },
+                    search_clause: None,
+                    cycle_clause: None,
                 }],
             }),
             body: QueryExpr::Select(SelectStatement {

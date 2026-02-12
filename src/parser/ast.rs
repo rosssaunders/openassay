@@ -596,6 +596,24 @@ pub struct CommonTableExpr {
     pub column_names: Vec<String>, // Optional column list: WITH cte(a, b) AS (...)
     pub materialized: Option<bool>, // None = default, Some(true) = MATERIALIZED, Some(false) = NOT MATERIALIZED
     pub query: Query,
+    pub search_clause: Option<SearchClause>,
+    pub cycle_clause: Option<CycleClause>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchClause {
+    pub depth_first: bool, // true = DEPTH FIRST, false = BREADTH FIRST
+    pub by_columns: Vec<String>,
+    pub set_column: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CycleClause {
+    pub columns: Vec<String>,
+    pub set_column: String,
+    pub using_column: String,
+    pub mark_value: Option<String>,   // TO value (default '1')
+    pub default_value: Option<String>, // DEFAULT value (default '0')
 }
 
 #[derive(Debug, Clone, PartialEq)]

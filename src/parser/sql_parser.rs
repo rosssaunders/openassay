@@ -7,7 +7,7 @@ use crate::parser::ast::{
     CopyFormat, CopyOptions, CopyStatement, CreateExtensionStatement, CreateFunctionStatement,
     CreateIndexStatement, CreateRoleStatement, CreateSchemaStatement, CreateSequenceStatement,
     CreateSubscriptionStatement, CreateTableStatement, CreateViewStatement, CreateTypeStatement,
-    CreateDomainStatement, DeleteStatement,
+    CreateDomainStatement, CycleClause, DeleteStatement,
     DiscardStatement, DoStatement, DropBehavior, DropExtensionStatement, DropIndexStatement,
     DropRoleStatement, DropSchemaStatement, DropSequenceStatement, DropSubscriptionStatement,
     DropTableStatement, DropViewStatement, DropTypeStatement, DropDomainStatement, ExplainStatement, Expr, ForeignKeyAction,
@@ -15,7 +15,7 @@ use crate::parser::ast::{
     GrantTablePrivilegesStatement, GroupByExpr, InsertSource, InsertStatement, JoinCondition,
     JoinExpr, JoinType, ListenStatement, MergeStatement, MergeWhenClause, NotifyStatement,
     OnConflictClause, OrderByExpr, Query, QueryExpr, RefreshMaterializedViewStatement,
-    RevokeRoleStatement, RevokeStatement, RevokeTablePrivilegesStatement, RoleOption, SelectItem,
+    RevokeRoleStatement, RevokeStatement, RevokeTablePrivilegesStatement, RoleOption, SearchClause, SelectItem,
     SelectQuantifier, SelectStatement, SetOperator, SetQuantifier, SetStatement, ShowStatement,
     Statement, SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression,
     TableFunctionRef, TablePrivilegeKind, TableRef, TransactionStatement, TruncateStatement,
@@ -2089,11 +2089,28 @@ impl Parser {
                     |k| matches!(k, TokenKind::RParen),
                     "expected ')' to close common table expression",
                 )?;
+                
+                // Optional SEARCH clause
+                let search_clause = if self.consume_keyword(Keyword::Search) {
+                    Some(self.parse_search_clause()?)
+                } else {
+                    None
+                };
+                
+                // Optional CYCLE clause
+                let cycle_clause = if self.consume_keyword(Keyword::Cycle) {
+                    Some(self.parse_cycle_clause()?)
+                } else {
+                    None
+                };
+                
                 ctes.push(CommonTableExpr {
                     name,
                     column_names,
                     materialized,
                     query,
+                    search_clause,
+                    cycle_clause,
                 });
                 if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                     break;
@@ -2132,6 +2149,76 @@ impl Parser {
             limit,
             offset,
         })
+    }
+
+    fn parse_search_clause(&mut self) -> Result<SearchClause, ParseError> {
+        // SEARCH { DEPTH | BREADTH } FIRST BY column_list SET search_seq_col_name
+        let depth_first = if self.consume_keyword(Keyword::Depth) {
+            true
+        } else if self.consume_keyword(Keyword::Breadth) {
+            false
+        } else {
+            return Err(self.error_at_current("expected DEPTH or BREADTH after SEARCH"));
+        };
+        
+        self.expect_keyword(Keyword::First, "expected FIRST after DEPTH/BREADTH")?;
+        self.expect_keyword(Keyword::By, "expected BY in SEARCH clause")?;
+        
+        let mut by_columns = vec![self.parse_identifier()?];
+        while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+            by_columns.push(self.parse_identifier()?);
+        }
+        
+        self.expect_keyword(Keyword::Set, "expected SET in SEARCH clause")?;
+        let set_column = self.parse_identifier()?;
+        
+        Ok(SearchClause {
+            depth_first,
+            by_columns,
+            set_column,
+        })
+    }
+
+    fn parse_cycle_clause(&mut self) -> Result<CycleClause, ParseError> {
+        // CYCLE col_list SET cycle_mark_col_name [ TO cycle_mark_value DEFAULT non_cycle_mark_value ] USING cycle_path_col_name
+        let mut columns = vec![self.parse_identifier()?];
+        while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+            columns.push(self.parse_identifier()?);
+        }
+        
+        self.expect_keyword(Keyword::Set, "expected SET in CYCLE clause")?;
+        let set_column = self.parse_identifier()?;
+        
+        let (mark_value, default_value) = if self.consume_keyword(Keyword::To) {
+            let mark = self.parse_literal_string()?;
+            self.expect_keyword(Keyword::Default, "expected DEFAULT after TO value in CYCLE clause")?;
+            let default = self.parse_literal_string()?;
+            (Some(mark), Some(default))
+        } else {
+            (None, None)
+        };
+        
+        self.expect_keyword(Keyword::Using, "expected USING in CYCLE clause")?;
+        let using_column = self.parse_identifier()?;
+        
+        Ok(CycleClause {
+            columns,
+            set_column,
+            using_column,
+            mark_value,
+            default_value,
+        })
+    }
+
+    fn parse_literal_string(&mut self) -> Result<String, ParseError> {
+        match self.current_kind() {
+            TokenKind::String(s) => {
+                let result = s.clone();
+                self.advance();
+                Ok(result)
+            }
+            _ => Err(self.error_at_current("expected string literal")),
+        }
     }
 
     fn parse_query_expr_bp(&mut self, min_bp: u8) -> Result<QueryExpr, ParseError> {
@@ -4601,6 +4688,100 @@ mod tests {
         assert_eq!(with.ctes[0].name, "t");
         assert_eq!(with.ctes[0].column_names, vec!["x", "y"]);
         assert_eq!(with.ctes[0].materialized, Some(true));
+    }
+
+    #[test]
+    fn parses_with_search_depth_first() {
+        let stmt = parse_statement(
+            "WITH RECURSIVE t AS (SELECT 1 AS id UNION ALL SELECT id + 1 FROM t WHERE id < 3) \
+             SEARCH DEPTH FIRST BY id SET ordercol \
+             SELECT * FROM t",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let with = query.with.as_ref().expect("with clause should exist");
+        assert_eq!(with.ctes.len(), 1);
+        let search = with.ctes[0].search_clause.as_ref().expect("search clause should exist");
+        assert!(search.depth_first);
+        assert_eq!(search.by_columns, vec!["id"]);
+        assert_eq!(search.set_column, "ordercol");
+    }
+
+    #[test]
+    fn parses_with_search_breadth_first() {
+        let stmt = parse_statement(
+            "WITH RECURSIVE t AS (SELECT 1 AS id, 'a' AS name UNION ALL SELECT id + 1, name FROM t WHERE id < 3) \
+             SEARCH BREADTH FIRST BY id, name SET seqcol \
+             SELECT * FROM t",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let with = query.with.as_ref().expect("with clause should exist");
+        let search = with.ctes[0].search_clause.as_ref().expect("search clause should exist");
+        assert!(!search.depth_first);
+        assert_eq!(search.by_columns, vec!["id", "name"]);
+        assert_eq!(search.set_column, "seqcol");
+    }
+
+    #[test]
+    fn parses_with_cycle_clause() {
+        let stmt = parse_statement(
+            "WITH RECURSIVE t AS (SELECT 1 AS id UNION ALL SELECT id + 1 FROM t WHERE id < 3) \
+             CYCLE id SET is_cycle USING path \
+             SELECT * FROM t",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let with = query.with.as_ref().expect("with clause should exist");
+        let cycle = with.ctes[0].cycle_clause.as_ref().expect("cycle clause should exist");
+        assert_eq!(cycle.columns, vec!["id"]);
+        assert_eq!(cycle.set_column, "is_cycle");
+        assert_eq!(cycle.using_column, "path");
+        assert_eq!(cycle.mark_value, None);
+        assert_eq!(cycle.default_value, None);
+    }
+
+    #[test]
+    fn parses_with_cycle_clause_with_values() {
+        let stmt = parse_statement(
+            "WITH RECURSIVE t AS (SELECT 1 AS id UNION ALL SELECT id + 1 FROM t WHERE id < 3) \
+             CYCLE id SET is_cycle TO 't' DEFAULT 'f' USING path \
+             SELECT * FROM t",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let with = query.with.as_ref().expect("with clause should exist");
+        let cycle = with.ctes[0].cycle_clause.as_ref().expect("cycle clause should exist");
+        assert_eq!(cycle.columns, vec!["id"]);
+        assert_eq!(cycle.set_column, "is_cycle");
+        assert_eq!(cycle.using_column, "path");
+        assert_eq!(cycle.mark_value, Some("t".to_string()));
+        assert_eq!(cycle.default_value, Some("f".to_string()));
+    }
+
+    #[test]
+    fn parses_with_search_and_cycle() {
+        let stmt = parse_statement(
+            "WITH RECURSIVE t AS (SELECT 1 AS id UNION ALL SELECT id + 1 FROM t WHERE id < 3) \
+             SEARCH DEPTH FIRST BY id SET ordercol \
+             CYCLE id SET is_cycle USING path \
+             SELECT * FROM t",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let with = query.with.as_ref().expect("with clause should exist");
+        assert!(with.ctes[0].search_clause.is_some());
+        assert!(with.ctes[0].cycle_clause.is_some());
     }
 
     #[test]
