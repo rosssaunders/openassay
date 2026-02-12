@@ -3291,7 +3291,24 @@ impl Parser {
                 None
             };
             let over = if self.consume_keyword(Keyword::Over) {
-                Some(Box::new(self.parse_window_spec()?))
+                // OVER can be followed by:
+                // 1. Window name: OVER window_name
+                // 2. Window spec: OVER (...)
+                if matches!(self.current_kind(), TokenKind::Identifier(_)) 
+                    && !matches!(self.current_kind(), TokenKind::LParen)
+                {
+                    // OVER window_name (no parentheses)
+                    let window_name = self.parse_identifier()?;
+                    Some(Box::new(WindowSpec {
+                        name: Some(window_name),
+                        partition_by: Vec::new(),
+                        order_by: Vec::new(),
+                        frame: None,
+                    }))
+                } else {
+                    // OVER (...)
+                    Some(Box::new(self.parse_window_spec()?))
+                }
             } else {
                 None
             };
