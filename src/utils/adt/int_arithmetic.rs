@@ -11,12 +11,12 @@
 use crate::tcop::engine::EngineError;
 
 /// int2 (smallint) range: -32768 to 32767
-pub const INT2_MIN: i64 = -32768;
-pub const INT2_MAX: i64 = 32767;
+pub const INT2_MIN: i64 = i16::MIN as i64;
+pub const INT2_MAX: i64 = i16::MAX as i64;
 
 /// int4 (integer) range: -2147483648 to 2147483647
-pub const INT4_MIN: i64 = -2147483648;
-pub const INT4_MAX: i64 = 2147483647;
+pub const INT4_MIN: i64 = i32::MIN as i64;
+pub const INT4_MAX: i64 = i32::MAX as i64;
 
 /// int8 (bigint) range: -9223372036854775808 to 9223372036854775807
 pub const INT8_MIN: i64 = i64::MIN;
