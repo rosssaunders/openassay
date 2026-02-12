@@ -188,10 +188,10 @@ pub(crate) fn gen_random_uuid() -> String {
         "{:08x}-{:04x}-4{:03x}-{:x}{:03x}-{:08x}{:04x}",
         (r1 & 0xFFFFFFFF),
         ((r2 >> 16) & 0xFFFF),
-        ((r2 & 0x0FFF)),
+        (r2 & 0x0FFF),
         (8 + ((r3 >> 60) & 0x3)),  // y must be 8, 9, A, or B
         ((r3 >> 48) & 0x0FFF),
-        ((r3 & 0xFFFFFFFF)),
+        (r3 & 0xFFFFFFFF),
         ((r4 >> 16) & 0xFFFF)
     )
 }
@@ -479,7 +479,7 @@ fn parse_date_simple(s: &str) -> Result<(), ()> {
     let _year = parts[0].parse::<i32>().map_err(|_| ())?;
     let month = parts[1].parse::<u32>().map_err(|_| ())?;
     let day = parts[2].parse::<u32>().map_err(|_| ())?;
-    if month < 1 || month > 12 || day < 1 || day > 31 {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return Err(());
     }
     Ok(())
@@ -553,17 +553,16 @@ pub(crate) fn pg_get_viewdef(
     view_name: &str,
     _pretty: bool,
 ) -> Result<String, crate::tcop::engine::EngineError> {
-    use crate::tcop::engine::EngineError;
-    
     // For now, return a placeholder message indicating the view exists but we can't retrieve the definition.
     // TODO: Implement actual view definition retrieval from catalog when proper catalog access is available.
     Ok(format!("-- View definition for: {}", view_name))
 }
 
-/// Convert a Query AST back to SQL string.
-/// This is a simplified implementation that handles basic SELECT queries.
+// The following functions are prepared for future pg_get_viewdef implementation
+// when proper catalog access is available. They convert AST back to SQL.
+#[allow(dead_code)]
 fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> String {
-    use crate::parser::ast::{Expr, QueryExpr, SelectStatement};
+    use crate::parser::ast::QueryExpr;
     
     let mut sql = String::new();
     
@@ -663,12 +662,10 @@ fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> Strin
                 sql.push_str(", ");
             }
             sql.push_str(&render_expr_to_sql(&order.expr));
-            if let Some(asc) = order.ascending {
-                if !asc {
-                    sql.push_str(" DESC");
-                }
+            if let Some(asc) = order.ascending && !asc {
+                sql.push_str(" DESC");
             }
-            if let Some(ref op) = order.using_operator {
+            if let Some(op) = &order.using_operator {
                 sql.push_str(" USING ");
                 sql.push_str(op);
             }
@@ -697,6 +694,7 @@ fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> Strin
     sql
 }
 
+#[allow(dead_code)]
 fn render_select_to_sql(select: &crate::parser::ast::SelectStatement) -> String {
     let mut sql = String::from("SELECT");
     
@@ -809,6 +807,7 @@ fn render_select_to_sql(select: &crate::parser::ast::SelectStatement) -> String 
     sql
 }
 
+#[allow(dead_code)]
 fn render_table_expr_to_sql(table: &crate::parser::ast::TableExpression) -> String {
     use crate::parser::ast::TableExpression;
     
@@ -882,6 +881,7 @@ fn render_table_expr_to_sql(table: &crate::parser::ast::TableExpression) -> Stri
     }
 }
 
+#[allow(dead_code)]
 fn unary_op_to_sql(op: &crate::parser::ast::UnaryOp) -> &'static str {
     use crate::parser::ast::UnaryOp;
     match op {
@@ -891,6 +891,7 @@ fn unary_op_to_sql(op: &crate::parser::ast::UnaryOp) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn binary_op_to_sql(op: &crate::parser::ast::BinaryOp) -> &'static str {
     use crate::parser::ast::BinaryOp;
     match op {
@@ -924,6 +925,7 @@ fn binary_op_to_sql(op: &crate::parser::ast::BinaryOp) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
     use crate::parser::ast::Expr;
     

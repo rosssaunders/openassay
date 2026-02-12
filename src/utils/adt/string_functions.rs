@@ -432,16 +432,16 @@ pub(crate) fn eval_format(
                     digits
                         .parse::<usize>()
                         .map_err(|_| EngineError {
-                            message: format!("invalid format specifier: position too large"),
+                            message: "invalid format specifier: position too large".to_string(),
                         })?
                         .checked_sub(1)
                         .ok_or_else(|| EngineError {
-                            message: format!("format specifier position must be >= 1"),
+                            message: "format specifier position must be >= 1".to_string(),
                         })?,
                 );
             } else {
                 return Err(EngineError {
-                    message: format!("format specifier must be followed by a conversion character"),
+                    message: "format specifier must be followed by a conversion character".to_string(),
                 });
             }
         }
@@ -460,7 +460,7 @@ pub(crate) fn eval_format(
 
         if idx >= args.len() {
             return Err(EngineError {
-                message: format!("not enough arguments for format string"),
+                message: "not enough arguments for format string".to_string(),
             });
         }
 

@@ -713,17 +713,17 @@ pub(crate) fn eval_make_time(
     second: f64,
 ) -> Result<ScalarValue, EngineError> {
     // Validate inputs like PostgreSQL does
-    if hour < 0 || hour > 23 {
+    if !(0..=23).contains(&hour) {
         return Err(EngineError {
             message: format!("hour {} is out of range 0..23", hour),
         });
     }
-    if minute < 0 || minute > 59 {
+    if !(0..=59).contains(&minute) {
         return Err(EngineError {
             message: format!("minute {} is out of range 0..59", minute),
         });
     }
-    if second < 0.0 || second >= 60.0 {
+    if !(0.0..60.0).contains(&second) {
         return Err(EngineError {
             message: format!("second {} is out of range 0..<60", second),
         });
