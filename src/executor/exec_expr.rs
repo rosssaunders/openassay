@@ -1119,7 +1119,50 @@ async fn window_frame_rows(
             if start > end {
                 return Ok(Vec::new());
             }
-            Ok(partition[start..=end].to_vec())
+            
+            // Apply EXCLUDE clause
+            let mut out = Vec::new();
+            for (idx, &row_idx) in partition.iter().enumerate().take(end + 1).skip(start) {
+                if let Some(exclusion) = frame.exclusion {
+                    match exclusion {
+                        WindowFrameExclusion::CurrentRow => {
+                            if idx == current_pos {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::Group => {
+                            // For ROWS mode, exclude peer group containing current row
+                            // Peers are rows with same ORDER BY values
+                            if let (Some(current_key), Some(row_key)) = 
+                                (order_keys.get(current_pos), order_keys.get(idx))
+                                && compare_order_keys(current_key, row_key, &window.order_by)
+                                    == Ordering::Equal
+                            {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::Ties => {
+                            // Exclude peers of current row (but not current row itself)
+                            if idx != current_pos
+                                && let (Some(current_key), Some(row_key)) = 
+                                    (order_keys.get(current_pos), order_keys.get(idx))
+                                && compare_order_keys(
+                                    current_key,
+                                    row_key,
+                                    &window.order_by,
+                                ) == Ordering::Equal
+                            {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::NoOthers => {
+                            // Don't exclude anything
+                        }
+                    }
+                }
+                out.push(row_idx);
+            }
+            Ok(out)
         }
         WindowFrameUnits::Range => {
             if window.order_by.is_empty() {
@@ -1178,52 +1221,170 @@ async fn window_frame_rows(
                 {
                     continue;
                 }
+                
+                // Apply EXCLUDE clause
+                if let Some(exclusion) = frame.exclusion {
+                    match exclusion {
+                        WindowFrameExclusion::CurrentRow => {
+                            if pos == current_pos {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::Group => {
+                            // Exclude peer group containing current row
+                            if let (Some(current_key), Some(row_key)) = 
+                                (order_keys.get(current_pos), order_keys.get(pos))
+                                && compare_order_keys(current_key, row_key, &window.order_by)
+                                    == Ordering::Equal
+                            {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::Ties => {
+                            // Exclude peers of current row (but not current row itself)
+                            if pos != current_pos
+                                && let (Some(current_key), Some(row_key)) = 
+                                    (order_keys.get(current_pos), order_keys.get(pos))
+                                && compare_order_keys(
+                                    current_key,
+                                    row_key,
+                                    &window.order_by,
+                                ) == Ordering::Equal
+                            {
+                                continue;
+                            }
+                        }
+                        WindowFrameExclusion::NoOthers => {
+                            // Don't exclude anything
+                        }
+                    }
+                }
+                
                 out.push(*row_idx);
             }
             Ok(out)
         }
         WindowFrameUnits::Groups => {
-            // FIXME: GROUPS frame mode is partially implemented
-            // Currently treats GROUPS the same as ROWS, which is semantically incorrect.
-            // 
-            // PostgreSQL GROUPS mode operates on peer groups (rows with equal ORDER BY values),
-            // not individual rows. Proper implementation would require:
-            // 1. Detecting peer groups based on ORDER BY expressions
-            // 2. Computing frame bounds in units of peer groups, not rows
-            // 3. Including/excluding entire peer groups atomically
-            //
-            // This simplified implementation will produce incorrect results when ORDER BY
-            // contains non-unique values. Use ROWS or RANGE modes for correct behavior.
-            let start = frame_row_position(
-                &frame.start,
-                current_pos,
-                partition.len(),
-                &all_rows[partition[current_pos]],
-                params,
-            )
-            .await?;
-            let end = frame_row_position(
-                &frame.end,
-                current_pos,
-                partition.len(),
-                &all_rows[partition[current_pos]],
-                params,
-            )
-            .await?;
-            let mut out = Vec::new();
-            for (idx, &row_idx) in partition.iter().enumerate().take(end + 1).skip(start) {
-                // Skip current row if exclusion applies
-                if idx == current_pos
-                    && matches!(
-                        frame.exclusion,
-                        Some(WindowFrameExclusion::CurrentRow) | Some(WindowFrameExclusion::Group)
-                    )
+            // GROUPS frame mode groups by peer rows (rows with same ORDER BY values)
+            // Build peer groups first
+            let mut peer_groups: Vec<Vec<usize>> = Vec::new();
+            let mut current_group = Vec::new();
+            let mut last_key: Option<&Vec<ScalarValue>> = None;
+            
+            for (idx, key) in order_keys.iter().enumerate() {
+                if let Some(prev_key) = last_key
+                    && compare_order_keys(key, prev_key, &window.order_by) != Ordering::Equal
                 {
-                    continue;
+                    // Start a new peer group
+                    if !current_group.is_empty() {
+                        peer_groups.push(std::mem::take(&mut current_group));
+                    }
                 }
-                out.push(row_idx);
+                current_group.push(idx);
+                last_key = Some(key);
+            }
+            if !current_group.is_empty() {
+                peer_groups.push(current_group);
+            }
+            
+            // Find which peer group contains current_pos
+            let current_group_idx = peer_groups
+                .iter()
+                .position(|group| group.contains(&current_pos))
+                .unwrap_or(0);
+            
+            // Compute frame bounds in units of peer groups
+            let start_group = groups_frame_boundary(
+                &frame.start,
+                current_group_idx,
+                peer_groups.len(),
+                &all_rows[partition[current_pos]],
+                params,
+            )
+            .await?;
+            
+            let end_group = groups_frame_boundary(
+                &frame.end,
+                current_group_idx,
+                peer_groups.len(),
+                &all_rows[partition[current_pos]],
+                params,
+            )
+            .await?;
+            
+            // Collect all rows from the peer groups in frame
+            let mut out = Vec::new();
+            for (group_idx, group) in peer_groups.iter().enumerate()
+                .skip(start_group)
+                .take(end_group.saturating_sub(start_group) + 1)
+            {
+                if group_idx > peer_groups.len() - 1 {
+                    break;
+                }
+                for &pos_idx in group {
+                    // Apply exclusion
+                    if let Some(exclusion) = frame.exclusion {
+                        match exclusion {
+                            WindowFrameExclusion::CurrentRow => {
+                                if pos_idx == current_pos {
+                                    continue;
+                                }
+                            }
+                            WindowFrameExclusion::Group => {
+                                // Exclude entire peer group containing current row
+                                if group_idx == current_group_idx {
+                                    continue;
+                                }
+                            }
+                            WindowFrameExclusion::Ties => {
+                                // Exclude peers of current row (but not current row itself)
+                                if group_idx == current_group_idx && pos_idx != current_pos {
+                                    continue;
+                                }
+                            }
+                            WindowFrameExclusion::NoOthers => {
+                                // Don't exclude anything
+                            }
+                        }
+                    }
+                    out.push(partition[pos_idx]);
+                }
             }
             Ok(out)
+        }
+    }
+}
+
+async fn groups_frame_boundary(
+    bound: &WindowFrameBound,
+    current_group: usize,
+    total_groups: usize,
+    current_row: &EvalScope,
+    params: &[Option<String>],
+) -> Result<usize, EngineError> {
+    match bound {
+        WindowFrameBound::UnboundedPreceding => Ok(0),
+        WindowFrameBound::UnboundedFollowing => Ok(total_groups.saturating_sub(1)),
+        WindowFrameBound::CurrentRow => Ok(current_group),
+        WindowFrameBound::OffsetPreceding(offset_expr) => {
+            let offset = eval_expr(offset_expr, current_row, params).await?;
+            let offset = parse_i64_scalar(&offset, "frame offset must be an integer")?;
+            if offset < 0 {
+                return Err(EngineError {
+                    message: "frame offset must be non-negative".to_string(),
+                });
+            }
+            Ok(current_group.saturating_sub(offset as usize))
+        }
+        WindowFrameBound::OffsetFollowing(offset_expr) => {
+            let offset = eval_expr(offset_expr, current_row, params).await?;
+            let offset = parse_i64_scalar(&offset, "frame offset must be an integer")?;
+            if offset < 0 {
+                return Err(EngineError {
+                    message: "frame offset must be non-negative".to_string(),
+                });
+            }
+            Ok((current_group + offset as usize).min(total_groups.saturating_sub(1)))
         }
     }
 }
