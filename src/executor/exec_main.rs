@@ -199,6 +199,12 @@ fn execute_query_expr_with_outer<'a>(
                 right,
             } => execute_set_operation(left, *op, *quantifier, right, params, outer_scope).await,
             QueryExpr::Values(rows) => execute_values(rows, params, outer_scope).await,
+            QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
+                Err(EngineError {
+                    message: "data-modifying statements in WITH are not yet fully supported"
+                        .to_string(),
+                })
+            }
         }
     })
 }

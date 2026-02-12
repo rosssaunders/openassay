@@ -81,6 +81,12 @@ fn describe_statement_plan(stmt: &Statement, lines: &mut Vec<String>, indent: us
                     rows.len()
                 ));
             }
+            QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
+                lines.push(format!(
+                    "{}Data-modifying statement in WITH (not yet supported)",
+                    prefix
+                ));
+            }
         },
         Statement::Insert(_) => {
             lines.push(format!(

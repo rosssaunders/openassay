@@ -111,6 +111,12 @@ fn analyze_query_expr(
             // VALUES query - no special analysis needed for now
             // Types will be inferred at execution time
         }
+        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
+            return Err(EngineError {
+                message: "data-modifying statements in WITH are not yet fully supported"
+                    .to_string(),
+            });
+        }
     }
     Ok(())
 }

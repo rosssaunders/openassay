@@ -652,6 +652,10 @@ fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> Strin
             };
             sql.push_str(&render_query_to_sql(&right_query, false));
         }
+        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
+            // DML statements in CTEs not yet fully supported
+            sql.push_str("<data-modifying CTE>");
+        }
     }
     
     // Handle ORDER BY

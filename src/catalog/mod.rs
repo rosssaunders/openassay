@@ -1634,6 +1634,10 @@ fn query_expr_references_sequence(expr: &QueryExpr, sequence_name: &str) -> bool
             rows.iter()
                 .any(|row| row.iter().any(|expr| expr_references_sequence(expr, sequence_name)))
         }
+        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
+            // DML statements in CTEs not yet fully supported
+            false
+        }
     }
 }
 

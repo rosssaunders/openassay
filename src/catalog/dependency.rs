@@ -343,6 +343,10 @@ fn collect_query_expr_relation_refs(
                 }
             }
         }
+        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
+            // DML statements in CTEs not yet fully supported
+            // No dependencies to collect for now
+        }
     }
 }
 

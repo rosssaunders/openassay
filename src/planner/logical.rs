@@ -200,6 +200,11 @@ fn build_query_expr(expr: &QueryExpr, ctx: &mut BuildContext) -> LogicalPlan {
             // The executor will handle the actual evaluation
             LogicalPlan::Result
         }
+        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
+            // DML statements in CTEs not yet fully supported
+            // Return a placeholder plan for now
+            LogicalPlan::Result
+        }
     }
 }
 
@@ -487,6 +492,10 @@ fn collect_window_exprs_from_query(query: &Query, out: &mut Vec<Expr>) {
                 }
             }
         }
+        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
+            // DML statements in CTEs not yet fully supported
+            // No window expressions to collect for now
+        }
     }
 }
 
@@ -509,6 +518,10 @@ fn collect_window_exprs_from_query_expr(expr: &QueryExpr, out: &mut Vec<Expr>) {
                     collect_window_exprs(expr, out);
                 }
             }
+        }
+        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
+            // DML statements in CTEs not yet fully supported
+            // No window expressions to collect for now
         }
     }
 }

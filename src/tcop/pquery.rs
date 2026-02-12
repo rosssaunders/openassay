@@ -480,6 +480,9 @@ fn derive_query_expr_output_columns(
                 })
                 .collect())
         }
+        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => Err(EngineError {
+            message: "data-modifying statements in WITH are not yet fully supported".to_string(),
+        }),
     }
 }
 
@@ -668,6 +671,10 @@ fn query_expr_references_relation(expr: &QueryExpr, relation_name: &str) -> bool
             rows.iter()
                 .any(|row| row.iter().any(|expr| expr_references_relation(expr, relation_name)))
         }
+        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
+            // DML statements in CTEs not yet fully supported
+            false
+        }
     }
 }
 
@@ -834,6 +841,9 @@ fn derive_query_expr_columns(
             let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
             Ok((1..=ncols).map(|i| format!("column{}", i)).collect())
         }
+        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => Err(EngineError {
+            message: "data-modifying statements in WITH are not yet fully supported".to_string(),
+        }),
     }
 }
 
