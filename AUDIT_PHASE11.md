@@ -31,6 +31,54 @@ This document tracks the audit of Postrust implementation against PostgreSQL C s
 - [x] INT_MIN / -1 overflow detection matches PG (lines 98-102, 173-177, 235-239 in int_arithmetic.rs)
 - [x] All checked arithmetic functions use PG-compatible error messages
 
+#### ✅ FIXED: LIKE ESCAPE Clause
+**Impact**: Medium - affects LIKE pattern matching with custom escape characters
+
+**PostgreSQL**:
+```sql
+SELECT 'abc%def' LIKE 'abc!%def' ESCAPE '!';  -- true
+```
+
+**Previous State**:
+- AST `Expr::Like` had no `escape` field
+- Parser `parse_like_expr()` didn't check for ESCAPE keyword
+- Evaluator `eval_like_predicate()` hardcoded backslash escape
+
+**Fixed** (commit b525fdd):
+1. Added `escape: Option<Box<Expr>>` to `Expr::Like` in ast.rs
+2. Added `Escape` keyword to lexer
+3. Modified `parse_like_expr()` to check for ESCAPE keyword after pattern
+4. Updated `eval_like_predicate()` to accept and validate custom escape character
+5. Updated `like_match_recursive()` to use custom escape parameter (default: backslash)
+6. Added comprehensive tests for LIKE ESCAPE functionality
+
+**Test Results**: ✅ All tests pass
+
+#### ✅ FIXED: chr() Function Unicode Support
+**Impact**: Medium - affects character generation beyond ASCII range
+
+**PostgreSQL** (`src/backend/utils/adt/varlena.c:chr()`):
+- Supports full Unicode range (0 to U+10FFFF)
+- Handles multibyte encodings
+- Returns proper character encoding per database locale
+
+**Previous State** (`src/utils/adt/string_functions.rs:chr_from_code()`):
+- Limited to 0-255 range
+- Returned ASCII/Latin-1 only
+
+**Fixed** (commit 7753e1f):
+1. Removed 0-255 limitation in `chr_from_code()`
+2. Now supports full Unicode range (0 to U+10FFFF)
+3. Proper error handling for negative and invalid code points
+4. Added tests for:
+   - ASCII characters (chr(65) = 'A')
+   - Control characters (chr(10) = '\n')
+   - Unicode beyond ASCII (chr(8364) = '€')
+   - Emojis (chr(128512) = '😀')
+   - Invalid inputs (negative numbers, out-of-range values)
+
+**Test Results**: ✅ All tests pass
+
 #### ❌ MISSING: LIKE ESCAPE Clause
 **Impact**: Medium - affects LIKE pattern matching with custom escape characters
 
@@ -72,33 +120,9 @@ SELECT 'abc\def' LIKE 'abc\\def' ESCAPE '\';
 **Recommendation**: Document limitation; fix only if regression tests fail
 
 #### ⚠️ SIMPLIFIED: chr() Function
-**Impact**: Low - affects characters beyond ASCII range
+**Impact**: Low - was limited to 0-255 but now FIXED
 
-**PostgreSQL** (`src/backend/utils/adt/varlena.c:chr()`):
-- Supports full Unicode range
-- Handles multibyte encodings
-- Returns proper character encoding per database locale
-
-**Current State** (`src/utils/adt/string_functions.rs:chr_from_code()`):
-- Limited to 0-255 range (line 331)
-- Returns ASCII/Latin-1 only
-
-**Fix Required** (if needed):
-```rust
-pub fn chr_from_code(code: i64) -> Result<String, EngineError> {
-    if code < 0 {
-        return Err(EngineError {
-            message: "character code out of range".to_string(),
-        });
-    }
-    match char::from_u32(code as u32) {
-        Some(c) => Ok(c.to_string()),
-        None => Err(EngineError {
-            message: "character code out of range".to_string(),
-        }),
-    }
-}
-```
+**Status**: ✅ FIXED - Now supports full Unicode range
 
 #### ⚠️ INCOMPLETE: format() Keywords
 **Impact**: Low - affects format() identifier quoting
@@ -232,19 +256,17 @@ Sample comparison:
 
 ## Priority Fixes
 
+### Completed ✅
+1. **LIKE ESCAPE clause** ✅ - Implemented with full test coverage
+2. **chr() Unicode support** ✅ - Extended to support full Unicode range
+
 ### High Priority (Block Regression Tests)
-1. **LIKE ESCAPE clause** - Required by strings.sql regression test
-2. **chr() Unicode support** - Required for proper character handling
-
 ### Medium Priority (Improve Compatibility)
-3. **Standardize error messages** - "unknown column" → "column does not exist"
-4. **format() keyword list** - Complete keyword validation
-
+3. **format() keyword list** - Complete keyword validation (24 vs ~150+ in PG)
 ### Low Priority (Nice to Have)
+4. **Standardize error messages** - "unknown column" → "column does not exist"
+4. **Standardize error messages** - "unknown column" → "column does not exist"
 5. **LIKE multibyte/locale support** - Only if regression tests fail
-6. **Missing string functions** - Add as needed
-
----
 
 ## Testing Strategy
 
@@ -256,8 +278,8 @@ Sample comparison:
 
 ## Progress Tracking
 
-- [x] Module 1: Expression Evaluation - Initial audit complete
-- [x] Module 2: String Functions - Initial audit complete
+- [x] Module 1: Expression Evaluation - Initial audit complete, 2 fixes implemented
+- [x] Module 2: String Functions - Initial audit complete, 1 fix implemented
 - [ ] Module 3: JSON/JSONB - Not started
 - [ ] Module 4: Aggregates - Not started
 - [ ] Module 5: Date/Time - Not started
