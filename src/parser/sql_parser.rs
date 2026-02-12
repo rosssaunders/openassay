@@ -4816,6 +4816,47 @@ mod tests {
     }
 
     #[test]
+    fn parses_with_insert_returning() {
+        let stmt = parse_statement(
+            "WITH inserted AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM inserted",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let with = query.with.as_ref().expect("with clause should exist");
+        assert_eq!(with.ctes.len(), 1);
+        assert_eq!(with.ctes[0].name, "inserted");
+        assert!(matches!(&with.ctes[0].query.body, QueryExpr::Insert(_)));
+    }
+
+    #[test]
+    fn parses_with_update_returning() {
+        let stmt = parse_statement(
+            "WITH updated AS (UPDATE t SET x = x + 1 RETURNING *) SELECT * FROM updated",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let with = query.with.as_ref().expect("with clause should exist");
+        assert!(matches!(&with.ctes[0].query.body, QueryExpr::Update(_)));
+    }
+
+    #[test]
+    fn parses_with_delete_returning() {
+        let stmt = parse_statement(
+            "WITH deleted AS (DELETE FROM t WHERE x < 0 RETURNING *) SELECT * FROM deleted",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let with = query.with.as_ref().expect("with clause should exist");
+        assert!(matches!(&with.ctes[0].query.body, QueryExpr::Delete(_)));
+    }
+
+    #[test]
     fn parses_select_with_clauses() {
         let stmt = parse_statement(
             "SELECT DISTINCT foo AS bar, count(*) \
