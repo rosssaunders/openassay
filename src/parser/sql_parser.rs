@@ -2168,7 +2168,7 @@ impl Parser {
         }
 
         if self.consume_keyword(Keyword::Values) {
-            // VALUES (expr, ...), (expr, ...) -> converted to UNION ALL of SELECTs
+            // VALUES (expr, ...), (expr, ...) as a standalone query
             let mut all_rows = Vec::new();
             loop {
                 self.expect_token(|k| matches!(k, TokenKind::LParen), "expected '(' in VALUES")?;
@@ -2179,53 +2179,7 @@ impl Parser {
                     break;
                 }
             }
-            // Generate column names: column1, column2, ...
-            let ncols = all_rows.first().map(|r| r.len()).unwrap_or(0);
-            let _targets: Vec<SelectItem> = (0..ncols)
-                .map(|i| SelectItem {
-                    expr: Expr::Identifier(vec![format!("column{}", i + 1)]),
-                    alias: Some(format!("column{}", i + 1)),
-                })
-                .collect();
-            // For first row, create a SELECT with literal values
-            let mut result: Option<QueryExpr> = None;
-            for row_values in all_rows {
-                let row_targets: Vec<SelectItem> = row_values
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, expr)| SelectItem {
-                        expr,
-                        alias: Some(format!("column{}", i + 1)),
-                    })
-                    .collect();
-                let select = QueryExpr::Select(SelectStatement {
-                    quantifier: None,
-                    distinct_on: Vec::new(),
-                    targets: row_targets,
-                    from: Vec::new(),
-                    where_clause: None,
-                    group_by: Vec::new(),
-                    having: None,
-                });
-                result = Some(match result {
-                    None => select,
-                    Some(left) => QueryExpr::SetOperation {
-                        left: Box::new(left),
-                        op: SetOperator::Union,
-                        quantifier: SetQuantifier::All,
-                        right: Box::new(select),
-                    },
-                });
-            }
-            return Ok(result.unwrap_or(QueryExpr::Select(SelectStatement {
-                quantifier: None,
-                distinct_on: Vec::new(),
-                targets: Vec::new(),
-                from: Vec::new(),
-                where_clause: None,
-                group_by: Vec::new(),
-                having: None,
-            })));
+            return Ok(QueryExpr::Values(all_rows));
         }
 
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
@@ -2428,9 +2382,6 @@ impl Parser {
             }
             return Ok(inner);
         }
-        if lateral {
-            return Err(self.error_at_current("expected subquery after LATERAL"));
-        }
 
         let name = self.parse_qualified_name()?;
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
@@ -2453,7 +2404,11 @@ impl Parser {
                 alias,
                 column_aliases,
                 column_alias_types,
+                lateral,
             }));
+        }
+        if lateral {
+            return Err(self.error_at_current("expected subquery or function after LATERAL"));
         }
         let alias = self.parse_optional_alias()?;
         Ok(TableExpression::Relation(TableRef { name, alias }))
@@ -6953,5 +6908,210 @@ mod tests {
         };
         assert!(start.is_some());
         assert!(end.is_none());
+    }
+
+    #[test]
+    fn parses_jsonb_contains_operator() {
+        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb @> '{\"a\":1}'::jsonb").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::Binary { op, .. } = &select.targets[0].expr else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(*op, BinaryOp::JsonContains);
+    }
+
+    #[test]
+    fn parses_jsonb_contained_by_operator() {
+        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb <@ '{\"a\":1,\"b\":2}'::jsonb").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::Binary { op, .. } = &select.targets[0].expr else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(*op, BinaryOp::JsonContainedBy);
+    }
+
+    #[test]
+    fn parses_jsonb_has_key_operator() {
+        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb ? 'a'").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::Binary { op, .. } = &select.targets[0].expr else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(*op, BinaryOp::JsonHasKey);
+    }
+
+    #[test]
+    fn parses_jsonb_has_any_operator() {
+        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb ?| ARRAY['a','b']").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::Binary { op, .. } = &select.targets[0].expr else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(*op, BinaryOp::JsonHasAny);
+    }
+
+    #[test]
+    fn parses_jsonb_has_all_operator() {
+        let stmt = parse_statement("SELECT '{\"a\":1,\"b\":2}'::jsonb ?& ARRAY['a','b']").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::Binary { op, .. } = &select.targets[0].expr else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(*op, BinaryOp::JsonHasAll);
+    }
+
+    #[test]
+    fn parses_jsonb_concat_operator() {
+        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb || '{\"b\":2}'::jsonb").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::Binary { op, .. } = &select.targets[0].expr else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(*op, BinaryOp::JsonConcat);
+    }
+
+    #[test]
+    fn parses_string_concat_operator() {
+        let stmt = parse_statement("SELECT 'hello' || ' ' || 'world'").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::Binary { op: op1, left, right: _ } = &select.targets[0].expr else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(*op1, BinaryOp::JsonConcat);
+        let Expr::Binary { op: op2, .. } = &**left else {
+            panic!("expected binary expression on left");
+        };
+        assert_eq!(*op2, BinaryOp::JsonConcat);
+    }
+
+    #[test]
+    fn parses_jsonb_delete_path_operator() {
+        let stmt = parse_statement("SELECT '{\"a\":{\"b\":1}}'::jsonb #- '{a,b}'").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::Binary { op, .. } = &select.targets[0].expr else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(*op, BinaryOp::JsonDeletePath);
+    }
+
+    #[test]
+    fn parses_standalone_values_single_row() {
+        let stmt = parse_statement("VALUES (1, 'a')").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Values(rows) = &query.body else {
+            panic!("expected values query");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 2);
+    }
+
+    #[test]
+    fn parses_standalone_values_multi_row() {
+        let stmt = parse_statement("VALUES (1, 'a'), (2, 'b'), (3, 'c')").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Values(rows) = &query.body else {
+            panic!("expected values query");
+        };
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].len(), 2);
+        assert_eq!(rows[1].len(), 2);
+        assert_eq!(rows[2].len(), 2);
+    }
+
+    #[test]
+    fn parses_values_with_order_by() {
+        let stmt = parse_statement("VALUES (3), (1), (2) ORDER BY 1").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Values(rows) = &query.body else {
+            panic!("expected values query");
+        };
+        assert_eq!(rows.len(), 3);
+        assert_eq!(query.order_by.len(), 1);
+    }
+
+    #[test]
+    fn parses_lateral_subquery() {
+        let stmt = parse_statement("SELECT * FROM t1, LATERAL (SELECT * FROM t2 WHERE t2.id = t1.id) sub")
+            .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        assert_eq!(select.from.len(), 2);
+        
+        // Second table should be a lateral subquery
+        if let TableExpression::Subquery(subq_ref) = &select.from[1] {
+            assert!(subq_ref.lateral, "subquery should be marked as lateral");
+        } else {
+            panic!("expected subquery in FROM clause");
+        }
+    }
+
+    #[test]
+    fn parses_lateral_function() {
+        let stmt = parse_statement("SELECT * FROM t1, LATERAL unnest(t1.arr) AS elem")
+            .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        assert_eq!(select.from.len(), 2);
+        
+        // Second table should be a lateral function
+        if let TableExpression::Function(func_ref) = &select.from[1] {
+            assert!(func_ref.lateral, "function should be marked as lateral");
+        } else {
+            panic!("expected function in FROM clause");
+        }
     }
 }

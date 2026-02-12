@@ -1629,6 +1629,11 @@ fn query_expr_references_sequence(expr: &QueryExpr, sequence_name: &str) -> bool
                 || query_expr_references_sequence(right, sequence_name)
         }
         QueryExpr::Nested(query) => query_references_sequence(query, sequence_name),
+        QueryExpr::Values(rows) => {
+            // Check if any value expression references the sequence
+            rows.iter()
+                .any(|row| row.iter().any(|expr| expr_references_sequence(expr, sequence_name)))
+        }
     }
 }
 

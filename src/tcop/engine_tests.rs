@@ -5101,3 +5101,126 @@ fn evaluates_typed_literals_and_array_operations() {
     let result = run("SELECT 1");
     assert_eq!(result.rows, vec![vec![ScalarValue::Int(1)]]);
 }
+
+#[test]
+fn test_string_concatenation() {
+    let result = run("SELECT 'hello' || ' ' || 'world' AS greeting");
+    assert_eq!(result.columns, vec!["greeting"]);
+    assert_eq!(result.rows, vec![vec![ScalarValue::Text("hello world".to_string())]]);
+}
+
+#[test]
+fn test_jsonb_concat() {
+    let result = run("SELECT '{\"a\":1}'::jsonb || '{\"b\":2}'::jsonb AS merged");
+    assert_eq!(result.columns, vec!["merged"]);
+    assert_eq!(result.rows.len(), 1);
+    // The result should be a merged JSON object
+    let ScalarValue::Text(json_str) = &result.rows[0][0] else {
+        panic!("expected text result");
+    };
+    let json: JsonValue = serde_json::from_str(json_str).expect("should parse JSON");
+    assert_eq!(json["a"], JsonValue::Number(JsonNumber::from(1)));
+    assert_eq!(json["b"], JsonValue::Number(JsonNumber::from(2)));
+}
+
+#[test]
+fn test_jsonb_delete_key() {
+    let result = run("SELECT '{\"a\":1,\"b\":2}'::jsonb - 'a' AS result");
+    assert_eq!(result.columns, vec!["result"]);
+    assert_eq!(result.rows.len(), 1);
+    let ScalarValue::Text(json_str) = &result.rows[0][0] else {
+        panic!("expected text result");
+    };
+    let json: JsonValue = serde_json::from_str(json_str).expect("should parse JSON");
+    assert!(json.get("a").is_none(), "key 'a' should be deleted");
+    assert_eq!(json["b"], JsonValue::Number(JsonNumber::from(2)));
+}
+
+#[test]
+fn test_jsonb_has_key() {
+    let result = run("SELECT '{\"a\":1}'::jsonb ? 'a' AS has_key");
+    assert_eq!(result.columns, vec!["has_key"]);
+    assert_eq!(result.rows, vec![vec![ScalarValue::Bool(true)]]);
+    
+    let result = run("SELECT '{\"a\":1}'::jsonb ? 'b' AS has_key");
+    assert_eq!(result.rows, vec![vec![ScalarValue::Bool(false)]]);
+}
+
+#[test]
+fn test_jsonb_contains() {
+    let result = run("SELECT '{\"a\":1,\"b\":2}'::jsonb @> '{\"a\":1}'::jsonb AS contains");
+    assert_eq!(result.columns, vec!["contains"]);
+    assert_eq!(result.rows, vec![vec![ScalarValue::Bool(true)]]);
+    
+    let result = run("SELECT '{\"a\":1}'::jsonb @> '{\"a\":1,\"b\":2}'::jsonb AS contains");
+    assert_eq!(result.rows, vec![vec![ScalarValue::Bool(false)]]);
+}
+
+#[test]
+fn test_standalone_values_single_row() {
+    let result = run("VALUES (1, 'a')");
+    assert_eq!(result.columns, vec!["column1", "column2"]);
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0], vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())]);
+}
+
+#[test]
+fn test_standalone_values_multi_row() {
+    let result = run("VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+    assert_eq!(result.columns, vec!["column1", "column2"]);
+    assert_eq!(result.rows.len(), 3);
+    assert_eq!(result.rows[0], vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())]);
+    assert_eq!(result.rows[1], vec![ScalarValue::Int(2), ScalarValue::Text("b".to_string())]);
+    assert_eq!(result.rows[2], vec![ScalarValue::Int(3), ScalarValue::Text("c".to_string())]);
+}
+
+#[test]
+fn test_values_with_order_by() {
+    let result = run("VALUES (3), (1), (2) ORDER BY 1");
+    assert_eq!(result.columns, vec!["column1"]);
+    assert_eq!(result.rows.len(), 3);
+    // Should be ordered: 1, 2, 3
+    assert_eq!(result.rows[0], vec![ScalarValue::Int(1)]);
+    assert_eq!(result.rows[1], vec![ScalarValue::Int(2)]);
+    assert_eq!(result.rows[2], vec![ScalarValue::Int(3)]);
+}
+
+#[test]
+fn test_values_with_limit() {
+    let result = run("VALUES (1), (2), (3), (4) LIMIT 2");
+    assert_eq!(result.columns, vec!["column1"]);
+    assert_eq!(result.rows.len(), 2);
+    assert_eq!(result.rows[0], vec![ScalarValue::Int(1)]);
+    assert_eq!(result.rows[1], vec![ScalarValue::Int(2)]);
+}
+
+#[test]
+fn test_insert_returning() {
+    with_isolated_state(|| {
+        run_statement("CREATE TABLE test_returning (id int, name text)", &[]);
+        let result = run_statement("INSERT INTO test_returning (id, name) VALUES (1, 'Alice') RETURNING *", &[]);
+        
+        // RETURNING should give us the inserted row
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], ScalarValue::Int(1));
+        assert_eq!(result.rows[0][1], ScalarValue::Text("Alice".to_string()));
+        
+        // And the row should be in the table
+        let result = run_statement("SELECT * FROM test_returning", &[]);
+        assert_eq!(result.rows.len(), 1);
+    });
+}
+
+#[test]
+fn test_lateral_subquery() {
+    with_isolated_state(|| {
+        run_statement("CREATE TABLE t1 (id int, val int)", &[]);
+        run_statement("CREATE TABLE t2 (t1_id int, name text)", &[]);
+        run_statement("INSERT INTO t1 VALUES (1, 10), (2, 20)", &[]);
+        run_statement("INSERT INTO t2 VALUES (1, 'a'), (1, 'b'), (2, 'c')", &[]);
+        
+        // LATERAL allows the subquery to reference t1
+        let result = run_statement("SELECT t1.id, sub.name FROM t1, LATERAL (SELECT name FROM t2 WHERE t2.t1_id = t1.id) sub", &[]);
+        assert_eq!(result.rows.len(), 3);
+    });
+}

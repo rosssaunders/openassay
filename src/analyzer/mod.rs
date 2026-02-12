@@ -107,6 +107,10 @@ fn analyze_query_expr(
         QueryExpr::Nested(query) => {
             analyze_query(query, search_path)?;
         }
+        QueryExpr::Values(_rows) => {
+            // VALUES query - no special analysis needed for now
+            // Types will be inferred at execution time
+        }
     }
     Ok(())
 }

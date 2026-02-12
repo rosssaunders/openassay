@@ -195,6 +195,11 @@ fn build_query_expr(expr: &QueryExpr, ctx: &mut BuildContext) -> LogicalPlan {
             left: Box::new(build_query_expr(left, ctx)),
             right: Box::new(build_query_expr(right, ctx)),
         }),
+        QueryExpr::Values(_rows) => {
+            // VALUES query - just return Result plan for now
+            // The executor will handle the actual evaluation
+            LogicalPlan::Result
+        }
     }
 }
 
@@ -474,6 +479,14 @@ fn collect_window_exprs_from_query(query: &Query, out: &mut Vec<Expr>) {
             collect_window_exprs_from_query_expr(right, out);
         }
         QueryExpr::Nested(inner) => collect_window_exprs_from_query(inner, out),
+        QueryExpr::Values(rows) => {
+            // Collect window expressions from all value expressions
+            for row in rows {
+                for expr in row {
+                    collect_window_exprs(expr, out);
+                }
+            }
+        }
     }
 }
 
@@ -489,6 +502,14 @@ fn collect_window_exprs_from_query_expr(expr: &QueryExpr, out: &mut Vec<Expr>) {
             collect_window_exprs_from_query_expr(right, out);
         }
         QueryExpr::Nested(inner) => collect_window_exprs_from_query(inner, out),
+        QueryExpr::Values(rows) => {
+            // Collect window expressions from all value expressions
+            for row in rows {
+                for expr in row {
+                    collect_window_exprs(expr, out);
+                }
+            }
+        }
     }
 }
 

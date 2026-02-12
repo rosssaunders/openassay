@@ -277,6 +277,7 @@ fn infer_expr_type_oid(
                 | BinaryOp::JsonPath
                 | BinaryOp::JsonPathText
                 | BinaryOp::JsonConcat
+                | BinaryOp::JsonDelete
                 | BinaryOp::JsonDeletePath => PG_TEXT_OID,
                 BinaryOp::Add => {
                     if (left_oid == PG_DATE_OID || left_oid == PG_TIMESTAMP_OID)
@@ -469,6 +470,16 @@ fn derive_query_expr_output_columns(
             let mut nested = ctes.clone();
             derive_query_output_columns_with_ctes(query, &mut nested)
         }
+        QueryExpr::Values(rows) => {
+            // VALUES query - derive column names and types from first row
+            let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
+            Ok((1..=ncols)
+                .map(|i| PlannedOutputColumn {
+                    name: format!("column{}", i),
+                    type_oid: PG_TEXT_OID, // Default to text, actual type determined at execution
+                })
+                .collect())
+        }
     }
 }
 
@@ -652,6 +663,11 @@ fn query_expr_references_relation(expr: &QueryExpr, relation_name: &str) -> bool
                 || query_expr_references_relation(right, relation_name)
         }
         QueryExpr::Nested(query) => query_references_relation(query, relation_name),
+        QueryExpr::Values(rows) => {
+            // Check if any value expression references the relation
+            rows.iter()
+                .any(|row| row.iter().any(|expr| expr_references_relation(expr, relation_name)))
+        }
     }
 }
 
@@ -812,6 +828,11 @@ fn derive_query_expr_columns(
         QueryExpr::Nested(query) => {
             let mut nested = ctes.clone();
             derive_query_columns_with_ctes(query, &mut nested)
+        }
+        QueryExpr::Values(rows) => {
+            // VALUES query - derive column names
+            let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
+            Ok((1..=ncols).map(|i| format!("column{}", i)).collect())
         }
     }
 }

@@ -609,6 +609,7 @@ pub enum QueryExpr {
         right: Box<QueryExpr>,
     },
     Nested(Box<Query>),
+    Values(Vec<Vec<Expr>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -668,6 +669,7 @@ pub struct TableFunctionRef {
     pub alias: Option<String>,
     pub column_aliases: Vec<String>,
     pub column_alias_types: Vec<Option<String>>,
+    pub lateral: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -895,6 +897,7 @@ pub enum BinaryOp {
     JsonHasKey,
     JsonHasAny,
     JsonHasAll,
+    JsonDelete,
     JsonDeletePath,
 }
 
