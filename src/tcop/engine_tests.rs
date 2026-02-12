@@ -5584,3 +5584,32 @@ fn test_exclude_current_row() {
         assert_eq!(result.rows[2][1], ScalarValue::Int(3)); // 1+2
     });
 }
+
+#[test]
+fn test_like_escape() {
+    let result = run("SELECT 'abc%def' LIKE 'abc!%def' ESCAPE '!'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
+    
+    let result = run("SELECT 'abc_def' LIKE 'abc!_def' ESCAPE '!'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
+    
+    let result = run("SELECT 'abc%def' LIKE 'abc%def' ESCAPE '!'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
+    
+    let result = run("SELECT 'abcXdef' LIKE 'abc!%def' ESCAPE '!'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(false));
+    
+    // Test with backslash escape
+    let result = run("SELECT 'abc\\def' LIKE 'abc\\\\def' ESCAPE '\\'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
+    
+    // Test with custom escape character
+    let result = run("SELECT 'test#%data' LIKE 'test##%data' ESCAPE '#'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
+}
+
+#[test]
+fn test_like_escape_null() {
+    let result = run("SELECT 'abc' LIKE 'abc' ESCAPE NULL");
+    assert_eq!(result.rows[0][0], ScalarValue::Null);
+}

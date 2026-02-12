@@ -852,6 +852,7 @@ pub enum Expr {
         pattern: Box<Expr>,
         case_insensitive: bool,
         negated: bool,
+        escape: Option<Box<Expr>>,
     },
     IsNull {
         expr: Box<Expr>,

@@ -290,10 +290,17 @@ pub(crate) fn eval_expr<'a>(
                 pattern,
                 case_insensitive,
                 negated,
+                escape,
             } => {
                 let value = eval_expr(expr, scope, params).await?;
                 let pattern_value = eval_expr(pattern, scope, params).await?;
-                eval_like_predicate(value, pattern_value, *case_insensitive, *negated)
+                let escape_char = if let Some(escape_expr) = escape {
+                    let escape_value = eval_expr(escape_expr, scope, params).await?;
+                    Some(escape_value)
+                } else {
+                    None
+                };
+                eval_like_predicate(value, pattern_value, *case_insensitive, *negated, escape_char)
             }
             Expr::IsNull { expr, negated } => {
                 let value = eval_expr(expr, scope, params).await?;
@@ -541,11 +548,18 @@ pub(crate) fn eval_expr_with_window<'a>(
                 pattern,
                 case_insensitive,
                 negated,
+                escape,
             } => {
                 let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
                 let pattern_value =
                     eval_expr_with_window(pattern, scope, row_idx, all_rows, window_definitions, params).await?;
-                eval_like_predicate(value, pattern_value, *case_insensitive, *negated)
+                let escape_char = if let Some(escape_expr) = escape {
+                    let escape_value = eval_expr_with_window(escape_expr, scope, row_idx, all_rows, window_definitions, params).await?;
+                    Some(escape_value)
+                } else {
+                    None
+                };
+                eval_like_predicate(value, pattern_value, *case_insensitive, *negated, escape_char)
             }
             Expr::IsNull { expr, negated } => {
                 let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
@@ -1529,17 +1543,35 @@ pub(crate) fn eval_like_predicate(
     pattern: ScalarValue,
     case_insensitive: bool,
     negated: bool,
+    escape: Option<ScalarValue>,
 ) -> Result<ScalarValue, EngineError> {
     if matches!(value, ScalarValue::Null) || matches!(pattern, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
+    
+    // Handle escape character
+    let escape_char = if let Some(escape_val) = escape {
+        if matches!(escape_val, ScalarValue::Null) {
+            return Ok(ScalarValue::Null);
+        }
+        let escape_str = escape_val.render();
+        if escape_str.len() != 1 {
+            return Err(EngineError {
+                message: "ESCAPE string must be a single character".to_string(),
+            });
+        }
+        Some(escape_str.chars().next().unwrap())
+    } else {
+        None
+    };
+    
     let mut text = value.render();
     let mut pattern_text = pattern.render();
     if case_insensitive {
         text = text.to_ascii_lowercase();
         pattern_text = pattern_text.to_ascii_lowercase();
     }
-    let matched = like_match(&text, &pattern_text);
+    let matched = like_match(&text, &pattern_text, escape_char);
     Ok(ScalarValue::Bool(if negated { !matched } else { matched }))
 }
 
@@ -1625,11 +1657,12 @@ pub(crate) fn eval_cast_scalar(
     }
 }
 
-fn like_match(value: &str, pattern: &str) -> bool {
+fn like_match(value: &str, pattern: &str, escape: Option<char>) -> bool {
     let value_chars = value.chars().collect::<Vec<_>>();
     let pattern_chars = pattern.chars().collect::<Vec<_>>();
     let mut memo = HashMap::new();
-    like_match_recursive(&value_chars, &pattern_chars, 0, 0, &mut memo)
+    let escape_char = escape.unwrap_or('\\');
+    like_match_recursive(&value_chars, &pattern_chars, 0, 0, escape_char, &mut memo)
 }
 
 fn like_match_recursive(
@@ -1637,6 +1670,7 @@ fn like_match_recursive(
     pattern: &[char],
     vi: usize,
     pi: usize,
+    escape: char,
     memo: &mut HashMap<(usize, usize), bool>,
 ) -> bool {
     if let Some(cached) = memo.get(&(vi, pi)) {
@@ -1651,7 +1685,7 @@ fn like_match_recursive(
                 let mut i = vi;
                 let mut matched = false;
                 while i <= value.len() {
-                    if like_match_recursive(value, pattern, i, pi + 1, memo) {
+                    if like_match_recursive(value, pattern, i, pi + 1, escape, memo) {
                         matched = true;
                         break;
                     }
@@ -1659,22 +1693,22 @@ fn like_match_recursive(
                 }
                 matched
             }
-            '_' => vi < value.len() && like_match_recursive(value, pattern, vi + 1, pi + 1, memo),
-            '\\' => {
+            '_' => vi < value.len() && like_match_recursive(value, pattern, vi + 1, pi + 1, escape, memo),
+            c if c == escape => {
                 if pi + 1 >= pattern.len() {
                     vi < value.len()
-                        && value[vi] == '\\'
-                        && like_match_recursive(value, pattern, vi + 1, pi + 1, memo)
+                        && value[vi] == escape
+                        && like_match_recursive(value, pattern, vi + 1, pi + 1, escape, memo)
                 } else {
                     vi < value.len()
                         && value[vi] == pattern[pi + 1]
-                        && like_match_recursive(value, pattern, vi + 1, pi + 2, memo)
+                        && like_match_recursive(value, pattern, vi + 1, pi + 2, escape, memo)
                 }
             }
             ch => {
                 vi < value.len()
                     && value[vi] == ch
-                    && like_match_recursive(value, pattern, vi + 1, pi + 1, memo)
+                    && like_match_recursive(value, pattern, vi + 1, pi + 1, escape, memo)
             }
         }
     };

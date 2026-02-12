@@ -2293,12 +2293,19 @@ fn eval_group_expr<'a>(
                 pattern,
                 case_insensitive,
                 negated,
+                escape,
             } => {
                 let value =
                     eval_group_expr(expr, group_rows, representative, params, grouping).await?;
                 let pattern_value =
                     eval_group_expr(pattern, group_rows, representative, params, grouping).await?;
-                eval_like_predicate(value, pattern_value, *case_insensitive, *negated)
+                let escape_char = if let Some(escape_expr) = escape {
+                    let escape_value = eval_group_expr(escape_expr, group_rows, representative, params, grouping).await?;
+                    Some(escape_value)
+                } else {
+                    None
+                };
+                eval_like_predicate(value, pattern_value, *case_insensitive, *negated, escape_char)
             }
             Expr::IsNull { expr, negated } => {
                 let value =

@@ -3915,11 +3915,20 @@ impl Parser {
         case_insensitive: bool,
     ) -> Result<Expr, ParseError> {
         let pattern = self.parse_expr_bp(6)?;
+        
+        // Check for optional ESCAPE clause
+        let escape = if self.consume_keyword(Keyword::Escape) {
+            Some(Box::new(self.parse_expr_bp(6)?))
+        } else {
+            None
+        };
+        
         Ok(Expr::Like {
             expr: Box::new(lhs),
             pattern: Box::new(pattern),
             case_insensitive,
             negated,
+            escape,
         })
     }
 
