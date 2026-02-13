@@ -25,6 +25,13 @@ pub(crate) fn scalar_to_json_value(value: &ScalarValue) -> Result<JsonValue, Eng
             }
             Ok(JsonValue::Array(items))
         }
+        ScalarValue::Record(fields) => {
+            let mut items = Vec::with_capacity(fields.len());
+            for field in fields {
+                items.push(scalar_to_json_value(field)?);
+            }
+            Ok(JsonValue::Array(items))
+        }
     }
 }
 
@@ -281,7 +288,7 @@ fn parse_json_path_segments(
             ScalarValue::Int(v) => out.push(v.to_string()),
             ScalarValue::Float(v) => out.push(v.to_string()),
             ScalarValue::Bool(v) => out.push(v.to_string()),
-            ScalarValue::Array(_) => {
+            ScalarValue::Record(_) | ScalarValue::Array(_) => {
                 return Err(EngineError {
                     message: format!("{fn_name}() path arguments must be scalar values"),
                 });
@@ -817,7 +824,7 @@ fn scalar_to_json_path_segment(
         ScalarValue::Int(v) => Ok(v.to_string()),
         ScalarValue::Float(v) => Ok(v.to_string()),
         ScalarValue::Bool(v) => Ok(v.to_string()),
-        ScalarValue::Array(_) => Err(EngineError {
+        ScalarValue::Array(_) | ScalarValue::Record(_) => Err(EngineError {
             message: format!("{operator_name} operator path operand must be scalar"),
         }),
     }
@@ -886,6 +893,9 @@ fn parse_json_path_operand(
             }
             Ok(out)
         }
+        ScalarValue::Record(_) => Err(EngineError {
+            message: format!("{operator_name} operator path operand must be text[] or scalar"),
+        }),
     }
 }
 

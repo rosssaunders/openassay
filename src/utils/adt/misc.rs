@@ -410,6 +410,7 @@ pub(crate) fn truthy(value: &ScalarValue) -> bool {
         ScalarValue::Float(v) => *v != 0.0,
         ScalarValue::Text(v) => !v.is_empty(),
         ScalarValue::Array(values) => !values.is_empty(),
+        ScalarValue::Record(fields) => !fields.is_empty(),
     }
 }
 

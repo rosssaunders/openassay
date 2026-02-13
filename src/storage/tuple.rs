@@ -6,6 +6,8 @@ pub enum ScalarValue {
     Float(f64),
     Text(String),
     Array(Vec<ScalarValue>),
+    /// Row/Record type for ROW(a, b, c) or (a, b, c) expressions
+    Record(Vec<ScalarValue>),
 }
 
 impl ScalarValue {
@@ -23,6 +25,16 @@ impl ScalarValue {
             }
             Self::Text(v) => v.clone(),
             Self::Array(values) => render_array_literal(values),
+            Self::Record(values) => {
+                let parts: Vec<String> = values.iter().map(|v| {
+                    if matches!(v, ScalarValue::Null) {
+                        String::new()
+                    } else {
+                        v.render()
+                    }
+                }).collect();
+                format!("({})", parts.join(","))
+            }
         }
     }
 }

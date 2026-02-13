@@ -216,12 +216,13 @@ pub(crate) fn eval_expr<'a>(
                             .to_string(),
                     });
                 }
-                if result.rows[0].len() != 1 {
-                    return Err(EngineError {
-                        message: "subquery must return only one column".to_string(),
-                    });
+                let row = &result.rows[0];
+                if row.len() == 1 {
+                    Ok(row[0].clone())
+                } else {
+                    // Multi-column subquery returns a record
+                    Ok(ScalarValue::Record(row.clone()))
                 }
-                Ok(result.rows[0][0].clone())
             }
             Expr::ArrayConstructor(items) => {
                 let mut values = Vec::with_capacity(items.len());
@@ -229,6 +230,13 @@ pub(crate) fn eval_expr<'a>(
                     values.push(eval_expr(item, scope, params).await?);
                 }
                 Ok(ScalarValue::Array(values))
+            }
+            Expr::RowConstructor(fields) => {
+                let mut values = Vec::with_capacity(fields.len());
+                for field in fields {
+                    values.push(eval_expr(field, scope, params).await?);
+                }
+                Ok(ScalarValue::Record(values))
             }
             Expr::ArraySubquery(query) => {
                 let result = execute_query_with_outer(query, params, Some(scope)).await?;
@@ -262,16 +270,25 @@ pub(crate) fn eval_expr<'a>(
             } => {
                 let lhs = eval_expr(expr, scope, params).await?;
                 let result = execute_query_with_outer(subquery, params, Some(scope)).await?;
-                if !result.columns.is_empty() && result.columns.len() != 1 {
-                    return Err(EngineError {
-                        message: "subquery must return only one column".to_string(),
-                    });
-                }
-                let rhs_values = result
-                    .rows
-                    .iter()
-                    .map(|row| row.first().cloned().unwrap_or(ScalarValue::Null))
-                    .collect::<Vec<_>>();
+                // For row-value IN subquery, compare rows element-wise
+                let rhs_values = if let ScalarValue::Record(_) = &lhs {
+                    result
+                        .rows
+                        .iter()
+                        .map(|row| ScalarValue::Record(row.clone()))
+                        .collect::<Vec<_>>()
+                } else {
+                    if !result.columns.is_empty() && result.columns.len() != 1 {
+                        return Err(EngineError {
+                            message: "subquery must return only one column".to_string(),
+                        });
+                    }
+                    result
+                        .rows
+                        .iter()
+                        .map(|row| row.first().cloned().unwrap_or(ScalarValue::Null))
+                        .collect::<Vec<_>>()
+                };
                 eval_in_membership(lhs, rhs_values, *negated)
             }
             Expr::Between {
@@ -471,12 +488,13 @@ pub(crate) fn eval_expr_with_window<'a>(
                             .to_string(),
                     });
                 }
-                if result.rows[0].len() != 1 {
-                    return Err(EngineError {
-                        message: "subquery must return only one column".to_string(),
-                    });
+                let row = &result.rows[0];
+                if row.len() == 1 {
+                    Ok(row[0].clone())
+                } else {
+                    // Multi-column subquery returns a record
+                    Ok(ScalarValue::Record(row.clone()))
                 }
-                Ok(result.rows[0][0].clone())
             }
             Expr::ArrayConstructor(items) => {
                 let mut values = Vec::with_capacity(items.len());
@@ -485,6 +503,13 @@ pub(crate) fn eval_expr_with_window<'a>(
                         .push(eval_expr_with_window(item, scope, row_idx, all_rows, window_definitions, params).await?);
                 }
                 Ok(ScalarValue::Array(values))
+            }
+            Expr::RowConstructor(fields) => {
+                let mut values = Vec::with_capacity(fields.len());
+                for field in fields {
+                    values.push(eval_expr_with_window(field, scope, row_idx, all_rows, window_definitions, params).await?);
+                }
+                Ok(ScalarValue::Record(values))
             }
             Expr::ArraySubquery(query) => {
                 let result = execute_query_with_outer(query, params, Some(scope)).await?;
