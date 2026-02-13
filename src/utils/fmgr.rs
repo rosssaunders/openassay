@@ -103,8 +103,13 @@ pub(crate) async fn eval_scalar_function(
         )),
         "row_to_json" if args.len() == 1 || args.len() == 2 => eval_row_to_json(args, fn_name),
         "array_to_json" if args.len() == 1 || args.len() == 2 => eval_array_to_json(args, fn_name),
-        "json_object" if args.len() == 1 || args.len() == 2 => eval_json_object(args, fn_name),
-        "json_build_object" | "jsonb_build_object" if args.len().is_multiple_of(2) => Ok(
+        "json_object" | "jsonb_object" if args.len() == 1 || args.len() == 2 => eval_json_object(args, fn_name),
+        "json_build_object" | "jsonb_build_object" if !args.len().is_multiple_of(2) => {
+            Err(EngineError {
+                message: "argument list must have even number of elements".to_string(),
+            })
+        }
+        "json_build_object" | "jsonb_build_object" => Ok(
             ScalarValue::Text(json_build_object_value(args)?.to_string()),
         ),
         "json_build_array" | "jsonb_build_array" => {
