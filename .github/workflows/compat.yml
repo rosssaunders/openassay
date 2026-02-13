@@ -10,12 +10,69 @@ on:
 jobs:
   regression:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-      - name: Run compatibility suite
-        run: scripts/compat/run_regression.sh
+
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Build release binary
+        run: cargo build --release --bin pg_server
+
+      - name: Run unit tests
+        run: cargo test -q
+
+      - name: Run PG18 compatibility suite
+        run: |
+          # Start pg_server in background
+          target/release/pg_server 127.0.0.1:55432 &
+          PG_PID=$!
+          sleep 3
+
+          # Run the full regression suite
+          python3 tests/regression/pg_compat/run_tests.py .
+          EXIT_CODE=$?
+
+          # Kill server
+          kill $PG_PID 2>/dev/null || true
+
+          # Show results
+          echo "=== RESULTS ==="
+          cat tests/regression/pg_compat/results/compatibility_summary.txt
+
+          # Fail if score drops below threshold
+          SCORE=$(python3 -c "
+          import json
+          with open('tests/regression/pg_compat/results/pg18_compatibility_results.json') as f:
+              data = json.load(f)
+          total = sum(v.get('total', 0) for v in data.values() if isinstance(v, dict))
+          passed = sum(v.get('passed', 0) for v in data.values() if isinstance(v, dict))
+          pct = (passed / total * 100) if total > 0 else 0
+          print(f'{pct:.1f}')
+          ")
+          echo "Score: ${SCORE}%"
+
+          # Fail if below 95%
+          python3 -c "
+          score = float('${SCORE}')
+          if score < 95.0:
+              print(f'FAIL: Score {score}% is below 95% threshold')
+              exit(1)
+          else:
+              print(f'PASS: Score {score}% meets 95% threshold')
+          "
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-results
+          path: tests/regression/pg_compat/results/
