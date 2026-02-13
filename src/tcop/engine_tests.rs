@@ -5584,3 +5584,74 @@ fn test_exclude_current_row() {
         assert_eq!(result.rows[2][1], ScalarValue::Int(3)); // 1+2
     });
 }
+
+#[test]
+fn test_like_escape() {
+    let result = run("SELECT 'abc%def' LIKE 'abc!%def' ESCAPE '!'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
+    
+    let result = run("SELECT 'abc_def' LIKE 'abc!_def' ESCAPE '!'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
+    
+    let result = run("SELECT 'abc%def' LIKE 'abc%def' ESCAPE '!'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
+    
+    let result = run("SELECT 'abcXdef' LIKE 'abc!%def' ESCAPE '!'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(false));
+    
+    // Test with backslash escape
+    let result = run("SELECT 'abc\\def' LIKE 'abc\\\\def' ESCAPE '\\'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
+    
+    // Test with custom escape character
+    let result = run("SELECT 'test#%data' LIKE 'test##%data' ESCAPE '#'");
+    assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
+}
+
+#[test]
+fn test_like_escape_null() {
+    let result = run("SELECT 'abc' LIKE 'abc' ESCAPE NULL");
+    assert_eq!(result.rows[0][0], ScalarValue::Null);
+}
+
+#[test]
+fn test_chr_unicode() {
+    // Test ASCII
+    let result = run("SELECT chr(65)");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("A".to_string()));
+    
+    // Test newline
+    let result = run("SELECT chr(10)");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("\n".to_string()));
+    
+    // Test Unicode beyond ASCII (Euro sign)
+    let result = run("SELECT chr(8364)");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("€".to_string()));
+    
+    // Test emoji (smiley face)
+    let result = run("SELECT chr(128512)");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("😀".to_string()));
+    
+    // Test null character
+    let result = run("SELECT chr(0)");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("\0".to_string()));
+}
+
+#[test]
+fn test_chr_invalid() {
+    with_isolated_state(|| {
+        // Negative numbers should fail
+        let statement = parse_statement("SELECT chr(-1)").unwrap();
+        let planned = plan_statement(statement).unwrap();
+        let result = block_on(execute_planned_query(&planned, &[]));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("out of range"));
+        
+        // Invalid Unicode code point (above valid range)
+        let statement = parse_statement("SELECT chr(1114112)").unwrap(); // 0x110000, first invalid code point
+        let planned = plan_statement(statement).unwrap();
+        let result = block_on(execute_planned_query(&planned, &[]));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message.contains("out of range"));
+    });
+}

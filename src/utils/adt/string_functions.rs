@@ -328,13 +328,13 @@ pub(crate) fn ascii_code(input: &str) -> i64 {
 }
 
 pub(crate) fn chr_from_code(code: i64) -> Result<String, EngineError> {
-    if !(0..=255).contains(&code) {
+    if code < 0 {
         return Err(EngineError {
-            message: "chr() expects value between 0 and 255".to_string(),
+            message: "character code out of range".to_string(),
         });
     }
     let ch = char::from_u32(code as u32).ok_or_else(|| EngineError {
-        message: "chr() expects valid Unicode code point".to_string(),
+        message: "character code out of range".to_string(),
     })?;
     Ok(ch.to_string())
 }
