@@ -775,15 +775,15 @@ fn parse_time_text(text: &str) -> Result<(u32, u32, u32, u32), EngineError> {
         // Check for timezone names (PST, EDT, etc.) - remove them
         let parts: Vec<&str> = cleaned.split_whitespace().collect();
         if parts.len() >= 2 {
-            // Check if last part looks like a timezone (all uppercase, 3-4 chars)
+            // Check if last part looks like a timezone (3 chars, all letters)
             let last = parts[parts.len() - 1];
-            if last.len() >= 3 && last.len() <= 5 && last.chars().all(|c| c.is_ascii_alphabetic()) {
+            if last.len() == 3 && last.chars().all(|c| c.is_ascii_alphabetic()) {
                 // Might be a timezone, check if it's a known one
                 let tz_upper = last.to_ascii_uppercase();
                 if matches!(
                     tz_upper.as_str(),
                     "PST" | "PDT" | "MST" | "MDT" | "CST" | "CDT" | "EST" | "EDT"
-                        | "UTC" | "GMT" | "Z"
+                        | "UTC" | "GMT"
                 ) {
                     // Join all parts except the last one
                     cleaned = parts[..parts.len() - 1].join(" ");
@@ -821,25 +821,24 @@ fn parse_time_text(text: &str) -> Result<(u32, u32, u32, u32), EngineError> {
     }
     
     // Handle special cases for rounding
-    // If microseconds round to next second
-    let (second, microsecond, extra_minute) = if microsecond >= 1_000_000 {
-        (second + 1, 0, 0)
+    let (second, microsecond) = if microsecond >= 1_000_000 {
+        (second + 1, 0)
     } else {
-        (second, microsecond, 0)
+        (second, microsecond)
     };
     
     // If seconds = 60 (leap second), round to next minute
-    let (minute, second, extra_hour) = if second >= 60 {
-        (minute + 1, 0, 0)
+    let (minute, second) = if second >= 60 {
+        (minute + 1, 0)
     } else {
-        (minute + extra_minute, second, 0)
+        (minute, second)
     };
     
     // If minutes overflow
     let (hour, minute) = if minute >= 60 {
         (hour + 1, 0)
     } else {
-        (hour + extra_hour, minute)
+        (hour, minute)
     };
     
     // Validate bounds
