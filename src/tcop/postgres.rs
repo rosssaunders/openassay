@@ -557,9 +557,11 @@ impl PostgresSession {
                     | FrontendMessage::Terminate
             )
         {
-            return Err(SessionError {
-                message: "COPY from stdin is in progress".to_string(),
-            });
+            // Auto-cancel the in-progress COPY so that the new message can proceed.
+            // This mirrors PostgreSQL behaviour when a client abandons COPY without
+            // sending CopyDone/CopyFail (e.g. when using the simple query protocol
+            // without a real COPY data stream).
+            self.copy_in_state = None;
         }
 
         if !self.startup_complete

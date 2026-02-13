@@ -274,6 +274,8 @@ impl Parser {
         if unique {
             return Err(self.error_at_current("expected INDEX after CREATE UNIQUE"));
         }
+        // Parse optional TEMP/TEMPORARY early so it's available for both VIEW and TABLE
+        let temporary_early = self.consume_keyword(Keyword::Temporary) || self.consume_keyword(Keyword::Temp);
         if self.consume_keyword(Keyword::View) {
             let if_not_exists = if self.consume_keyword(Keyword::If) {
                 self.expect_keyword(Keyword::Not, "expected NOT after IF in CREATE VIEW")?;
@@ -283,6 +285,14 @@ impl Parser {
                 false
             };
             let name = self.parse_qualified_name()?;
+            // Optional column aliases: CREATE VIEW v(a, b, c) AS ...
+            let column_aliases = if matches!(self.current_kind(), TokenKind::LParen)
+                && !self.peek_keyword(Keyword::As)
+            {
+                self.parse_identifier_list_in_parens()?
+            } else {
+                Vec::new()
+            };
             self.expect_keyword(Keyword::As, "expected AS in CREATE VIEW statement")?;
             let query = self.parse_query()?;
             let with_data = if materialized {
@@ -307,6 +317,7 @@ impl Parser {
                 with_data,
                 query,
                 if_not_exists,
+                column_aliases,
             }));
         }
         if or_replace {
@@ -317,7 +328,7 @@ impl Parser {
         }
         
         // Parse optional TEMP/TEMPORARY or UNLOGGED before TABLE
-        let temporary = self.consume_keyword(Keyword::Temporary) || self.consume_keyword(Keyword::Temp);
+        let temporary = temporary_early || self.consume_keyword(Keyword::Temporary) || self.consume_keyword(Keyword::Temp);
         let unlogged = self.consume_ident("unlogged");
         
         if self.consume_ident("role") {

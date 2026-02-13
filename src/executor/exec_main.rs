@@ -2197,22 +2197,27 @@ fn eval_group_expr<'a>(
                             message: "grouping() does not accept aggregate modifiers".to_string(),
                         });
                     }
-                    if args.len() != 1 {
+                    if args.is_empty() {
                         return Err(EngineError {
-                            message: "grouping() expects exactly one argument".to_string(),
+                            message: "too few arguments".to_string(),
                         });
                     }
-                    let Some(key) = identifier_key(&args[0]) else {
-                        return Err(EngineError {
-                            message: "grouping() expects a column reference".to_string(),
-                        });
-                    };
-                    let value = if grouping.current_grouping.contains(&key) {
-                        0
-                    } else {
-                        1
-                    };
-                    return Ok(ScalarValue::Int(value));
+                    // PostgreSQL GROUPING() returns a bitmask: for each argument
+                    // (left to right), shift left and set the low bit to 1 if
+                    // the column is NOT in the current grouping set, 0 if it is.
+                    let mut bitmask: i64 = 0;
+                    for arg in args {
+                        bitmask <<= 1;
+                        let Some(key) = identifier_key(arg) else {
+                            return Err(EngineError {
+                                message: "arguments to GROUPING must be grouping expressions of the associated query level".to_string(),
+                            });
+                        };
+                        if !grouping.current_grouping.contains(&key) {
+                            bitmask |= 1;
+                        }
+                    }
+                    return Ok(ScalarValue::Int(bitmask));
                 }
                 if is_aggregate_function(&fn_name) {
                     return eval_aggregate_function(

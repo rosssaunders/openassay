@@ -51,7 +51,22 @@ pub(crate) async fn execute_create_view_internal(
             crate::tcop::engine::require_relation_owner(&existing)?;
         }
     }
-    let columns = crate::tcop::engine::derive_query_columns(&create.query)?;
+    let mut columns = crate::tcop::engine::derive_query_columns(&create.query)?;
+    // Apply column aliases from CREATE VIEW v(a, b, c) AS ...
+    if !create.column_aliases.is_empty() {
+        if create.column_aliases.len() > columns.len() {
+            return Err(EngineError {
+                message: format!(
+                    "CREATE VIEW specifies {} column names, but query produces {} columns",
+                    create.column_aliases.len(),
+                    columns.len()
+                ),
+            });
+        }
+        for (i, alias) in create.column_aliases.iter().enumerate() {
+            columns[i] = alias.clone();
+        }
+    }
     let rows = if create.materialized && create.with_data {
         crate::tcop::engine::execute_query(&create.query, params)
             .await?

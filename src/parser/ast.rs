@@ -447,6 +447,7 @@ pub struct CreateViewStatement {
     pub with_data: bool,
     pub query: Query,
     pub if_not_exists: bool,
+    pub column_aliases: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
