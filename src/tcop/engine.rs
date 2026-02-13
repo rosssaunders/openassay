@@ -1800,23 +1800,27 @@ async fn execute_merge(
                         {
                             continue;
                         }
-                        let target_indexes = resolve_insert_target_indexes(&table, columns)?;
-                        if values.len() != target_indexes.len() {
-                            return Err(EngineError {
-                                message: format!(
-                                    "MERGE INSERT has {} expressions but {} target columns",
-                                    values.len(),
-                                    target_indexes.len()
-                                ),
-                            });
-                        }
                         let mut row = vec![ScalarValue::Null; table.columns().len()];
                         let mut provided = vec![false; table.columns().len()];
-                        for (expr, col_idx) in values.iter().zip(target_indexes.iter()) {
-                            let raw = eval_expr(expr, &source_scope, params).await?;
-                            let column = &table.columns()[*col_idx];
-                            row[*col_idx] = coerce_value_for_column(raw, column)?;
-                            provided[*col_idx] = true;
+                        if columns.is_empty() && values.is_empty() {
+                            // INSERT DEFAULT VALUES — all columns use defaults
+                        } else {
+                            let target_indexes = resolve_insert_target_indexes(&table, columns)?;
+                            if values.len() != target_indexes.len() {
+                                return Err(EngineError {
+                                    message: format!(
+                                        "MERGE INSERT has {} expressions but {} target columns",
+                                        values.len(),
+                                        target_indexes.len()
+                                    ),
+                                });
+                            }
+                            for (expr, col_idx) in values.iter().zip(target_indexes.iter()) {
+                                let raw = eval_expr(expr, &source_scope, params).await?;
+                                let column = &table.columns()[*col_idx];
+                                row[*col_idx] = coerce_value_for_column(raw, column)?;
+                                provided[*col_idx] = true;
+                            }
                         }
                         for (idx, column) in table.columns().iter().enumerate() {
                             if !provided[idx]

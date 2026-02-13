@@ -514,6 +514,23 @@ impl Parser {
             |k| matches!(k, TokenKind::RParen),
             "expected ')' after column definitions",
         )?;
+
+        // Parse optional WITH (...) storage parameters — ignore
+        if self.consume_keyword(Keyword::With)
+            && self.consume_if(|k| matches!(k, TokenKind::LParen))
+        {
+                let mut depth = 1i32;
+                while depth > 0 {
+                    if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+                        depth += 1;
+                    } else if self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+                        depth -= 1;
+                    } else {
+                        self.advance();
+                    }
+                }
+        }
+
         Ok(Statement::CreateTable(CreateTableStatement {
             name,
             columns,
@@ -924,21 +941,42 @@ impl Parser {
                         ));
                     }
                 } else if self.consume_keyword(Keyword::Insert) {
-                    let columns = if matches!(self.current_kind(), TokenKind::LParen) {
-                        self.parse_identifier_list_in_parens()?
+                    // INSERT DEFAULT VALUES — insert all defaults
+                    if self.consume_keyword(Keyword::Default) {
+                        self.expect_keyword(
+                            Keyword::Values,
+                            "expected VALUES after DEFAULT in MERGE INSERT clause",
+                        )?;
+                        when_clauses.push(MergeWhenClause::NotMatchedInsert {
+                            condition,
+                            columns: Vec::new(),
+                            values: Vec::new(),
+                        });
                     } else {
-                        Vec::new()
-                    };
-                    self.expect_keyword(
-                        Keyword::Values,
-                        "expected VALUES in MERGE INSERT clause",
-                    )?;
-                    let values = self.parse_insert_values_row()?;
-                    when_clauses.push(MergeWhenClause::NotMatchedInsert {
-                        condition,
-                        columns,
-                        values,
-                    });
+                        let columns = if matches!(self.current_kind(), TokenKind::LParen) {
+                            // Peek ahead: if this is a column list, VALUES must follow
+                            let saved = self.idx;
+                            match self.parse_identifier_list_in_parens() {
+                                Ok(cols) if self.peek_keyword(Keyword::Values) => cols,
+                                _ => {
+                                    self.idx = saved;
+                                    Vec::new()
+                                }
+                            }
+                        } else {
+                            Vec::new()
+                        };
+                        self.expect_keyword(
+                            Keyword::Values,
+                            "expected VALUES in MERGE INSERT clause",
+                        )?;
+                        let values = self.parse_insert_values_row()?;
+                        when_clauses.push(MergeWhenClause::NotMatchedInsert {
+                            condition,
+                            columns,
+                            values,
+                        });
+                    }
                 } else if self.consume_keyword(Keyword::Do) {
                     self.expect_keyword(
                         Keyword::Nothing,
@@ -4213,6 +4251,11 @@ impl Parser {
                 self.advance();
                 Ok("interval".to_string())
             }
+            TokenKind::Keyword(kw) if Self::is_unreserved_keyword(kw) => {
+                let name = format!("{:?}", kw).to_ascii_lowercase();
+                self.advance();
+                Ok(name)
+            }
             _ => Err(self.error_at_current("expected identifier")),
         }
     }
@@ -4283,6 +4326,91 @@ impl Parser {
         })
     }
 
+    /// Returns true if the keyword is unreserved in PostgreSQL and can be used as an identifier.
+    fn is_unreserved_keyword(kw: &Keyword) -> bool {
+        matches!(
+            kw,
+            Keyword::Target
+                | Keyword::Source
+                | Keyword::Matched
+                | Keyword::Nothing
+                | Keyword::Filter
+                | Keyword::First
+                | Keyword::Last
+                | Keyword::Data
+                | Keyword::Always
+                | Keyword::Restart
+                | Keyword::Start
+                | Keyword::Depth
+                | Keyword::Breadth
+                | Keyword::Search
+                | Keyword::Cycle
+                | Keyword::Materialized
+                | Keyword::Verbose
+                | Keyword::Local
+                | Keyword::Reset
+                | Keyword::Replace
+                | Keyword::Cascade
+                | Keyword::Restrict
+                | Keyword::Cache
+                | Keyword::Increment
+                | Keyword::MinValue
+                | Keyword::MaxValue
+                | Keyword::No
+                | Keyword::Identity
+                | Keyword::Generated
+                | Keyword::Sets
+                | Keyword::Cube
+                | Keyword::Rollup
+                | Keyword::Within
+                | Keyword::Groups
+                | Keyword::Exclude
+                | Keyword::Preceding
+                | Keyword::Following
+                | Keyword::Unbounded
+                | Keyword::Range
+                | Keyword::Rows
+                | Keyword::Row
+                | Keyword::Merge
+                | Keyword::Rename
+                | Keyword::Column
+                | Keyword::Schema
+                | Keyword::Index
+                | Keyword::Sequence
+                | Keyword::View
+                | Keyword::Extension
+                | Keyword::Function
+                | Keyword::Returns
+                | Keyword::Language
+                | Keyword::Temporary
+                | Keyword::Temp
+                | Keyword::Type
+                | Keyword::Enum
+                | Keyword::Domain
+                | Keyword::Placing
+                | Keyword::Add
+                | Keyword::Concurrently
+                | Keyword::Do
+                | Keyword::Conflict
+                | Keyword::Key
+                | Keyword::Partition
+                | Keyword::Transaction
+                | Keyword::Explain
+                | Keyword::Analyze
+                | Keyword::Show
+                | Keyword::Discard
+                | Keyword::Listen
+                | Keyword::Notify
+                | Keyword::Unlisten
+                | Keyword::Savepoint
+                | Keyword::Release
+                | Keyword::Returning
+                | Keyword::Recursive
+                | Keyword::Refresh
+                | Keyword::Window
+        )
+    }
+
     fn parse_qualified_name(&mut self) -> Result<Vec<String>, ParseError> {
         let mut out = vec![self.parse_identifier()?];
         while self.consume_if(|k| matches!(k, TokenKind::Dot)) {
@@ -4317,6 +4445,11 @@ impl Parser {
             TokenKind::Keyword(Keyword::Interval) => {
                 self.advance();
                 Ok("interval".to_string())
+            }
+            TokenKind::Keyword(kw) if Self::is_unreserved_keyword(kw) => {
+                let name = format!("{:?}", kw).to_ascii_lowercase();
+                self.advance();
+                Ok(name)
             }
             _ => Err(self.error_at_current("expected identifier")),
         }
