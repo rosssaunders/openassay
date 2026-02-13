@@ -1667,27 +1667,72 @@ pub(crate) fn eval_cast_scalar(
             )?))
         }
         "int2" | "smallint" => {
-            let val = parse_i64_scalar(&value, "cannot cast value to smallint")?;
-            crate::utils::adt::int_arithmetic::validate_int2(val)?;
-            Ok(ScalarValue::Int(val))
+            match &value {
+                ScalarValue::Float(v) => {
+                    let result = crate::utils::adt::float::float8_to_int2(*v)?;
+                    Ok(ScalarValue::Int(result))
+                }
+                _ => {
+                    let val = parse_i64_scalar(&value, "cannot cast value to smallint")?;
+                    crate::utils::adt::int_arithmetic::validate_int2(val)?;
+                    Ok(ScalarValue::Int(val))
+                }
+            }
         }
         "int4" | "integer" | "int" => {
-            let val = parse_i64_scalar(&value, "cannot cast value to integer")?;
-            crate::utils::adt::int_arithmetic::validate_int4(val)?;
-            Ok(ScalarValue::Int(val))
+            match &value {
+                ScalarValue::Float(v) => {
+                    let result = crate::utils::adt::float::float8_to_int4(*v)?;
+                    Ok(ScalarValue::Int(result))
+                }
+                _ => {
+                    let val = parse_i64_scalar(&value, "cannot cast value to integer")?;
+                    crate::utils::adt::int_arithmetic::validate_int4(val)?;
+                    Ok(ScalarValue::Int(val))
+                }
+            }
         }
-        "int8" | "bigint" => Ok(ScalarValue::Int(parse_i64_scalar(
-            &value,
-            "cannot cast value to bigint",
-        )?)),
-        "float4" | "real" => Ok(ScalarValue::Float(parse_f64_scalar(
-            &value,
-            "cannot cast value to real",
-        )?)),
-        "float8" | "double precision" => Ok(ScalarValue::Float(parse_f64_scalar(
-            &value,
-            "cannot cast value to double precision",
-        )?)),
+        "int8" | "bigint" => {
+            match &value {
+                ScalarValue::Float(v) => {
+                    let result = crate::utils::adt::float::float8_to_int8(*v)?;
+                    Ok(ScalarValue::Int(result))
+                }
+                _ => Ok(ScalarValue::Int(parse_i64_scalar(
+                    &value,
+                    "cannot cast value to bigint",
+                )?)),
+            }
+        }
+        "float4" | "real" => {
+            match &value {
+                ScalarValue::Float(v) => {
+                    let result = crate::utils::adt::float::float8_to_float4(*v)?;
+                    Ok(ScalarValue::Float(result))
+                }
+                ScalarValue::Int(v) => Ok(ScalarValue::Float(*v as f64)),
+                ScalarValue::Text(s) => {
+                    let result = crate::utils::adt::float::float4in(s)?;
+                    Ok(ScalarValue::Float(result))
+                }
+                _ => Err(EngineError {
+                    message: "cannot cast value to real".to_string(),
+                }),
+            }
+        }
+        "float8" | "double precision" => {
+            match &value {
+                ScalarValue::Float(v) => Ok(ScalarValue::Float(*v)),
+                ScalarValue::Int(v) => Ok(ScalarValue::Float(*v as f64)),
+                ScalarValue::Text(s) => {
+                    let result = crate::utils::adt::float::float8in(s)?;
+                    Ok(ScalarValue::Float(result))
+                }
+                _ => Err(EngineError {
+                    message: "cannot cast value to double precision".to_string(),
+                }),
+            }
+        },
         "text" => {
             // PostgreSQL's boolout outputs "true"/"false" when casting to text
             match &value {
@@ -2124,13 +2169,24 @@ fn numeric_div(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Eng
     }
     let left_num = parse_numeric_operand(&left)?;
     let right_num = parse_numeric_operand(&right)?;
-    match (left_num, right_num) {
-        (NumericOperand::Int(_), NumericOperand::Int(0))
-        | (NumericOperand::Int(_), NumericOperand::Float(0.0))
-        | (NumericOperand::Float(_), NumericOperand::Int(0))
-        | (NumericOperand::Float(_), NumericOperand::Float(0.0)) => Err(EngineError {
+
+    // NaN handling: NaN / anything = NaN, anything / NaN = NaN
+    let left_is_nan = matches!(left_num, NumericOperand::Float(v) if v.is_nan());
+    let right_is_nan = matches!(right_num, NumericOperand::Float(v) if v.is_nan());
+    if left_is_nan || right_is_nan {
+        return Ok(ScalarValue::Float(f64::NAN));
+    }
+
+    // Check for zero divisor
+    let right_is_zero = matches!(right_num, NumericOperand::Int(0))
+        || matches!(right_num, NumericOperand::Float(v) if v == 0.0);
+    if right_is_zero {
+        return Err(EngineError {
             message: "division by zero".to_string(),
-        }),
+        });
+    }
+
+    match (left_num, right_num) {
         (NumericOperand::Int(a), NumericOperand::Int(b)) => {
             Ok(ScalarValue::Int(crate::utils::adt::int_arithmetic::int4_div(a, b)?))
         }

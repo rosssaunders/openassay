@@ -16,13 +16,7 @@ impl ScalarValue {
             Self::Null => "NULL".to_string(),
             Self::Bool(v) => if *v { "t" } else { "f" }.to_string(),
             Self::Int(v) => v.to_string(),
-            Self::Float(v) => {
-                let mut text = v.to_string();
-                if !text.contains('.') && !text.contains('e') && !text.contains('E') {
-                    text.push_str(".0");
-                }
-                text
-            }
+            Self::Float(v) => render_float8(*v),
             Self::Text(v) => v.clone(),
             Self::Array(values) => render_array_literal(values),
             Self::Record(values) => {
@@ -37,6 +31,44 @@ impl ScalarValue {
             }
         }
     }
+}
+
+/// Render a float8 (f64) value matching PostgreSQL's output format.
+/// PostgreSQL uses shortest-representation output (extra_float_digits = 1 by default in modern PG).
+/// Special values: NaN, Infinity, -Infinity.
+/// Integer-valued floats are rendered without decimal point (e.g. 0, 1, -5).
+pub fn render_float8(v: f64) -> String {
+    if v.is_nan() {
+        return "NaN".to_string();
+    }
+    if v.is_infinite() {
+        return if v.is_sign_positive() {
+            "Infinity".to_string()
+        } else {
+            "-Infinity".to_string()
+        };
+    }
+    // Use Rust's default Display which gives shortest representation
+    
+    v.to_string()
+}
+
+/// Render a float4 (f32) value matching PostgreSQL's output format.
+/// Float4 has less precision than float8, so we cast to f32 first.
+pub fn render_float4(v: f64) -> String {
+    let v32 = v as f32;
+    if v32.is_nan() {
+        return "NaN".to_string();
+    }
+    if v32.is_infinite() {
+        return if v32.is_sign_positive() {
+            "Infinity".to_string()
+        } else {
+            "-Infinity".to_string()
+        };
+    }
+    let text = format!("{}", v32);
+    text
 }
 
 fn render_array_literal(values: &[ScalarValue]) -> String {

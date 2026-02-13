@@ -687,8 +687,8 @@ pub(crate) fn pg_input_is_valid(
             // Try parsing as float or integer
             input.parse::<f64>().is_ok() || input.parse::<i64>().is_ok()
         }
-        "real" | "float4" => input.parse::<f32>().is_ok(),
-        "double precision" | "float8" | "float" => input.parse::<f64>().is_ok(),
+        "real" | "float4" => crate::utils::adt::float::float4in(input).is_ok(),
+        "double precision" | "float8" | "float" => crate::utils::adt::float::float8in(input).is_ok(),
         "boolean" | "bool" => {
             matches!(
                 input.to_lowercase().as_str(),
