@@ -408,12 +408,35 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
         _ => {}
     }
 
+    // Split date and time parts
+    // Be smart about this: spaces in dates like "January 8, 1999" should not be treated as date/time separators
+    // Only split if we see a time-like pattern (HH:MM:SS with colons)
     let (date_part, time_part) = if let Some(pos) = raw.find('T') {
-        (&raw[..pos], Some(&raw[pos + 1..]))
-    } else if let Some(pos) = raw.find(' ') {
+        // ISO 8601 format with 'T' separator
         (&raw[..pos], Some(&raw[pos + 1..]))
     } else {
-        (raw, None)
+        // Check for space followed by time pattern (must contain colon for time)
+        let mut date_end = raw.len();
+        let mut has_time = false;
+        
+        // Look for a space followed by something that looks like a time (contains colon)
+        for (i, c) in raw.char_indices() {
+            if c == ' ' && i + 1 < raw.len() {
+                let remaining = &raw[i + 1..];
+                // A time must contain a colon (HH:MM or HH:MM:SS format)
+                if remaining.contains(':') {
+                    date_end = i;
+                    has_time = true;
+                    break;
+                }
+            }
+        }
+        
+        if has_time {
+            (&raw[..date_end], Some(&raw[date_end + 1..]))
+        } else {
+            (raw, None)
+        }
     };
 
     let date = parse_date_text(date_part)?;

@@ -1632,9 +1632,10 @@ pub(crate) fn eval_cast_scalar(
             Ok(ScalarValue::Text(format_date(dt.date)))
         }
         "time" => {
-            // For now, just return the text representation
-            // A full implementation would parse and format time properly
-            Ok(ScalarValue::Text(value.render()))
+            // Parse and format time properly
+            use crate::utils::adt::datetime::{parse_datetime_scalar, format_time};
+            let dt = parse_datetime_scalar(&value)?;
+            Ok(ScalarValue::Text(format_time(dt.hour, dt.minute, dt.second, dt.microsecond)))
         }
         "timestamp" => {
             let dt = parse_datetime_scalar(&value)?;

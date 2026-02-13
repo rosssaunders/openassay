@@ -5655,3 +5655,105 @@ fn test_chr_invalid() {
         assert!(result.unwrap_err().message.contains("out of range"));
     });
 }
+
+// Phase 12: Date/Time/Timestamp Integration Tests
+
+#[test]
+fn test_date_parsing_formats() {
+    // Test ISO format
+    let result = run("SELECT date '1999-01-08'");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
+    
+    // Test month name format
+    let result = run("SELECT date 'January 8, 1999'");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
+    
+    // Test compact format YYYYMMDD
+    let result = run("SELECT date '19990108'");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
+    
+    // Test compact format YYMMDD
+    let result = run("SELECT date '990108'");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
+    
+    // Test year.day format
+    let result = run("SELECT date '1999.008'");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
+    
+    // Test Julian date
+    let result = run("SELECT date 'J2451187'");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
+}
+
+#[test]
+fn test_date_bc_format() {
+    let result = run("SELECT date '2040-04-10 BC'");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("-2039-04-10".to_string()));
+}
+
+#[test]
+fn test_time_with_microseconds() {
+    // Test time with full microsecond precision
+    let result = run("SELECT '23:59:59.999999'::time");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("23:59:59.999999".to_string()));
+    
+    // Test time with rounding to next second
+    let result = run("SELECT '23:59:59.9999999'::time");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("24:00:00".to_string()));
+    
+    // Test time with microseconds that get truncated to fewer digits
+    let result = run("SELECT '12:30:45.12'::time");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("12:30:45.12".to_string()));
+}
+
+#[test]
+fn test_time_edge_cases() {
+    // Test midnight as 24:00:00
+    let result = run("SELECT '24:00:00'::time");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("24:00:00".to_string()));
+    
+    // Test leap second rounding
+    let result = run("SELECT '23:59:60'::time");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("24:00:00".to_string()));
+}
+
+#[test]
+fn test_time_am_pm() {
+    let result = run("SELECT '11:59:59.99 PM'::time");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("23:59:59.99".to_string()));
+    
+    let result = run("SELECT '12:00:00 AM'::time");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("00:00:00".to_string()));
+    
+    let result = run("SELECT '12:00:00 PM'::time");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("12:00:00".to_string()));
+}
+
+#[test]
+fn test_extract_microsecond() {
+    let result = run("SELECT EXTRACT(MICROSECOND FROM TIME '13:30:25.575401')");
+    assert_eq!(result.rows[0][0], ScalarValue::Int(25575401));
+}
+
+#[test]
+fn test_extract_millisecond() {
+    let result = run("SELECT EXTRACT(MILLISECOND FROM TIME '13:30:25.575401')");
+    assert_eq!(result.rows[0][0], ScalarValue::Float(25575.401));
+}
+
+#[test]
+fn test_extract_second_fractional() {
+    let result = run("SELECT EXTRACT(SECOND FROM TIME '13:30:25.575401')");
+    assert_eq!(result.rows[0][0], ScalarValue::Float(25.575401));
+}
+
+#[test]
+fn test_special_datetime_values() {
+    // Test epoch
+    let result = run("SELECT date 'epoch'");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("1970-01-01".to_string()));
+    
+    // Test timestamp epoch
+    let result = run("SELECT timestamp 'epoch'");
+    assert_eq!(result.rows[0][0], ScalarValue::Text("1970-01-01 00:00:00".to_string()));
+}
