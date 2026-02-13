@@ -3483,6 +3483,7 @@ pub(crate) fn row_key(row: &[ScalarValue]) -> String {
             ScalarValue::Float(f) => format!("F:{f}"),
             ScalarValue::Text(t) => format!("T:{t}"),
             ScalarValue::Array(_) => format!("A:{}", v.render()),
+            ScalarValue::Record(_) => format!("R:{}", v.render()),
         })
         .collect::<Vec<_>>()
         .join("|")

@@ -840,6 +840,8 @@ pub enum Expr {
     Exists(Box<Query>),
     ScalarSubquery(Box<Query>),
     ArrayConstructor(Vec<Expr>),
+    /// Row constructor: ROW(a, b, c) or (a, b, c)
+    RowConstructor(Vec<Expr>),
     ArraySubquery(Box<Query>),
     InList {
         expr: Box<Expr>,

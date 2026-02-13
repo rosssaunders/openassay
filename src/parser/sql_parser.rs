@@ -3049,7 +3049,16 @@ impl Parser {
                     |k| matches!(k, TokenKind::LParen),
                     "expected '(' after ANY/ALL",
                 )?;
-                let rhs = self.parse_expr()?;
+                // Check if this is a subquery: = ANY (SELECT ...)
+                let rhs = if self.peek_keyword(Keyword::Select)
+                    || self.peek_keyword(Keyword::With)
+                    || self.peek_keyword(Keyword::Values)
+                {
+                    let query = self.parse_query()?;
+                    Expr::ArraySubquery(Box::new(query))
+                } else {
+                    self.parse_expr()?
+                };
                 self.expect_token(
                     |k| matches!(k, TokenKind::RParen),
                     "expected ')' after ANY/ALL expression",
@@ -3103,6 +3112,23 @@ impl Parser {
                 return Ok(Expr::ArraySubquery(Box::new(query)));
             }
             return Err(self.error_at_current("expected ARRAY[ or ARRAY("));
+        }
+        // ROW constructor: ROW(expr, expr, ...)
+        if self.peek_keyword(Keyword::Row) && self.peek_nth_kind(1).is_some_and(|k| matches!(k, TokenKind::LParen)) {
+            self.advance(); // consume ROW
+            self.advance(); // consume (
+            let mut fields = Vec::new();
+            if !matches!(self.current_kind(), TokenKind::RParen) {
+                fields.push(self.parse_expr()?);
+                while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    fields.push(self.parse_expr()?);
+                }
+            }
+            self.expect_token(
+                |k| matches!(k, TokenKind::RParen),
+                "expected ')' after ROW constructor",
+            )?;
+            return Ok(Expr::RowConstructor(fields));
         }
         // Typed literals: DATE 'literal', TIME 'literal', TIMESTAMP 'literal', INTERVAL 'literal'
         // Only match if followed by a string literal (not a parenthesis for function calls)
@@ -3201,6 +3227,19 @@ impl Parser {
             }
 
             let expr = self.parse_expr()?;
+            // Check for comma → row constructor (a, b, c)
+            if self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                let mut fields = vec![expr];
+                fields.push(self.parse_expr()?);
+                while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    fields.push(self.parse_expr()?);
+                }
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' to close row constructor",
+                )?;
+                return Ok(Expr::RowConstructor(fields));
+            }
             self.expect_token(
                 |k| matches!(k, TokenKind::RParen),
                 "expected ')' to close expression",
@@ -4405,7 +4444,7 @@ impl Parser {
     fn current_starts_query(&self) -> bool {
         matches!(
             self.current_kind(),
-            TokenKind::Keyword(Keyword::Select | Keyword::With)
+            TokenKind::Keyword(Keyword::Select | Keyword::With | Keyword::Values)
         )
     }
 
@@ -4426,11 +4465,44 @@ impl Parser {
         let mut analyze = false;
         let mut verbose = false;
         // Check for EXPLAIN (options) or EXPLAIN ANALYZE VERBOSE
-        if self.consume_keyword(Keyword::Analyze) {
-            analyze = true;
-        }
-        if self.consume_keyword(Keyword::Verbose) {
-            verbose = true;
+        if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+            // EXPLAIN (option [, option ...]) statement
+            loop {
+                if self.consume_keyword(Keyword::Analyze) {
+                    analyze = true;
+                } else if self.consume_keyword(Keyword::Verbose) {
+                    verbose = true;
+                } else {
+                    // Skip unknown options like COSTS, BUFFERS, TIMING, FORMAT, etc.
+                    // Consume the option name
+                    if matches!(
+                        self.current_kind(),
+                        TokenKind::Identifier(_) | TokenKind::Keyword(_)
+                    ) {
+                        self.advance();
+                    }
+                    // Optionally consume ON/OFF/TRUE/FALSE or other value
+                    if matches!(
+                        self.current_kind(),
+                        TokenKind::Identifier(_) | TokenKind::Keyword(_)
+                    ) {
+                        self.advance();
+                    }
+                }
+                if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    break;
+                }
+            }
+            if !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+                return Err(self.error_at_current("expected ')' after EXPLAIN options"));
+            }
+        } else {
+            if self.consume_keyword(Keyword::Analyze) {
+                analyze = true;
+            }
+            if self.consume_keyword(Keyword::Verbose) {
+                verbose = true;
+            }
         }
         let inner = self.parse_top_level_statement()?;
         Ok(Statement::Explain(ExplainStatement {

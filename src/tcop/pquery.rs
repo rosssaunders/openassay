@@ -361,6 +361,7 @@ fn infer_expr_type_oid(
             infer_expr_type_oid(expr, scope, ctes)
         }
         Expr::TypedLiteral { type_name, .. } => cast_type_name_to_oid(type_name),
+        Expr::RowConstructor(_) => 2249, // record type OID
     }
 }
 

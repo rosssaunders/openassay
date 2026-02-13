@@ -463,6 +463,11 @@ fn collect_window_exprs(expr: &Expr, out: &mut Vec<Expr>) {
                 collect_window_exprs(end, out);
             }
         }
+        Expr::RowConstructor(exprs) => {
+            for e in exprs {
+                collect_window_exprs(e, out);
+            }
+        }
     }
 }
 
