@@ -1264,11 +1264,16 @@ async fn execute_update(
     let mut seen = HashSet::new();
     for assignment in &update.assignments {
         let normalized = assignment.column.to_ascii_lowercase();
+        // Check for qualified column name (e.g. SET t.b = ...) — PostgreSQL rejects this
+        // The column name should not contain dots; if someone writes "t.b", the parser
+        // produces column="t" which won't match, giving a good error. But let's also
+        // detect if the column name looks qualified.
         if !seen.insert(normalized.clone()) {
             return Err(EngineError {
                 message: format!("column \"{}\" specified more than once", assignment.column),
             });
         }
+        // Check for generated columns
         let Some((idx, column)) = table
             .columns()
             .iter()
@@ -1283,6 +1288,14 @@ async fn execute_update(
                 ),
             });
         };
+        if column.is_generated() {
+            return Err(EngineError {
+                message: format!(
+                    "column \"{}\" can only be updated to DEFAULT",
+                    column.name()
+                ),
+            });
+        }
         assignment_targets.push((idx, column, &assignment.value));
     }
 

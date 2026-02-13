@@ -361,6 +361,7 @@ pub enum AssignmentSubscript {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UpdateStatement {
     pub table_name: Vec<String>,
+    pub alias: Option<String>,
     pub assignments: Vec<Assignment>,
     pub from: Vec<TableExpression>,
     pub where_clause: Option<Expr>,
@@ -806,8 +807,15 @@ pub enum Expr {
     Float(String),
     Boolean(bool),
     Null,
-    /// DEFAULT keyword in INSERT VALUES — replaced by column default during execution
+    /// DEFAULT keyword in INSERT VALUES or UPDATE SET — replaced by column default during execution
     Default,
+    /// Reference to a column from a multi-column subquery in UPDATE SET (col1, col2) = (SELECT ...)
+    /// The subquery is shared across all columns; index picks the column position.
+    MultiColumnSubqueryRef {
+        subquery: Box<Query>,
+        index: usize,
+        total: usize,
+    },
     Parameter(i32),
     FunctionCall {
         name: Vec<String>,

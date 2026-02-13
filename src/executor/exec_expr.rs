@@ -171,8 +171,27 @@ pub(crate) fn eval_expr<'a>(
     Box::pin(async move {
         match expr {
             Expr::Default => Err(EngineError {
-                message: "DEFAULT is only allowed in INSERT VALUES".to_string(),
+                message: "DEFAULT is only allowed in INSERT VALUES or UPDATE SET".to_string(),
             }),
+            Expr::MultiColumnSubqueryRef { subquery, index, .. } => {
+                let result = crate::tcop::engine::execute_query(subquery, params).await?;
+                if result.rows.len() > 1 {
+                    return Err(EngineError {
+                        message: "more than one row returned by a subquery used as an expression".to_string(),
+                    });
+                }
+                if result.rows.is_empty() {
+                    Ok(ScalarValue::Null)
+                } else {
+                    let row = &result.rows[0];
+                    if *index >= row.len() {
+                        return Err(EngineError {
+                            message: format!("subquery must return {} columns", index + 1),
+                        });
+                    }
+                    Ok(row[*index].clone())
+                }
+            },
             Expr::Null => Ok(ScalarValue::Null),
             Expr::Boolean(v) => Ok(ScalarValue::Bool(*v)),
             Expr::Integer(v) => Ok(ScalarValue::Int(*v)),
@@ -446,8 +465,27 @@ pub(crate) fn eval_expr_with_window<'a>(
     Box::pin(async move {
         match expr {
             Expr::Default => Err(EngineError {
-                message: "DEFAULT is only allowed in INSERT VALUES".to_string(),
+                message: "DEFAULT is only allowed in INSERT VALUES or UPDATE SET".to_string(),
             }),
+            Expr::MultiColumnSubqueryRef { subquery, index, .. } => {
+                let result = crate::tcop::engine::execute_query(subquery, params).await?;
+                if result.rows.len() > 1 {
+                    return Err(EngineError {
+                        message: "more than one row returned by a subquery used as an expression".to_string(),
+                    });
+                }
+                if result.rows.is_empty() {
+                    Ok(ScalarValue::Null)
+                } else {
+                    let row = &result.rows[0];
+                    if *index >= row.len() {
+                        return Err(EngineError {
+                            message: format!("subquery must return {} columns", index + 1),
+                        });
+                    }
+                    Ok(row[*index].clone())
+                }
+            },
             Expr::Null => Ok(ScalarValue::Null),
             Expr::Boolean(v) => Ok(ScalarValue::Bool(*v)),
             Expr::Integer(v) => Ok(ScalarValue::Int(*v)),

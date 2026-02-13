@@ -664,11 +664,22 @@ impl Parser {
 
     fn parse_update_statement_after_keyword(&mut self) -> Result<UpdateStatement, ParseError> {
         let table_name = self.parse_qualified_name()?;
+
+        // Optional alias: UPDATE t AS alias SET ... or UPDATE t alias SET ...
+        let alias = if self.consume_keyword(Keyword::As)
+            || (!self.peek_keyword(Keyword::Set)
+                && matches!(self.current_kind(), TokenKind::Identifier(_)))
+        {
+            Some(self.parse_identifier()?)
+        } else {
+            None
+        };
+
         self.expect_keyword(Keyword::Set, "expected SET in UPDATE statement")?;
 
-        let mut assignments = vec![self.parse_assignment()?];
+        let mut assignments = self.parse_update_set_clause()?;
         while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
-            assignments.push(self.parse_assignment()?);
+            assignments.extend(self.parse_update_set_clause()?);
         }
         let from = if self.consume_keyword(Keyword::From) {
             self.parse_from_list()?
@@ -689,11 +700,135 @@ impl Parser {
 
         Ok(UpdateStatement {
             table_name,
+            alias,
             assignments,
             from,
             where_clause,
             returning,
         })
+    }
+
+    /// Parse a single SET clause, which can be either:
+    /// - `column = expr` (single column)
+    /// - `(col1, col2, ...) = (expr1, expr2, ...)` (multi-column)
+    /// - `(col1, col2, ...) = (SELECT ...)` (multi-column from subquery)
+    ///
+    /// Returns one or more assignments.
+    fn parse_update_set_clause(&mut self) -> Result<Vec<Assignment>, ParseError> {
+        // Multi-column SET: (col1, col2) = (expr1, expr2) or (col1, col2) = (SELECT ...)
+        if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+            let mut columns = vec![self.parse_identifier()?];
+            while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                columns.push(self.parse_identifier()?);
+            }
+            self.expect_token(
+                |k| matches!(k, TokenKind::RParen),
+                "expected ')' after column list in SET clause",
+            )?;
+            self.expect_token(
+                |k| matches!(k, TokenKind::Equal),
+                "expected '=' after column list in SET clause",
+            )?;
+
+            // Check if it's a ROW(...) constructor
+            if self.peek_keyword(Keyword::Row) {
+                self.advance(); // consume ROW
+                self.expect_token(|k| matches!(k, TokenKind::LParen), "expected '(' after ROW")?;
+                let values = self.parse_update_value_expr_list()?;
+                self.expect_token(|k| matches!(k, TokenKind::RParen), "expected ')' after ROW values")?;
+                if values.len() != columns.len() {
+                    return Err(self.error_at_current(&format!(
+                        "number of columns ({}) does not match number of values ({})",
+                        columns.len(),
+                        values.len()
+                    )));
+                }
+                return Ok(columns
+                    .into_iter()
+                    .zip(values)
+                    .map(|(column, value)| Assignment {
+                        column,
+                        subscripts: Vec::new(),
+                        value,
+                    })
+                    .collect());
+            }
+
+            // Must be ( ... ) — could be subquery or value list
+            self.expect_token(
+                |k| matches!(k, TokenKind::LParen),
+                "expected '(' after '=' in multi-column SET clause",
+            )?;
+
+            // Check if it starts with SELECT or WITH (subquery)
+            if self.peek_keyword(Keyword::Select) || self.peek_keyword(Keyword::With) {
+                // Subquery: (col1, col2) = (SELECT a, b FROM ...)
+                let query = self.parse_query()?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after subquery in SET clause",
+                )?;
+                // Create a MultiColumnSubquery expression for each column
+                let total = columns.len();
+                return Ok(columns
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, column)| Assignment {
+                        column,
+                        subscripts: Vec::new(),
+                        value: Expr::MultiColumnSubqueryRef {
+                            subquery: Box::new(query.clone()),
+                            index: i,
+                            total,
+                        },
+                    })
+                    .collect());
+            }
+
+            // Value list: (col1, col2) = (expr1, expr2)
+            let values = self.parse_update_value_expr_list()?;
+            self.expect_token(
+                |k| matches!(k, TokenKind::RParen),
+                "expected ')' after value list in SET clause",
+            )?;
+            if values.len() != columns.len() {
+                return Err(self.error_at_current(&format!(
+                    "number of columns ({}) does not match number of values ({})",
+                    columns.len(),
+                    values.len()
+                )));
+            }
+            return Ok(columns
+                .into_iter()
+                .zip(values)
+                .map(|(column, value)| Assignment {
+                    column,
+                    subscripts: Vec::new(),
+                    value,
+                })
+                .collect());
+        }
+
+        // Single column assignment
+        Ok(vec![self.parse_assignment()?])
+    }
+
+    /// Parse a comma-separated list of expressions that may include DEFAULT
+    fn parse_update_value_expr_list(&mut self) -> Result<Vec<Expr>, ParseError> {
+        let mut values = vec![self.parse_update_value_expr()?];
+        while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+            values.push(self.parse_update_value_expr()?);
+        }
+        Ok(values)
+    }
+
+    /// Parse an expression in UPDATE SET value position (allows DEFAULT)
+    fn parse_update_value_expr(&mut self) -> Result<Expr, ParseError> {
+        if self.consume_keyword(Keyword::Default) {
+            Ok(Expr::Default)
+        } else {
+            self.parse_expr()
+        }
     }
 
     fn parse_delete_statement(&mut self) -> Result<Statement, ParseError> {
@@ -1682,7 +1817,7 @@ impl Parser {
             |k| matches!(k, TokenKind::Equal),
             "expected '=' in assignment",
         )?;
-        let value = self.parse_expr()?;
+        let value = self.parse_update_value_expr()?;
         Ok(Assignment { column, subscripts, value })
     }
 

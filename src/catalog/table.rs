@@ -151,6 +151,12 @@ impl Column {
         self.default.as_ref()
     }
 
+    /// Returns whether this column is a generated column.
+    /// Currently always false as generated columns are not yet supported.
+    pub fn is_generated(&self) -> bool {
+        false
+    }
+
     pub fn set_name(&mut self, name: String) {
         self.name = name;
     }
