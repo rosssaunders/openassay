@@ -3062,9 +3062,7 @@ fn coerce_value_for_column(
         (TypeSignature::Float8, ScalarValue::Int(v)) => Ok(ScalarValue::Float(v as f64)),
         (TypeSignature::Float8, ScalarValue::Float(v)) => Ok(ScalarValue::Float(v)),
         (TypeSignature::Float8, ScalarValue::Text(v)) => {
-            let parsed = v.trim().parse::<f64>().map_err(|_| EngineError {
-                message: format!("invalid float literal for column \"{}\"", column.name()),
-            })?;
+            let parsed = crate::utils::adt::float::float8in(&v)?;
             Ok(ScalarValue::Float(parsed))
         }
         (TypeSignature::Text, ScalarValue::Text(v)) => Ok(ScalarValue::Text(v)),

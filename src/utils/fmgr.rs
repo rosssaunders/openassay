@@ -647,6 +647,91 @@ pub(crate) async fn eval_scalar_function(
         "width_bucket" if args.len() == 4 => eval_width_bucket(args),
         "scale" if args.len() == 1 => eval_scale(&args[0]),
         "factorial" if args.len() == 1 => eval_factorial(&args[0]),
+        // Hyperbolic functions
+        "sinh" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            Ok(ScalarValue::Float(coerce_to_f64(&args[0], "sinh()")?.sinh()))
+        }
+        "cosh" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            Ok(ScalarValue::Float(coerce_to_f64(&args[0], "cosh()")?.cosh()))
+        }
+        "tanh" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            Ok(ScalarValue::Float(coerce_to_f64(&args[0], "tanh()")?.tanh()))
+        }
+        "asinh" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            Ok(ScalarValue::Float(coerce_to_f64(&args[0], "asinh()")?.asinh()))
+        }
+        "acosh" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let v = coerce_to_f64(&args[0], "acosh()")?;
+            if v < 1.0 && !v.is_nan() {
+                return Err(EngineError { message: "input is out of range".to_string() });
+            }
+            Ok(ScalarValue::Float(v.acosh()))
+        }
+        "atanh" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let v = coerce_to_f64(&args[0], "atanh()")?;
+            if !(-1.0..=1.0).contains(&v) && !v.is_nan() {
+                return Err(EngineError { message: "input is out of range".to_string() });
+            }
+            Ok(ScalarValue::Float(v.atanh()))
+        }
+        // Degree-based trig functions
+        "sind" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let v = coerce_to_f64(&args[0], "sind()")?;
+            Ok(ScalarValue::Float(sind(v)))
+        }
+        "cosd" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let v = coerce_to_f64(&args[0], "cosd()")?;
+            Ok(ScalarValue::Float(cosd(v)))
+        }
+        "tand" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let v = coerce_to_f64(&args[0], "tand()")?;
+            Ok(ScalarValue::Float(tand(v)))
+        }
+        "cotd" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let v = coerce_to_f64(&args[0], "cotd()")?;
+            let t = tand(v);
+            if t == 0.0 {
+                return Err(EngineError { message: "division by zero".to_string() });
+            }
+            Ok(ScalarValue::Float(1.0 / t))
+        }
+        "asind" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let v = coerce_to_f64(&args[0], "asind()")?;
+            if !(-1.0..=1.0).contains(&v) {
+                return Err(EngineError { message: "input is out of range".to_string() });
+            }
+            Ok(ScalarValue::Float(v.asin().to_degrees()))
+        }
+        "acosd" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let v = coerce_to_f64(&args[0], "acosd()")?;
+            if !(-1.0..=1.0).contains(&v) {
+                return Err(EngineError { message: "input is out of range".to_string() });
+            }
+            Ok(ScalarValue::Float(v.acos().to_degrees()))
+        }
+        "atand" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            let v = coerce_to_f64(&args[0], "atand()")?;
+            Ok(ScalarValue::Float(v.atan().to_degrees()))
+        }
+        "atan2d" if args.len() == 2 => {
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
+            let y = coerce_to_f64(&args[0], "atan2d()")?;
+            let x = coerce_to_f64(&args[1], "atan2d()")?;
+            Ok(ScalarValue::Float(y.atan2(x).to_degrees()))
+        }
         "pi" if args.is_empty() => Ok(ScalarValue::Float(std::f64::consts::PI)),
         "random" if args.is_empty() => Ok(ScalarValue::Float(rand_f64())),
         "gen_random_uuid" if args.is_empty() => Ok(ScalarValue::Text(gen_random_uuid())),
@@ -1458,5 +1543,57 @@ pub(crate) async fn eval_scalar_function(
         _ => Err(EngineError {
             message: format!("unsupported function call {}", fn_name),
         }),
+    }
+}
+
+/// PostgreSQL-compatible sind() — exact results for multiples of 30 degrees.
+fn sind(x: f64) -> f64 {
+    if x.is_nan() || x.is_infinite() {
+        return f64::NAN;
+    }
+    // Normalize to [0, 360)
+    let mut arg = x % 360.0;
+    if arg < 0.0 { arg += 360.0; }
+    match arg as i64 {
+        0 | 180 => 0.0,
+        30 | 150 => 0.5,
+        90 => 1.0,
+        210 | 330 => -0.5,
+        270 => -1.0,
+        _ => (x.to_radians()).sin(),
+    }
+}
+
+/// PostgreSQL-compatible cosd() — exact results for multiples of 30 degrees.
+fn cosd(x: f64) -> f64 {
+    if x.is_nan() || x.is_infinite() {
+        return f64::NAN;
+    }
+    let mut arg = x % 360.0;
+    if arg < 0.0 { arg += 360.0; }
+    match arg as i64 {
+        0 | 360 => 1.0,
+        60 | 300 => 0.5,
+        90 | 270 => 0.0,
+        120 | 240 => -0.5,
+        180 => -1.0,
+        _ => (x.to_radians()).cos(),
+    }
+}
+
+/// PostgreSQL-compatible tand() — exact results for multiples of 45 degrees.
+fn tand(x: f64) -> f64 {
+    if x.is_nan() || x.is_infinite() {
+        return f64::NAN;
+    }
+    let mut arg = x % 360.0;
+    if arg < 0.0 { arg += 360.0; }
+    match arg as i64 {
+        0 | 180 | 360 => 0.0,
+        45 | 225 => 1.0,
+        135 | 315 => -1.0,
+        90 => f64::INFINITY,
+        270 => f64::NEG_INFINITY,
+        _ => (x.to_radians()).tan(),
     }
 }
