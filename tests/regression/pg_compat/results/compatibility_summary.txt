@@ -1,7 +1,7 @@
 PostgreSQL 18 Compatibility Test Results
 ==================================================
 
-Overall Score: 12329/12329 statements passed (100.0%)
+Overall Score: 12015/12329 statements passed (97.5%)
 
 Per-file Results:
 --------------------
@@ -16,7 +16,7 @@ aggregates.sql             619/619  (100.0%)
 window.sql                 429/429  (100.0%)
 union.sql                  207/207  (100.0%)
 case.sql                    70/70   (100.0%)
-with.sql                   314/314  (100.0%)
+with.sql                     0/314  (  0.0%)
 boolean.sql                 98/98   (100.0%)
 strings.sql                550/550  (100.0%)
 text.sql                    73/73   (100.0%)

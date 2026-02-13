@@ -130,7 +130,7 @@ CREATE TABLE onek (
 	string4		name
 );
 
-\set filename '/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/data/onek.data'
+\set filename 'tests/regression/pg_compat/data/onek.data'
 COPY onek FROM :'filename';
 VACUUM ANALYZE onek;
 
@@ -156,7 +156,7 @@ CREATE TABLE tenk1 (
 	string4		name
 );
 
-\set filename '/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/data/tenk.data'
+\set filename 'tests/regression/pg_compat/data/tenk.data'
 COPY tenk1 FROM :'filename';
 VACUUM ANALYZE tenk1;
 
@@ -169,7 +169,7 @@ CREATE TABLE person (
 	location 	point
 );
 
-\set filename '/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/data/person.data'
+\set filename 'tests/regression/pg_compat/data/person.data'
 COPY person FROM :'filename';
 VACUUM ANALYZE person;
 
@@ -178,7 +178,7 @@ CREATE TABLE emp (
 	manager 	name
 ) INHERITS (person);
 
-\set filename '/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/data/emp.data'
+\set filename 'tests/regression/pg_compat/data/emp.data'
 COPY emp FROM :'filename';
 VACUUM ANALYZE emp;
 
@@ -186,7 +186,7 @@ CREATE TABLE student (
 	gpa 		float8
 ) INHERITS (person);
 
-\set filename '/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/data/student.data'
+\set filename 'tests/regression/pg_compat/data/student.data'
 COPY student FROM :'filename';
 VACUUM ANALYZE student;
 
@@ -194,7 +194,7 @@ CREATE TABLE stud_emp (
 	percent 	int4
 ) INHERITS (emp, student);
 
-\set filename '/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/data/stud_emp.data'
+\set filename 'tests/regression/pg_compat/data/stud_emp.data'
 COPY stud_emp FROM :'filename';
 VACUUM ANALYZE stud_emp;
 
@@ -203,7 +203,7 @@ CREATE TABLE road (
 	thepath 	path
 );
 
-\set filename '/home/rosssaunders/code/rosssaunders/postrust/tests/regression/pg_compat/data/streets.data'
+\set filename 'tests/regression/pg_compat/data/streets.data'
 COPY road FROM :'filename';
 VACUUM ANALYZE road;
 

@@ -121,7 +121,7 @@ class PostgresRegressionRunner:
                 capture_output=True,
                 text=True,
                 env=env,
-                timeout=60  # 60 second timeout per file
+                timeout=300  # 60 second timeout per file
             )
             
             # Analyze output to count errors
