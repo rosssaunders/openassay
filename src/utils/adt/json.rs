@@ -34,7 +34,7 @@ pub(crate) fn json_build_object_value(args: &[ScalarValue]) -> Result<JsonValue,
         let key = match &args[idx] {
             ScalarValue::Null => {
                 return Err(EngineError {
-                    message: "json_build_object() key cannot be null".to_string(),
+                    message: "null value not allowed for object key".to_string(),
                 });
             }
             other => other.render(),
