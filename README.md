@@ -25,9 +25,15 @@ Runs natively on Linux/macOS **and in the browser via WASM**. [Try it live →](
 
 ## Demo
 
+### CLI — connect with psql
 ![Postrust CLI Demo](assets/demo.gif)
 
-*psql connecting to Postrust — CREATE TABLE, queries with window functions, JSON, CTEs, and live HTTP fetching.*
+*CREATE TABLE, window functions, JSON, CTEs, and live HTTP fetching via psql.*
+
+### Browser — runs entirely in WASM
+![Postrust Browser Demo](assets/browser-demo.gif)
+
+*Live cryptocurrency data from Deribit API, queried with SQL — running in the browser with zero backend.*
 
 ## Why async matters
 
