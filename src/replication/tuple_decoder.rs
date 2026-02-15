@@ -19,7 +19,8 @@ pub fn type_signature_for_oid(oid: u32) -> TypeSignature {
     match oid {
         16 => TypeSignature::Bool,
         20 | 21 | 23 => TypeSignature::Int8,
-        700 | 701 | 1700 => TypeSignature::Float8,
+        700 | 701 => TypeSignature::Float8,
+        1700 => TypeSignature::Numeric,
         1082 => TypeSignature::Date,
         1114 | 1184 => TypeSignature::Timestamp,
         _ => TypeSignature::Text,
@@ -114,6 +115,16 @@ pub fn decode_binary_value(
             let seconds = PG_EPOCH_UNIX_OFFSET_SECS + micros / 1_000_000;
             let dt = datetime_from_epoch_seconds(seconds);
             Ok(ScalarValue::Text(format_timestamp(dt)))
+        }
+        TypeSignature::Numeric => {
+            // PostgreSQL numeric binary format is complex. For now, decode as text then parse.
+            let text_value = String::from_utf8_lossy(bytes);
+            let decimal = text_value.parse::<rust_decimal::Decimal>().map_err(|_| {
+                ReplicationError {
+                    message: format!("invalid numeric binary data: {text_value}"),
+                }
+            })?;
+            Ok(ScalarValue::Numeric(decimal))
         }
         TypeSignature::Text => Ok(ScalarValue::Text(
             String::from_utf8_lossy(bytes).to_string(),

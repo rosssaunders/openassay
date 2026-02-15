@@ -460,6 +460,9 @@ pub(crate) async fn eval_scalar_function(
             ScalarValue::Null => Ok(ScalarValue::Null),
             ScalarValue::Int(i) => Ok(ScalarValue::Int(*i)),
             ScalarValue::Float(f) => Ok(ScalarValue::Float(f.ceil())),
+            ScalarValue::Numeric(d) => {
+                Ok(ScalarValue::Numeric(d.ceil()))
+            }
             _ => Err(EngineError {
                 message: "ceil() expects numeric argument".to_string(),
             }),
@@ -468,6 +471,9 @@ pub(crate) async fn eval_scalar_function(
             ScalarValue::Null => Ok(ScalarValue::Null),
             ScalarValue::Int(i) => Ok(ScalarValue::Int(*i)),
             ScalarValue::Float(f) => Ok(ScalarValue::Float(f.floor())),
+            ScalarValue::Numeric(d) => {
+                Ok(ScalarValue::Numeric(d.floor()))
+            }
             _ => Err(EngineError {
                 message: "floor() expects numeric argument".to_string(),
             }),
@@ -486,6 +492,9 @@ pub(crate) async fn eval_scalar_function(
                 ScalarValue::Float(f) => {
                     let factor = 10f64.powi(scale as i32);
                     Ok(ScalarValue::Float((f * factor).round() / factor))
+                }
+                ScalarValue::Numeric(d) => {
+                    Ok(ScalarValue::Numeric(d.round_dp(scale as u32)))
                 }
                 _ => Err(EngineError {
                     message: "round() expects numeric argument".to_string(),
@@ -506,6 +515,9 @@ pub(crate) async fn eval_scalar_function(
                 ScalarValue::Float(f) => {
                     let factor = 10f64.powi(scale as i32);
                     Ok(ScalarValue::Float((f * factor).trunc() / factor))
+                }
+                ScalarValue::Numeric(d) => {
+                    Ok(ScalarValue::Numeric(d.trunc_with_scale(scale as u32)))
                 }
                 _ => Err(EngineError {
                     message: "trunc() expects numeric argument".to_string(),
@@ -1072,6 +1084,7 @@ pub(crate) async fn eval_scalar_function(
                 ScalarValue::Bool(_) => "boolean",
                 ScalarValue::Int(_) => "bigint",
                 ScalarValue::Float(_) => "double precision",
+                ScalarValue::Numeric(_) => "numeric",
                 ScalarValue::Text(_) => "text",
                 ScalarValue::Array(_) => "text[]",
                 ScalarValue::Record(_) => "record",
@@ -1093,6 +1106,7 @@ pub(crate) async fn eval_scalar_function(
                 ScalarValue::Bool(_) => 1,
                 ScalarValue::Int(_) => 8,
                 ScalarValue::Float(_) => 8,
+                ScalarValue::Numeric(_) => 16, // Variable size, but 16 is a reasonable estimate
                 ScalarValue::Text(s) => s.len() as i64 + 4, // 4-byte length prefix
                 ScalarValue::Array(a) => {
                     let mut total = 20i64; // array header
@@ -1102,6 +1116,7 @@ pub(crate) async fn eval_scalar_function(
                             ScalarValue::Bool(_) => 1,
                             ScalarValue::Int(_) => 8,
                             ScalarValue::Float(_) => 8,
+                            ScalarValue::Numeric(_) => 16,
                             ScalarValue::Text(s) => s.len() as i64 + 4,
                             ScalarValue::Array(_) => 8, // rough estimate
                             ScalarValue::Record(r) => (r.len() * 8) as i64,

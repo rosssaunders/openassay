@@ -9,13 +9,42 @@ pub(crate) fn numeric_mod(
     if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
-    let left_int = parse_i64_scalar(&left, "operator % expects integer values")?;
-    let right_int = parse_i64_scalar(&right, "operator % expects integer values")?;
-    match (left_int, right_int) {
-        (_, 0) => Err(EngineError {
+    
+    // Handle different numeric types
+    let left_num = parse_numeric_operand(&left)?;
+    let right_num = parse_numeric_operand(&right)?;
+    
+    // Check for zero divisor
+    let right_is_zero = matches!(right_num, NumericOperand::Int(0))
+        || matches!(right_num, NumericOperand::Float(v) if v == 0.0)
+        || matches!(right_num, NumericOperand::Numeric(v) if v.is_zero());
+    if right_is_zero {
+        return Err(EngineError {
             message: "division by zero".to_string(),
-        }),
-        (a, b) => Ok(ScalarValue::Int(crate::utils::adt::int_arithmetic::int4_mod(a, b)?)),
+        });
+    }
+    
+    match (left_num, right_num) {
+        (NumericOperand::Int(a), NumericOperand::Int(b)) => {
+            Ok(ScalarValue::Int(crate::utils::adt::int_arithmetic::int4_mod(a, b)?))
+        }
+        (NumericOperand::Int(a), NumericOperand::Numeric(b)) => {
+            let a_decimal = rust_decimal::Decimal::from(a);
+            Ok(ScalarValue::Numeric(a_decimal % b))
+        }
+        (NumericOperand::Numeric(a), NumericOperand::Int(b)) => {
+            let b_decimal = rust_decimal::Decimal::from(b);
+            Ok(ScalarValue::Numeric(a % b_decimal))
+        }
+        (NumericOperand::Numeric(a), NumericOperand::Numeric(b)) => {
+            Ok(ScalarValue::Numeric(a % b))
+        }
+        // For float operations, convert to integer-based mod (following PostgreSQL behavior)
+        _ => {
+            let left_int = parse_i64_scalar(&left, "operator % expects integer values")?;
+            let right_int = parse_i64_scalar(&right, "operator % expects integer values")?;
+            Ok(ScalarValue::Int(crate::utils::adt::int_arithmetic::int4_mod(left_int, right_int)?))
+        }
     }
 }
 
@@ -23,6 +52,9 @@ pub(crate) fn coerce_to_f64(v: &ScalarValue, context: &str) -> Result<f64, Engin
     match v {
         ScalarValue::Int(i) => Ok(*i as f64),
         ScalarValue::Float(f) => Ok(*f),
+        ScalarValue::Numeric(d) => Ok(d.to_string().parse::<f64>().map_err(|_| EngineError {
+            message: format!("{context} cannot convert decimal to float"),
+        })?),
         _ => Err(EngineError {
             message: format!("{context} expects numeric argument"),
         }),
@@ -40,19 +72,24 @@ pub(crate) fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
     a
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum NumericOperand {
     Int(i64),
     Float(f64),
+    Numeric(rust_decimal::Decimal),
 }
 
 pub(crate) fn parse_numeric_operand(value: &ScalarValue) -> Result<NumericOperand, EngineError> {
     match value {
         ScalarValue::Int(v) => Ok(NumericOperand::Int(*v)),
         ScalarValue::Float(v) => Ok(NumericOperand::Float(*v)),
+        ScalarValue::Numeric(v) => Ok(NumericOperand::Numeric(*v)),
         ScalarValue::Text(v) => {
             if let Ok(parsed) = v.parse::<i64>() {
                 return Ok(NumericOperand::Int(parsed));
+            }
+            if let Ok(parsed) = v.parse::<rust_decimal::Decimal>() {
+                return Ok(NumericOperand::Numeric(parsed));
             }
             if let Ok(parsed) = v.parse::<f64>() {
                 return Ok(NumericOperand::Float(parsed));

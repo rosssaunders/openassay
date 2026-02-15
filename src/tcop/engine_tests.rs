@@ -648,7 +648,7 @@ fn evaluates_math_and_conditional_functions() {
     assert_eq!(
         result.rows,
         vec![vec![
-            ScalarValue::Float(1.23),
+            ScalarValue::Numeric(rust_decimal::Decimal::new(123, 2)),
             ScalarValue::Int(3),
             ScalarValue::Int(4),
             ScalarValue::Int(120),
@@ -3944,9 +3944,9 @@ fn supports_mixed_wildcard_and_expression_targets() {
 #[test]
 fn math_functions_ceil_floor_round() {
     let r = run("SELECT ceil(4.3), floor(4.7), round(4.567, 2)");
-    assert_eq!(r.rows[0][0], ScalarValue::Float(5.0));
-    assert_eq!(r.rows[0][1], ScalarValue::Float(4.0));
-    assert_eq!(r.rows[0][2], ScalarValue::Float(4.57));
+    assert_eq!(r.rows[0][0], ScalarValue::Numeric(rust_decimal::Decimal::new(5, 0)));
+    assert_eq!(r.rows[0][1], ScalarValue::Numeric(rust_decimal::Decimal::new(4, 0)));
+    assert_eq!(r.rows[0][2], ScalarValue::Numeric(rust_decimal::Decimal::new(457, 2)));
 }
 
 #[test]
@@ -4720,7 +4720,7 @@ fn evaluates_pg_typeof_function() {
         result.rows,
         vec![vec![
             ScalarValue::Text("bigint".to_string()),
-            ScalarValue::Text("double precision".to_string()),
+            ScalarValue::Text("numeric".to_string()),
             ScalarValue::Text("text".to_string()),
             ScalarValue::Text("boolean".to_string()),
             ScalarValue::Text("unknown".to_string()),

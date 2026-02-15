@@ -4,6 +4,7 @@ pub enum ScalarValue {
     Bool(bool),
     Int(i64),
     Float(f64),
+    Numeric(rust_decimal::Decimal),
     Text(String),
     Array(Vec<Self>),
     /// Row/Record type for ROW(a, b, c) or (a, b, c) expressions
@@ -17,6 +18,7 @@ impl ScalarValue {
             Self::Bool(v) => if *v { "t" } else { "f" }.to_string(),
             Self::Int(v) => v.to_string(),
             Self::Float(v) => render_float8(*v),
+            Self::Numeric(v) => v.to_string(),
             Self::Text(v) => v.clone(),
             Self::Array(values) => render_array_literal(values),
             Self::Record(values) => {

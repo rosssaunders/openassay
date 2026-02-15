@@ -3023,6 +3023,7 @@ fn scalar_key(value: &ScalarValue) -> String {
         ScalarValue::Bool(v) => format!("B:{v}"),
         ScalarValue::Int(v) => format!("I:{v}"),
         ScalarValue::Float(v) => format!("F:{v}"),
+        ScalarValue::Numeric(v) => format!("N:{v}"),
         ScalarValue::Text(v) => format!("T:{v}"),
         ScalarValue::Array(_) => format!("A:{}", value.render()),
         ScalarValue::Record(_) => format!("R:{}", value.render()),
@@ -3080,9 +3081,29 @@ fn coerce_value_for_column(
         }
         (TypeSignature::Float8, ScalarValue::Int(v)) => Ok(ScalarValue::Float(v as f64)),
         (TypeSignature::Float8, ScalarValue::Float(v)) => Ok(ScalarValue::Float(v)),
+        (TypeSignature::Float8, ScalarValue::Numeric(d)) => {
+            use rust_decimal::prelude::ToPrimitive;
+            Ok(ScalarValue::Float(d.to_f64().unwrap_or(f64::NAN)))
+        }
         (TypeSignature::Float8, ScalarValue::Text(v)) => {
             let parsed = crate::utils::adt::float::float8in(&v)?;
             Ok(ScalarValue::Float(parsed))
+        }
+        (TypeSignature::Numeric, ScalarValue::Numeric(d)) => Ok(ScalarValue::Numeric(d)),
+        (TypeSignature::Numeric, ScalarValue::Int(v)) => {
+            Ok(ScalarValue::Numeric(rust_decimal::Decimal::from(v)))
+        }
+        (TypeSignature::Numeric, ScalarValue::Float(v)) => {
+            use rust_decimal::prelude::FromPrimitive;
+            Ok(ScalarValue::Numeric(
+                rust_decimal::Decimal::from_f64(v).unwrap_or_default(),
+            ))
+        }
+        (TypeSignature::Numeric, ScalarValue::Text(v)) => {
+            let parsed = v.trim().parse::<rust_decimal::Decimal>().map_err(|_| EngineError {
+                message: format!("invalid numeric literal for column \"{}\"", column.name()),
+            })?;
+            Ok(ScalarValue::Numeric(parsed))
         }
         (TypeSignature::Text, ScalarValue::Text(v)) => Ok(ScalarValue::Text(v)),
         (TypeSignature::Text, v) => Ok(ScalarValue::Text(v.render())),
