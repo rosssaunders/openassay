@@ -148,6 +148,12 @@ struct BodyParser<'a> {
     next_stmtid: u32,
 }
 
+struct ParsedSelectInto {
+    rewritten_sql: String,
+    strict: bool,
+    target_dnos: Vec<i32>,
+}
+
 impl<'a> BodyParser<'a> {
     fn new(source: &'a str, tokens: Vec<PlPgSqlToken>) -> Self {
         Self {
@@ -162,10 +168,11 @@ impl<'a> BodyParser<'a> {
     }
 
     fn parse_function_body(&mut self) -> Result<PlPgSqlFunction, PlPgSqlCompileError> {
-        let mut initvarnos = Vec::new();
+        let found_varno = self.add_found_datum();
+        let mut initvarnos = vec![found_varno];
 
         if self.consume_keyword(PlPgSqlKeyword::Declare) {
-            initvarnos = self.parse_declare_section()?;
+            initvarnos.extend(self.parse_declare_section()?);
         }
 
         self.expect_keyword(PlPgSqlKeyword::Begin, "expected BEGIN")?;
@@ -215,7 +222,7 @@ impl<'a> BodyParser<'a> {
             fn_nargs: 0,
             fn_argvarnos: Vec::new(),
             out_param_varno: -1,
-            found_varno: -1,
+            found_varno,
             new_varno: -1,
             old_varno: -1,
             resolve_option: PlPgSqlResolveOption::Error,
@@ -273,6 +280,33 @@ impl<'a> BodyParser<'a> {
         }
 
         argvarnos
+    }
+
+    fn add_found_datum(&mut self) -> i32 {
+        let dno = self.allocate_dno();
+        let variable = PlPgSqlVariable {
+            dtype: PlPgSqlDtype::Var,
+            dno,
+            refname: "found".to_string(),
+            lineno: 0,
+            isconst: false,
+            notnull: true,
+            default_val: Some(self.make_expr("false".to_string())),
+        };
+        let var = PlPgSqlVar {
+            variable,
+            datatype: Some(self.make_type("boolean")),
+            cursor_explicit_expr: None,
+            cursor_explicit_argrow: -1,
+            cursor_options: 0,
+            value: Some(PlPgSqlValue::Null),
+            isnull: true,
+            freeval: false,
+            promise: PlPgSqlPromiseType::None,
+        };
+        self.variables_by_name.insert("found".to_string(), dno);
+        self.datums.push(PlPgSqlDatum::Var(var));
+        dno
     }
 
     fn parse_declare_section(&mut self) -> Result<Vec<i32>, PlPgSqlCompileError> {
@@ -666,17 +700,179 @@ impl<'a> BodyParser<'a> {
         self.idx = end_idx;
         self.expect_semicolon()?;
 
+        let mut sqlstmt = sql;
+        let mut into = false;
+        let mut strict = false;
+        let mut target_dnos = Vec::new();
+        let mut target = None;
+
+        if let Some(parsed_into) = self.try_parse_select_into(&sqlstmt)? {
+            into = true;
+            strict = parsed_into.strict;
+            target_dnos = parsed_into.target_dnos;
+            sqlstmt = parsed_into.rewritten_sql;
+            target = self.variable_by_dno(target_dnos[0]);
+        }
+
         Ok(PlPgSqlStmt::ExecSql(PlPgSqlStmtExecSql {
             cmd_type: PlPgSqlStmtType::ExecSql,
             lineno: i32::try_from(token.span.line).unwrap_or(i32::MAX),
             stmtid: self.alloc_stmtid(),
-            sqlstmt: self.make_expr(sql),
+            sqlstmt: self.make_expr(sqlstmt),
             mod_stmt: false,
             mod_stmt_set: false,
-            into: false,
-            strict: false,
-            target: None,
+            into,
+            strict,
+            target,
+            target_dnos,
         }))
+    }
+
+    fn try_parse_select_into(
+        &self,
+        sql: &str,
+    ) -> Result<Option<ParsedSelectInto>, PlPgSqlCompileError> {
+        let tokens = tokenize(sql).map_err(PlPgSqlCompileError::from)?;
+        if tokens.is_empty() {
+            return Ok(None);
+        }
+
+        let mut first_idx = None;
+        for (idx, token) in tokens.iter().enumerate() {
+            if !matches!(token.kind, PlPgSqlTokenKind::Eof) {
+                first_idx = Some(idx);
+                break;
+            }
+        }
+        let Some(first_idx) = first_idx else {
+            return Ok(None);
+        };
+
+        let PlPgSqlTokenKind::Identifier(first_word) = &tokens[first_idx].kind else {
+            return Ok(None);
+        };
+        if !first_word.eq_ignore_ascii_case("select") {
+            return Ok(None);
+        }
+
+        let mut depth = 0usize;
+        let mut into_idx = None;
+        for (idx, tok) in tokens.iter().enumerate().skip(first_idx + 1) {
+            match &tok.kind {
+                PlPgSqlTokenKind::LParen => depth += 1,
+                PlPgSqlTokenKind::RParen => depth = depth.saturating_sub(1),
+                PlPgSqlTokenKind::Identifier(word)
+                    if depth == 0 && word.eq_ignore_ascii_case("into") =>
+                {
+                    into_idx = Some(idx);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let Some(into_idx) = into_idx else {
+            return Ok(None);
+        };
+
+        let mut strict = false;
+        let mut idx = into_idx + 1;
+        if let Some(PlPgSqlToken {
+            kind: PlPgSqlTokenKind::Identifier(word),
+            ..
+        }) = tokens.get(idx)
+            && word.eq_ignore_ascii_case("strict")
+        {
+            strict = true;
+            idx += 1;
+        }
+
+        let mut target_dnos = Vec::new();
+        let mut expect_target = true;
+        let mut clause_start = None;
+
+        while idx < tokens.len() {
+            let token = &tokens[idx];
+            match &token.kind {
+                PlPgSqlTokenKind::Eof => {
+                    clause_start = Some(idx);
+                    break;
+                }
+                PlPgSqlTokenKind::Identifier(word) if expect_target => {
+                    if is_select_clause_boundary(word) {
+                        return Err(PlPgSqlCompileError {
+                            message: "expected target variable after INTO".to_string(),
+                            position: token.span.start,
+                            line: token.span.line,
+                            column: token.span.column,
+                        });
+                    }
+
+                    let key = word.to_ascii_lowercase();
+                    let Some(dno) = self.variables_by_name.get(&key).copied() else {
+                        return Err(PlPgSqlCompileError {
+                            message: format!("unknown variable \"{word}\" in SELECT INTO"),
+                            position: token.span.start,
+                            line: token.span.line,
+                            column: token.span.column,
+                        });
+                    };
+                    target_dnos.push(dno);
+                    expect_target = false;
+                    idx += 1;
+                }
+                PlPgSqlTokenKind::Comma if !expect_target => {
+                    expect_target = true;
+                    idx += 1;
+                }
+                PlPgSqlTokenKind::Identifier(word)
+                    if !expect_target && is_select_clause_boundary(word) =>
+                {
+                    clause_start = Some(idx);
+                    break;
+                }
+                _ => {
+                    return Err(PlPgSqlCompileError {
+                        message: "invalid SELECT INTO target list".to_string(),
+                        position: token.span.start,
+                        line: token.span.line,
+                        column: token.span.column,
+                    });
+                }
+            }
+        }
+
+        if target_dnos.is_empty() || expect_target {
+            return Err(self.error_at_current("expected target variable after INTO"));
+        }
+
+        let clause_start_idx = clause_start.unwrap_or(tokens.len().saturating_sub(1));
+        let into_start = tokens[into_idx].span.start;
+        let into_end = match tokens[clause_start_idx].kind {
+            PlPgSqlTokenKind::Eof => sql.len(),
+            _ => tokens[clause_start_idx].span.start,
+        };
+
+        let prefix = sql[..into_start].trim_end();
+        let suffix = sql[into_end..].trim_start();
+        let rewritten_sql = if suffix.is_empty() {
+            prefix.to_string()
+        } else {
+            format!("{prefix} {suffix}")
+        };
+
+        Ok(Some(ParsedSelectInto {
+            rewritten_sql,
+            strict,
+            target_dnos,
+        }))
+    }
+
+    fn variable_by_dno(&self, dno: i32) -> Option<PlPgSqlVariable> {
+        let idx = usize::try_from(dno).ok()?;
+        match self.datums.get(idx) {
+            Some(PlPgSqlDatum::Var(var)) => Some(var.variable.clone()),
+            _ => None,
+        }
     }
 
     fn extract_expression_until_keywords(
@@ -910,6 +1106,24 @@ impl<'a> BodyParser<'a> {
             column: token.span.column,
         }
     }
+}
+
+fn is_select_clause_boundary(word: &str) -> bool {
+    matches!(
+        word.to_ascii_lowercase().as_str(),
+        "from"
+            | "where"
+            | "group"
+            | "having"
+            | "window"
+            | "union"
+            | "intersect"
+            | "except"
+            | "order"
+            | "limit"
+            | "offset"
+            | "for"
+    )
 }
 
 fn type_name_to_decl_string(type_name: &TypeName) -> String {
@@ -1185,7 +1399,7 @@ fn parse_dollar_quoted_string(input: &str) -> Result<(String, usize), PlPgSqlCom
 #[cfg(test)]
 mod tests {
     use super::{compile_do_block_sql, compile_function_body};
-    use crate::plpgsql::types::PlPgSqlStmt;
+    use crate::plpgsql::types::{PlPgSqlDatum, PlPgSqlStmt};
 
     #[test]
     fn compiles_declare_begin_assignment_return() {
@@ -1199,7 +1413,7 @@ END;
 ";
         let compiled = compile_function_body(src).expect("compile should succeed");
 
-        assert_eq!(compiled.datums.len(), 1);
+        assert_eq!(compiled.datums.len(), 2);
         let action = compiled.action.expect("action should be present");
         assert_eq!(action.body.len(), 2);
         assert!(matches!(action.body[0], PlPgSqlStmt::Assign(_)));
@@ -1228,5 +1442,41 @@ END;
         let sql = "DO $$ BEGIN RETURN; END; $$ LANGUAGE plpgsql";
         let compiled = compile_do_block_sql(sql).expect("compile should succeed");
         assert_eq!(compiled.fn_signature, "inline_code_block");
+    }
+
+    #[test]
+    fn compiles_select_into_targets() {
+        let src = "
+DECLARE
+  a integer;
+  b integer;
+BEGIN
+  SELECT 1, 2 INTO a, b;
+END;
+";
+        let compiled = compile_function_body(src).expect("compile should succeed");
+        let action = compiled.action.expect("action should be present");
+        let PlPgSqlStmt::ExecSql(stmt) = &action.body[0] else {
+            panic!("first statement should be execsql");
+        };
+        assert!(stmt.into);
+        assert_eq!(stmt.target_dnos.len(), 2);
+        assert_eq!(stmt.sqlstmt.query, "SELECT 1, 2");
+    }
+
+    #[test]
+    fn allocates_found_variable_datum() {
+        let src = "
+BEGIN
+  RETURN found;
+END;
+";
+        let compiled = compile_function_body(src).expect("compile should succeed");
+        assert!(compiled.found_varno >= 0);
+        let found_idx = usize::try_from(compiled.found_varno).expect("valid found_varno");
+        let Some(PlPgSqlDatum::Var(found_var)) = compiled.datums.get(found_idx) else {
+            panic!("found_varno should reference a scalar variable datum");
+        };
+        assert_eq!(found_var.variable.refname.to_ascii_lowercase(), "found");
     }
 }

@@ -110,6 +110,7 @@ pub fn plpgsql_exec_function(
     args: &[ScalarValue],
 ) -> Result<Option<ScalarValue>, String> {
     let mut estate = PLpgSQLExecState::new(func);
+    set_found(&mut estate, false)?;
     bind_call_arguments(&mut estate, args)?;
 
     let Some(action) = estate.func.action.clone() else {
@@ -497,19 +498,14 @@ fn exec_stmt_execsql(
     estate: &mut PLpgSQLExecState,
     stmt: &PlPgSqlStmtExecSql,
 ) -> Result<ExecResultCode, String> {
-    if stmt.into {
-        return Err("SELECT ... INTO in PL/pgSQL is not implemented".to_string());
-    }
-
     let result = execute_sql_statement(estate, &stmt.sqlstmt.query)?;
-    let found = result.rows_affected > 0 || !result.rows.is_empty();
-    set_found(estate, found)?;
 
-    if !result.rows.is_empty() && result.command_tag.eq_ignore_ascii_case("SELECT") {
-        return Err(
-            "query has no destination for result data (use PERFORM to discard SELECT results)"
-                .to_string(),
-        );
+    if stmt.into {
+        exec_select_into_targets(estate, stmt, &result)?;
+        set_found(estate, !result.rows.is_empty())?;
+    } else {
+        let found = result.rows_affected > 0 || !result.rows.is_empty();
+        set_found(estate, found)?;
     }
 
     Ok(ExecResultCode::Ok)
@@ -540,6 +536,55 @@ fn execute_sql_statement(estate: &mut PLpgSQLExecState, sql: &str) -> Result<Que
             block_on(execute_planned_query(&planned, &[])).map_err(|e| e.message)
         }
     }
+}
+
+fn exec_select_into_targets(
+    estate: &mut PLpgSQLExecState,
+    stmt: &PlPgSqlStmtExecSql,
+    result: &QueryResult,
+) -> Result<(), String> {
+    if !result.command_tag.eq_ignore_ascii_case("SELECT") {
+        return Err("SELECT INTO requires a SELECT statement".to_string());
+    }
+
+    if stmt.target_dnos.is_empty() {
+        return Err("SELECT INTO has no target variables".to_string());
+    }
+
+    if stmt.strict && result.rows.len() != 1 {
+        return Err(format!(
+            "query returned {} rows but SELECT INTO STRICT expects exactly one row",
+            result.rows.len()
+        ));
+    }
+
+    let source_cols = if !result.columns.is_empty() {
+        result.columns.len()
+    } else if let Some(row) = result.rows.first() {
+        row.len()
+    } else {
+        0
+    };
+
+    if source_cols != stmt.target_dnos.len() {
+        return Err(format!(
+            "SELECT INTO target count ({}) does not match query column count ({source_cols})",
+            stmt.target_dnos.len()
+        ));
+    }
+
+    if let Some(row) = result.rows.first() {
+        for (col_idx, dno) in stmt.target_dnos.iter().enumerate() {
+            let value = row.get(col_idx).cloned().unwrap_or(ScalarValue::Null);
+            exec_assign_value_dno(estate, *dno, value)?;
+        }
+    } else {
+        for dno in &stmt.target_dnos {
+            exec_assign_value_dno(estate, *dno, ScalarValue::Null)?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Expression evaluation equivalent to `exec_eval_expr` (`pl_exec.c:5671-5752`) using
@@ -1216,6 +1261,22 @@ END;
 BEGIN
   PERFORM 1;
   RETURN found;
+END;
+";
+        let func = compile_function_body(src).expect("compile should succeed");
+        let result = plpgsql_exec_function(&func, &[]).expect("execution should succeed");
+        assert_eq!(result, Some(ScalarValue::Bool(true)));
+    }
+
+    #[test]
+    fn executes_select_into_and_sets_found() {
+        let src = "
+DECLARE
+  a integer;
+  b integer;
+BEGIN
+  SELECT 1, 2 INTO a, b;
+  RETURN found AND a = 1 AND b = 2;
 END;
 ";
         let func = compile_function_body(src).expect("compile should succeed");

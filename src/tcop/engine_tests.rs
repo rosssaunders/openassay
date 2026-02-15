@@ -4388,6 +4388,20 @@ fn do_block_parses_and_executes() {
     assert_eq!(r.command_tag, "DO");
 }
 
+#[test]
+fn do_block_perform_executes() {
+    let r = run("DO 'BEGIN PERFORM 1; END'");
+    assert_eq!(r.command_tag, "DO");
+}
+
+#[test]
+fn do_block_select_into_assigns_variables() {
+    let r = run(
+        "DO 'DECLARE a integer; b integer; BEGIN SELECT 10, 20 INTO a, b; IF NOT found OR a <> 10 OR b <> 20 THEN RAISE; END IF; END'",
+    );
+    assert_eq!(r.command_tag, "DO");
+}
+
 // 1.11 System catalogs
 #[test]
 fn pg_settings_returns_guc_variables() {

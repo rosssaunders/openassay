@@ -57,8 +57,7 @@ pub enum PlPgSqlPromiseType {
 }
 
 /// Corresponds to `PLpgSQL_type_type` in `plpgsql.h:93-100`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlPgSqlTypeType {
     #[default]
     Scalar,
@@ -165,7 +164,6 @@ pub struct PlPgSqlType {
     pub tcache: Option<String>,
     pub tupdesc_id: u64,
 }
-
 
 /// Corresponds to `PLpgSQL_nsitem` in `plpgsql.h:460-472`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -643,6 +641,7 @@ pub struct PlPgSqlStmtExecSql {
     pub into: bool,
     pub strict: bool,
     pub target: Option<PlPgSqlVariable>,
+    pub target_dnos: Vec<i32>,
 }
 
 /// Corresponds to `PLpgSQL_stmt_dynexecute` in `plpgsql.h:933-943`.
