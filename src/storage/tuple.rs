@@ -22,13 +22,16 @@ impl ScalarValue {
             Self::Text(v) => v.clone(),
             Self::Array(values) => render_array_literal(values),
             Self::Record(values) => {
-                let parts: Vec<String> = values.iter().map(|v| {
-                    if matches!(v, Self::Null) {
-                        String::new()
-                    } else {
-                        v.render()
-                    }
-                }).collect();
+                let parts: Vec<String> = values
+                    .iter()
+                    .map(|v| {
+                        if matches!(v, Self::Null) {
+                            String::new()
+                        } else {
+                            v.render()
+                        }
+                    })
+                    .collect();
                 format!("({})", parts.join(","))
             }
         }
@@ -52,7 +55,7 @@ pub fn render_float8(v: f64) -> String {
         };
     }
     // Use Rust's default Display which gives shortest representation
-    
+
     v.to_string()
 }
 

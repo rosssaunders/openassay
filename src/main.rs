@@ -189,10 +189,7 @@ async fn execute_simple_query_via_session(sql: &str) -> Result<Vec<CliQueryResul
                             Some(bytes) => String::from_utf8(bytes.clone()).unwrap_or_else(|_| {
                                 format!(
                                     "\\x{}",
-                                    bytes
-                                        .iter()
-                                        .map(|b| format!("{b:02x}"))
-                                        .collect::<String>()
+                                    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
                                 )
                             }),
                         })

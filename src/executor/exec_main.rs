@@ -257,15 +257,15 @@ async fn execute_values(
 ) -> Result<QueryResult, EngineError> {
     // Execute VALUES query - return all rows with column names column1, column2, etc.
     let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
-    
+
     // Generate column names: column1, column2, ...
     let columns = (1..=ncols)
         .map(|i| format!("column{i}"))
         .collect::<Vec<_>>();
-    
+
     let mut result_rows = Vec::new();
     let scope = outer_scope.cloned().unwrap_or_default();
-    
+
     for row_exprs in rows {
         let mut row_values = Vec::new();
         for expr in row_exprs {
@@ -274,7 +274,7 @@ async fn execute_values(
         }
         result_rows.push(row_values);
     }
-    
+
     let row_count = result_rows.len() as u64;
     Ok(QueryResult {
         columns,
@@ -1828,7 +1828,7 @@ fn expand_qualified_wildcard(
         .last()
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
-    
+
     for col in expanded {
         // Match columns where the first lookup part (table/alias) equals the qualifier
         if col.lookup_parts.len() >= 2
@@ -1871,7 +1871,17 @@ async fn project_select_row_with_window(
             expand_qualified_wildcard(qualifier, expanded, scope, &mut row)?;
             continue;
         }
-        row.push(eval_expr_with_window(&target.expr, scope, row_idx, all_rows, window_definitions, params).await?);
+        row.push(
+            eval_expr_with_window(
+                &target.expr,
+                scope,
+                row_idx,
+                all_rows,
+                window_definitions,
+                params,
+            )
+            .await?,
+        );
     }
     Ok(row)
 }
@@ -2346,12 +2356,20 @@ fn eval_group_expr<'a>(
                 let pattern_value =
                     eval_group_expr(pattern, group_rows, representative, params, grouping).await?;
                 let escape_char = if let Some(escape_expr) = escape {
-                    let escape_value = eval_group_expr(escape_expr, group_rows, representative, params, grouping).await?;
+                    let escape_value =
+                        eval_group_expr(escape_expr, group_rows, representative, params, grouping)
+                            .await?;
                     Some(escape_value)
                 } else {
                     None
                 };
-                eval_like_predicate(value, pattern_value, *case_insensitive, *negated, escape_char)
+                eval_like_predicate(
+                    value,
+                    pattern_value,
+                    *case_insensitive,
+                    *negated,
+                    escape_char,
+                )
             }
             Expr::IsNull { expr, negated } => {
                 let value =
@@ -2659,7 +2677,8 @@ pub(crate) async fn eval_aggregate_function(
                     }
                     ScalarValue::Float(v) => {
                         float_sum += v;
-                        decimal_sum += rust_decimal::Decimal::try_from(v).unwrap_or(rust_decimal::Decimal::ZERO);
+                        decimal_sum += rust_decimal::Decimal::try_from(v)
+                            .unwrap_or(rust_decimal::Decimal::ZERO);
                         saw_float = true;
                         saw_any = true;
                     }
@@ -2714,7 +2733,8 @@ pub(crate) async fn eval_aggregate_function(
                     }
                     ScalarValue::Float(v) => {
                         float_total += v;
-                        decimal_total += rust_decimal::Decimal::try_from(v).unwrap_or(rust_decimal::Decimal::ZERO);
+                        decimal_total += rust_decimal::Decimal::try_from(v)
+                            .unwrap_or(rust_decimal::Decimal::ZERO);
                         count += 1;
                     }
                     ScalarValue::Numeric(v) => {
@@ -3599,7 +3619,7 @@ pub(crate) fn compare_order_keys(
 }
 
 fn scalar_cmp(a: &ScalarValue, b: &ScalarValue) -> Ordering {
-    use ScalarValue::{Null, Bool, Int, Float, Text};
+    use ScalarValue::{Bool, Float, Int, Null, Text};
     match (a, b) {
         (Null, Null) => Ordering::Equal,
         (Null, _) => Ordering::Less,

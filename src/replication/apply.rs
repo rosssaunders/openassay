@@ -2,13 +2,13 @@ use std::collections::HashMap;
 
 use crate::access::transam::xact::TransactionContext;
 use crate::catalog::{SearchPath, oid::Oid, with_catalog_read};
+use crate::replication::ReplicationError;
 use crate::replication::pgoutput::{
     CommitMessage, DeleteMessage, InsertMessage, PgOutputMessage, RelationColumn, RelationMessage,
     TruncateMessage, UpdateMessage,
 };
-use crate::replication::schema_sync::{ensure_relation_from_message, TableSchema};
-use crate::replication::tuple_decoder::{decode_tuple, DecodedColumn};
-use crate::replication::ReplicationError;
+use crate::replication::schema_sync::{TableSchema, ensure_relation_from_message};
+use crate::replication::tuple_decoder::{DecodedColumn, decode_tuple};
 use crate::storage::heap::{with_storage_read, with_storage_write};
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{restore_state, snapshot_state};
@@ -92,13 +92,21 @@ impl ApplyWorker {
             }
             PgOutputMessage::Commit(commit) => self.apply_commit(commit),
             PgOutputMessage::Relation(relation) => self.handle_relation(relation),
-            PgOutputMessage::Insert(insert) => self.apply_in_scope(|this| this.apply_insert(insert)),
-            PgOutputMessage::Update(update) => self.apply_in_scope(|this| this.apply_update(update)),
-            PgOutputMessage::Delete(delete) => self.apply_in_scope(|this| this.apply_delete(delete)),
+            PgOutputMessage::Insert(insert) => {
+                self.apply_in_scope(|this| this.apply_insert(insert))
+            }
+            PgOutputMessage::Update(update) => {
+                self.apply_in_scope(|this| this.apply_update(update))
+            }
+            PgOutputMessage::Delete(delete) => {
+                self.apply_in_scope(|this| this.apply_delete(delete))
+            }
             PgOutputMessage::Truncate(truncate) => {
                 self.apply_in_scope(|this| this.apply_truncate(truncate))
             }
-            PgOutputMessage::Origin(_) | PgOutputMessage::Type(_) | PgOutputMessage::Message(_) => Ok(()),
+            PgOutputMessage::Origin(_) | PgOutputMessage::Type(_) | PgOutputMessage::Message(_) => {
+                Ok(())
+            }
         }
     }
 
@@ -194,7 +202,9 @@ impl ApplyWorker {
         };
         let mut updated = rows[row_idx].clone();
         for (idx, value) in decoded_new.into_iter().enumerate() {
-            if let DecodedColumn::Value(value) = value && idx < updated.len() {
+            if let DecodedColumn::Value(value) = value
+                && idx < updated.len()
+            {
                 updated[idx] = value;
             }
         }
@@ -272,9 +282,11 @@ impl ApplyWorker {
     }
 
     fn get_relation(&self, relation_id: u32) -> Result<&RelationInfo, ReplicationError> {
-        self.relations.get(&relation_id).ok_or_else(|| ReplicationError {
-            message: format!("unknown relation id {relation_id}"),
-        })
+        self.relations
+            .get(&relation_id)
+            .ok_or_else(|| ReplicationError {
+                message: format!("unknown relation id {relation_id}"),
+            })
     }
 }
 
@@ -317,11 +329,7 @@ fn find_row_index(
     })
 }
 
-fn primary_key_indexes(
-    namespace: &str,
-    table: &str,
-    columns: &[RelationColumn],
-) -> Vec<usize> {
+fn primary_key_indexes(namespace: &str, table: &str, columns: &[RelationColumn]) -> Vec<usize> {
     let key_columns = with_catalog_read(|catalog| {
         catalog
             .resolve_table(

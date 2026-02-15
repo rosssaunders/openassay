@@ -46,9 +46,7 @@ fn describe_statement_plan(stmt: &Statement, lines: &mut Vec<String>, indent: us
         Statement::Query(query) => match &query.body {
             QueryExpr::Select(select) => {
                 if select.from.is_empty() {
-                    lines.push(format!(
-                        "{prefix}Result  (cost=0.00..0.01 rows=1 width=0)"
-                    ));
+                    lines.push(format!("{prefix}Result  (cost=0.00..0.01 rows=1 width=0)"));
                 } else {
                     lines.push(format!(
                         "{prefix}Seq Scan  (cost=0.00..1.00 rows=1 width=0)"
@@ -64,9 +62,7 @@ fn describe_statement_plan(stmt: &Statement, lines: &mut Vec<String>, indent: us
                 }
             }
             QueryExpr::SetOperation { op, .. } => {
-                lines.push(format!(
-                    "{prefix}{op:?}  (cost=0.00..1.00 rows=1 width=0)"
-                ));
+                lines.push(format!("{prefix}{op:?}  (cost=0.00..1.00 rows=1 width=0)"));
             }
             QueryExpr::Nested(inner) => {
                 describe_statement_plan(&Statement::Query((**inner).clone()), lines, indent);
@@ -85,19 +81,13 @@ fn describe_statement_plan(stmt: &Statement, lines: &mut Vec<String>, indent: us
             }
         },
         Statement::Insert(_) => {
-            lines.push(format!(
-                "{prefix}Insert  (cost=0.00..1.00 rows=0 width=0)"
-            ));
+            lines.push(format!("{prefix}Insert  (cost=0.00..1.00 rows=0 width=0)"));
         }
         Statement::Update(_) => {
-            lines.push(format!(
-                "{prefix}Update  (cost=0.00..1.00 rows=0 width=0)"
-            ));
+            lines.push(format!("{prefix}Update  (cost=0.00..1.00 rows=0 width=0)"));
         }
         Statement::Delete(_) => {
-            lines.push(format!(
-                "{prefix}Delete  (cost=0.00..1.00 rows=0 width=0)"
-            ));
+            lines.push(format!("{prefix}Delete  (cost=0.00..1.00 rows=0 width=0)"));
         }
         _ => lines.push(format!("{prefix}Utility Statement")),
     }

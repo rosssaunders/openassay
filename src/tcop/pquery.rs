@@ -678,8 +678,10 @@ fn query_expr_references_relation(expr: &QueryExpr, relation_name: &str) -> bool
         QueryExpr::Nested(query) => query_references_relation(query, relation_name),
         QueryExpr::Values(rows) => {
             // Check if any value expression references the relation
-            rows.iter()
-                .any(|row| row.iter().any(|expr| expr_references_relation(expr, relation_name)))
+            rows.iter().any(|row| {
+                row.iter()
+                    .any(|expr| expr_references_relation(expr, relation_name))
+            })
         }
         QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
             // DML statements in CTEs not yet fully supported

@@ -69,7 +69,11 @@ pub fn distinct_cost(input: PlanCost) -> PlanCost {
 }
 
 pub fn window_cost(input: PlanCost) -> PlanCost {
-    PlanCost::new(input.rows, input.startup_cost, input.total_cost + input.rows * 0.2)
+    PlanCost::new(
+        input.rows,
+        input.startup_cost,
+        input.total_cost + input.rows * 0.2,
+    )
 }
 
 pub fn limit_cost(input: PlanCost, limit: Option<f64>) -> PlanCost {
@@ -78,7 +82,11 @@ pub fn limit_cost(input: PlanCost, limit: Option<f64>) -> PlanCost {
 }
 
 pub fn cte_scan_cost(input: PlanCost) -> PlanCost {
-    PlanCost::new(input.rows, input.startup_cost, input.total_cost + input.rows * 0.05)
+    PlanCost::new(
+        input.rows,
+        input.startup_cost,
+        input.total_cost + input.rows * 0.05,
+    )
 }
 
 pub fn cte_cost<I>(input: PlanCost, cte_costs: I) -> PlanCost

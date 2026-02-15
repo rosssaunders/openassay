@@ -1,5 +1,5 @@
-use crate::replication::client::{ReplicationClient, ReplicationSlot};
 use crate::replication::ReplicationError;
+use crate::replication::client::{ReplicationClient, ReplicationSlot};
 
 pub async fn ensure_replication_slot(
     client: &mut ReplicationClient,

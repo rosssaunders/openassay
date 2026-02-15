@@ -47,7 +47,7 @@ pub fn int2_add(a: i64, b: i64) -> Result<i64, EngineError> {
     // Validate inputs are in int2 range
     let a_i16 = validate_int2(a)?;
     let b_i16 = validate_int2(b)?;
-    
+
     // Use checked arithmetic to detect overflow
     match a_i16.checked_add(b_i16) {
         Some(result) => Ok(result as i64),
@@ -61,7 +61,7 @@ pub fn int2_add(a: i64, b: i64) -> Result<i64, EngineError> {
 pub fn int2_sub(a: i64, b: i64) -> Result<i64, EngineError> {
     let a_i16 = validate_int2(a)?;
     let b_i16 = validate_int2(b)?;
-    
+
     match a_i16.checked_sub(b_i16) {
         Some(result) => Ok(result as i64),
         None => Err(EngineError {
@@ -74,7 +74,7 @@ pub fn int2_sub(a: i64, b: i64) -> Result<i64, EngineError> {
 pub fn int2_mul(a: i64, b: i64) -> Result<i64, EngineError> {
     let a_i16 = validate_int2(a)?;
     let b_i16 = validate_int2(b)?;
-    
+
     match a_i16.checked_mul(b_i16) {
         Some(result) => Ok(result as i64),
         None => Err(EngineError {
@@ -87,20 +87,20 @@ pub fn int2_mul(a: i64, b: i64) -> Result<i64, EngineError> {
 pub fn int2_div(a: i64, b: i64) -> Result<i64, EngineError> {
     let a_i16 = validate_int2(a)?;
     let b_i16 = validate_int2(b)?;
-    
+
     if b_i16 == 0 {
         return Err(EngineError {
             message: "division by zero".to_string(),
         });
     }
-    
+
     // Special case: -32768 / -1 overflows in two's complement
     if a_i16 == i16::MIN && b_i16 == -1 {
         return Err(EngineError {
             message: "smallint out of range".to_string(),
         });
     }
-    
+
     Ok((a_i16 / b_i16) as i64)
 }
 
@@ -108,13 +108,13 @@ pub fn int2_div(a: i64, b: i64) -> Result<i64, EngineError> {
 pub fn int2_mod(a: i64, b: i64) -> Result<i64, EngineError> {
     let a_i16 = validate_int2(a)?;
     let b_i16 = validate_int2(b)?;
-    
+
     if b_i16 == 0 {
         return Err(EngineError {
             message: "division by zero".to_string(),
         });
     }
-    
+
     // Modulo doesn't overflow, even for -32768 % -1 (result is 0)
     Ok((a_i16 % b_i16) as i64)
 }
@@ -123,7 +123,7 @@ pub fn int2_mod(a: i64, b: i64) -> Result<i64, EngineError> {
 pub fn int4_add(a: i64, b: i64) -> Result<i64, EngineError> {
     let a_i32 = validate_int4(a)?;
     let b_i32 = validate_int4(b)?;
-    
+
     match a_i32.checked_add(b_i32) {
         Some(result) => Ok(result as i64),
         None => Err(EngineError {
@@ -136,7 +136,7 @@ pub fn int4_add(a: i64, b: i64) -> Result<i64, EngineError> {
 pub fn int4_sub(a: i64, b: i64) -> Result<i64, EngineError> {
     let a_i32 = validate_int4(a)?;
     let b_i32 = validate_int4(b)?;
-    
+
     match a_i32.checked_sub(b_i32) {
         Some(result) => Ok(result as i64),
         None => Err(EngineError {
@@ -149,7 +149,7 @@ pub fn int4_sub(a: i64, b: i64) -> Result<i64, EngineError> {
 pub fn int4_mul(a: i64, b: i64) -> Result<i64, EngineError> {
     let a_i32 = validate_int4(a)?;
     let b_i32 = validate_int4(b)?;
-    
+
     match a_i32.checked_mul(b_i32) {
         Some(result) => Ok(result as i64),
         None => Err(EngineError {
@@ -162,20 +162,20 @@ pub fn int4_mul(a: i64, b: i64) -> Result<i64, EngineError> {
 pub fn int4_div(a: i64, b: i64) -> Result<i64, EngineError> {
     let a_i32 = validate_int4(a)?;
     let b_i32 = validate_int4(b)?;
-    
+
     if b_i32 == 0 {
         return Err(EngineError {
             message: "division by zero".to_string(),
         });
     }
-    
+
     // Special case: -2147483648 / -1 overflows
     if a_i32 == i32::MIN && b_i32 == -1 {
         return Err(EngineError {
             message: "integer out of range".to_string(),
         });
     }
-    
+
     Ok((a_i32 / b_i32) as i64)
 }
 
@@ -183,13 +183,13 @@ pub fn int4_div(a: i64, b: i64) -> Result<i64, EngineError> {
 pub fn int4_mod(a: i64, b: i64) -> Result<i64, EngineError> {
     let a_i32 = validate_int4(a)?;
     let b_i32 = validate_int4(b)?;
-    
+
     if b_i32 == 0 {
         return Err(EngineError {
             message: "division by zero".to_string(),
         });
     }
-    
+
     Ok((a_i32 % b_i32) as i64)
 }
 
@@ -230,14 +230,14 @@ pub fn int8_div(a: i64, b: i64) -> Result<i64, EngineError> {
             message: "division by zero".to_string(),
         });
     }
-    
+
     // Special case: i64::MIN / -1 overflows
     if a == i64::MIN && b == -1 {
         return Err(EngineError {
             message: "bigint out of range".to_string(),
         });
     }
-    
+
     Ok(a / b)
 }
 
@@ -248,7 +248,7 @@ pub fn int8_mod(a: i64, b: i64) -> Result<i64, EngineError> {
             message: "division by zero".to_string(),
         });
     }
-    
+
     Ok(a % b)
 }
 
@@ -264,10 +264,10 @@ mod tests {
             int2_add(32767, 1).unwrap_err().message,
             "smallint out of range"
         );
-        
+
         // -32768 + (-1) should overflow
         assert!(int2_add(-32768, -1).is_err());
-        
+
         // Valid addition
         assert_eq!(int2_add(100, 200).unwrap(), 300);
     }
@@ -276,7 +276,7 @@ mod tests {
     fn test_int2_overflow_mul() {
         // 200 * 200 = 40000 exceeds int2 max (32767)
         assert!(int2_mul(200, 200).is_err());
-        
+
         // Valid multiplication
         assert_eq!(int2_mul(100, 100).unwrap(), 10000);
     }
@@ -284,10 +284,7 @@ mod tests {
     #[test]
     fn test_int2_division_by_zero() {
         assert!(int2_div(100, 0).is_err());
-        assert_eq!(
-            int2_div(100, 0).unwrap_err().message,
-            "division by zero"
-        );
+        assert_eq!(int2_div(100, 0).unwrap_err().message, "division by zero");
     }
 
     #[test]

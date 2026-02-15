@@ -178,10 +178,7 @@ async fn execute_simple_query(sql: &str) -> Result<Vec<BrowserQueryResult>, Stri
                             Some(bytes) => String::from_utf8(bytes.clone()).unwrap_or_else(|_| {
                                 format!(
                                     "\\x{}",
-                                    bytes
-                                        .iter()
-                                        .map(|b| format!("{b:02x}"))
-                                        .collect::<String>()
+                                    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
                                 )
                             }),
                         })

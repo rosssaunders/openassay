@@ -9,11 +9,11 @@ pub(crate) fn numeric_mod(
     if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
-    
+
     // Handle different numeric types
     let left_num = parse_numeric_operand(&left)?;
     let right_num = parse_numeric_operand(&right)?;
-    
+
     // Check for zero divisor
     let right_is_zero = matches!(right_num, NumericOperand::Int(0))
         || matches!(right_num, NumericOperand::Float(v) if v == 0.0)
@@ -23,11 +23,11 @@ pub(crate) fn numeric_mod(
             message: "division by zero".to_string(),
         });
     }
-    
+
     match (left_num, right_num) {
-        (NumericOperand::Int(a), NumericOperand::Int(b)) => {
-            Ok(ScalarValue::Int(crate::utils::adt::int_arithmetic::int4_mod(a, b)?))
-        }
+        (NumericOperand::Int(a), NumericOperand::Int(b)) => Ok(ScalarValue::Int(
+            crate::utils::adt::int_arithmetic::int4_mod(a, b)?,
+        )),
         (NumericOperand::Int(a), NumericOperand::Numeric(b)) => {
             let a_decimal = rust_decimal::Decimal::from(a);
             Ok(ScalarValue::Numeric(a_decimal % b))
@@ -36,14 +36,14 @@ pub(crate) fn numeric_mod(
             let b_decimal = rust_decimal::Decimal::from(b);
             Ok(ScalarValue::Numeric(a % b_decimal))
         }
-        (NumericOperand::Numeric(a), NumericOperand::Numeric(b)) => {
-            Ok(ScalarValue::Numeric(a % b))
-        }
+        (NumericOperand::Numeric(a), NumericOperand::Numeric(b)) => Ok(ScalarValue::Numeric(a % b)),
         // For float operations, convert to integer-based mod (following PostgreSQL behavior)
         _ => {
             let left_int = parse_i64_scalar(&left, "operator % expects integer values")?;
             let right_int = parse_i64_scalar(&right, "operator % expects integer values")?;
-            Ok(ScalarValue::Int(crate::utils::adt::int_arithmetic::int4_mod(left_int, right_int)?))
+            Ok(ScalarValue::Int(
+                crate::utils::adt::int_arithmetic::int4_mod(left_int, right_int)?,
+            ))
         }
     }
 }

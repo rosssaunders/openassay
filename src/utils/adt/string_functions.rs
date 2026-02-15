@@ -441,7 +441,8 @@ pub(crate) fn eval_format(
                 );
             } else {
                 return Err(EngineError {
-                    message: "format specifier must be followed by a conversion character".to_string(),
+                    message: "format specifier must be followed by a conversion character"
+                        .to_string(),
                 });
             }
         }
@@ -527,9 +528,36 @@ fn quote_literal_str(s: &str) -> String {
 fn is_keyword(s: &str) -> bool {
     matches!(
         s.to_uppercase().as_str(),
-        "SELECT" | "FROM" | "WHERE" | "AND" | "OR" | "NOT" | "NULL" | "TRUE" | "FALSE"
-            | "TABLE" | "CREATE" | "INSERT" | "UPDATE" | "DELETE" | "DROP" | "ALTER"
-            | "INDEX" | "VIEW" | "JOIN" | "LEFT" | "RIGHT" | "INNER" | "OUTER" | "ON"
-            | "AS" | "ORDER" | "BY" | "GROUP" | "HAVING" | "LIMIT" | "OFFSET"
+        "SELECT"
+            | "FROM"
+            | "WHERE"
+            | "AND"
+            | "OR"
+            | "NOT"
+            | "NULL"
+            | "TRUE"
+            | "FALSE"
+            | "TABLE"
+            | "CREATE"
+            | "INSERT"
+            | "UPDATE"
+            | "DELETE"
+            | "DROP"
+            | "ALTER"
+            | "INDEX"
+            | "VIEW"
+            | "JOIN"
+            | "LEFT"
+            | "RIGHT"
+            | "INNER"
+            | "OUTER"
+            | "ON"
+            | "AS"
+            | "ORDER"
+            | "BY"
+            | "GROUP"
+            | "HAVING"
+            | "LIMIT"
+            | "OFFSET"
     )
 }

@@ -121,7 +121,9 @@ impl ConnectionConfig {
     }
 }
 
-fn parse_conninfo_value(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> Result<String, ReplicationError> {
+fn parse_conninfo_value(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) -> Result<String, ReplicationError> {
     let mut value = String::new();
     match chars.peek().copied() {
         Some('\'') => {
@@ -130,7 +132,9 @@ fn parse_conninfo_value(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) ->
                 if ch == '\'' {
                     break;
                 }
-                if ch == '\\' && let Some(next) = chars.next() {
+                if ch == '\\'
+                    && let Some(next) = chars.next()
+                {
                     value.push(next);
                     continue;
                 }
@@ -229,7 +233,9 @@ impl ReplicationStream {
         let now = chrono_timestamp_micros();
         BigEndian::write_i64(&mut payload[25..33], now);
         payload[33] = u8::from(reply_requested);
-        self.connection.send_copy_data(Bytes::copy_from_slice(&payload)).await
+        self.connection
+            .send_copy_data(Bytes::copy_from_slice(&payload))
+            .await
     }
 }
 
@@ -267,9 +273,7 @@ impl ReplicationClient {
         &mut self,
         slot_name: &str,
     ) -> Result<ReplicationSlot, ReplicationError> {
-        let sql = format!(
-            "CREATE_REPLICATION_SLOT {slot_name} LOGICAL pgoutput"
-        );
+        let sql = format!("CREATE_REPLICATION_SLOT {slot_name} LOGICAL pgoutput");
         let rows = self.connection.simple_query(&sql).await?;
         let row = rows.first().ok_or_else(|| ReplicationError {
             message: "CREATE_REPLICATION_SLOT returned no rows".to_string(),
@@ -341,7 +345,10 @@ struct PgWireConnection {
 }
 
 impl PgWireConnection {
-    async fn connect(config: &ConnectionConfig, replication: bool) -> Result<Self, ReplicationError> {
+    async fn connect(
+        config: &ConnectionConfig,
+        replication: bool,
+    ) -> Result<Self, ReplicationError> {
         let addr = format!("{}:{}", config.host, config.port);
         let stream = TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
@@ -364,10 +371,9 @@ impl PgWireConnection {
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect();
-        frontend::startup_message(params_ref, &mut buf)
-            .map_err(|err| ReplicationError {
-                message: err.to_string(),
-            })?;
+        frontend::startup_message(params_ref, &mut buf).map_err(|err| ReplicationError {
+            message: err.to_string(),
+        })?;
         self.stream.write_all(&buf).await?;
         self.authenticate(config).await
     }
@@ -405,7 +411,8 @@ impl PgWireConnection {
                     let password = config.password.as_ref().ok_or_else(|| ReplicationError {
                         message: "SCRAM password required but not provided".to_string(),
                     })?;
-                    let scram_client = ScramSha256::new(password.as_bytes(), ChannelBinding::unrequested());
+                    let scram_client =
+                        ScramSha256::new(password.as_bytes(), ChannelBinding::unrequested());
                     let initial = scram_client.message().to_vec();
                     self.send_sasl_initial(&mechanism, &initial).await?;
                     scram = Some(scram_client);
@@ -459,10 +466,11 @@ impl PgWireConnection {
                     while let Some(range) = range_iter.next().map_err(ReplicationError::from)? {
                         match range {
                             Some(range) => {
-                                let value = str::from_utf8(&buffer[range])
-                                    .map_err(|err| ReplicationError {
+                                let value = str::from_utf8(&buffer[range]).map_err(|err| {
+                                    ReplicationError {
                                         message: err.to_string(),
-                                    })?;
+                                    }
+                                })?;
                                 row.push(Some(value.to_string()));
                             }
                             None => row.push(None),
@@ -502,10 +510,16 @@ impl PgWireConnection {
         Ok(())
     }
 
-    async fn send_sasl_initial(&mut self, mechanism: &str, data: &[u8]) -> Result<(), ReplicationError> {
+    async fn send_sasl_initial(
+        &mut self,
+        mechanism: &str,
+        data: &[u8],
+    ) -> Result<(), ReplicationError> {
         let mut buf = BytesMut::with_capacity(data.len() + 32);
-        frontend::sasl_initial_response(mechanism, data, &mut buf).map_err(|err| ReplicationError {
-            message: err.to_string(),
+        frontend::sasl_initial_response(mechanism, data, &mut buf).map_err(|err| {
+            ReplicationError {
+                message: err.to_string(),
+            }
         })?;
         self.stream.write_all(&buf).await?;
         Ok(())
@@ -543,7 +557,9 @@ impl PgWireConnection {
                     self.read_buf.advance(total_len);
                     return Ok(WireMessage::CopyBothResponse(response));
                 }
-                if let Some(message) = Message::parse(&mut self.read_buf).map_err(ReplicationError::from)? {
+                if let Some(message) =
+                    Message::parse(&mut self.read_buf).map_err(ReplicationError::from)?
+                {
                     return Ok(WireMessage::Protocol(message));
                 }
             }

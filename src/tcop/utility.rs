@@ -1,9 +1,9 @@
+#[cfg(not(target_arch = "wasm32"))]
+use crate::commands::subscription;
 use crate::commands::{
     alter, create_table, do_block, drop, explain, extension, function, index, matview, schema,
     sequence, variable, view,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use crate::commands::subscription;
 use crate::parser::ast::Statement;
 use crate::tcop::engine::{EngineError, QueryResult};
 

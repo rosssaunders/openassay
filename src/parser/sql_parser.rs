@@ -2,24 +2,25 @@ use std::fmt;
 
 use crate::parser::ast::{
     AlterRoleStatement, AlterSequenceAction, AlterSequenceStatement, AlterTableAction,
-    AlterTableStatement, AlterViewAction, AlterViewStatement, Assignment, AssignmentSubscript, BinaryOp, BooleanTestType,
-    ColumnDefinition, CommonTableExpr, ComparisonQuantifier, ConflictTarget, CopyDirection,
-    CopyFormat, CopyOptions, CopyStatement, CreateExtensionStatement, CreateFunctionStatement,
-    CreateIndexStatement, CreateRoleStatement, CreateSchemaStatement, CreateSequenceStatement,
-    CreateSubscriptionStatement, CreateTableStatement, CreateViewStatement, CreateTypeStatement,
-    CreateDomainStatement, CycleClause, DeleteStatement,
-    DiscardStatement, DoStatement, DropBehavior, DropExtensionStatement, DropIndexStatement,
-    DropRoleStatement, DropSchemaStatement, DropSequenceStatement, DropSubscriptionStatement,
-    DropTableStatement, DropViewStatement, DropTypeStatement, DropDomainStatement, ExplainStatement, Expr, ForeignKeyAction,
-    ForeignKeyReference, FunctionParam, FunctionReturnType, GrantRoleStatement, GrantStatement,
-    GrantTablePrivilegesStatement, GroupByExpr, InsertSource, InsertStatement, JoinCondition,
-    JoinExpr, JoinType, ListenStatement, MergeStatement, MergeWhenClause, NotifyStatement,
-    OnConflictClause, OrderByExpr, Query, QueryExpr, RefreshMaterializedViewStatement,
-    RevokeRoleStatement, RevokeStatement, RevokeTablePrivilegesStatement, RoleOption, SearchClause, SelectItem,
-    SelectQuantifier, SelectStatement, SetOperator, SetQuantifier, SetStatement, ShowStatement,
-    Statement, SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression,
-    TableFunctionRef, TablePrivilegeKind, TableRef, TransactionStatement, TruncateStatement,
-    TypeName, UnaryOp, UnlistenStatement, UpdateStatement, WindowDefinition, WindowFrame, WindowFrameBound,
+    AlterTableStatement, AlterViewAction, AlterViewStatement, Assignment, AssignmentSubscript,
+    BinaryOp, BooleanTestType, ColumnDefinition, CommonTableExpr, ComparisonQuantifier,
+    ConflictTarget, CopyDirection, CopyFormat, CopyOptions, CopyStatement, CreateDomainStatement,
+    CreateExtensionStatement, CreateFunctionStatement, CreateIndexStatement, CreateRoleStatement,
+    CreateSchemaStatement, CreateSequenceStatement, CreateSubscriptionStatement,
+    CreateTableStatement, CreateTypeStatement, CreateViewStatement, CycleClause, DeleteStatement,
+    DiscardStatement, DoStatement, DropBehavior, DropDomainStatement, DropExtensionStatement,
+    DropIndexStatement, DropRoleStatement, DropSchemaStatement, DropSequenceStatement,
+    DropSubscriptionStatement, DropTableStatement, DropTypeStatement, DropViewStatement,
+    ExplainStatement, Expr, ForeignKeyAction, ForeignKeyReference, FunctionParam,
+    FunctionReturnType, GrantRoleStatement, GrantStatement, GrantTablePrivilegesStatement,
+    GroupByExpr, InsertSource, InsertStatement, JoinCondition, JoinExpr, JoinType, ListenStatement,
+    MergeStatement, MergeWhenClause, NotifyStatement, OnConflictClause, OrderByExpr, Query,
+    QueryExpr, RefreshMaterializedViewStatement, RevokeRoleStatement, RevokeStatement,
+    RevokeTablePrivilegesStatement, RoleOption, SearchClause, SelectItem, SelectQuantifier,
+    SelectStatement, SetOperator, SetQuantifier, SetStatement, ShowStatement, Statement,
+    SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression, TableFunctionRef,
+    TablePrivilegeKind, TableRef, TransactionStatement, TruncateStatement, TypeName, UnaryOp,
+    UnlistenStatement, UpdateStatement, WindowDefinition, WindowFrame, WindowFrameBound,
     WindowFrameExclusion, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::parser::lexer::{Keyword, LexError, Token, TokenKind, lex_sql};
@@ -228,9 +229,7 @@ impl Parser {
         }
         if self.consume_ident("subscription") {
             if or_replace || unique || materialized {
-                return Err(self.error_at_current(
-                    "unexpected modifier before CREATE SUBSCRIPTION",
-                ));
+                return Err(self.error_at_current("unexpected modifier before CREATE SUBSCRIPTION"));
             }
             return self.parse_create_subscription();
         }
@@ -243,7 +242,10 @@ impl Parser {
             }
             let if_not_exists = if self.consume_keyword(Keyword::If) {
                 self.expect_keyword(Keyword::Not, "expected NOT after IF in CREATE INDEX")?;
-                self.expect_keyword(Keyword::Exists, "expected EXISTS after IF NOT in CREATE INDEX")?;
+                self.expect_keyword(
+                    Keyword::Exists,
+                    "expected EXISTS after IF NOT in CREATE INDEX",
+                )?;
                 true
             } else {
                 false
@@ -328,11 +330,15 @@ impl Parser {
             }));
         }
         // Parse optional TEMP/TEMPORARY early so it's available for both VIEW and TABLE
-        let temporary_early = self.consume_keyword(Keyword::Temporary) || self.consume_keyword(Keyword::Temp);
+        let temporary_early =
+            self.consume_keyword(Keyword::Temporary) || self.consume_keyword(Keyword::Temp);
         if self.consume_keyword(Keyword::View) {
             let if_not_exists = if self.consume_keyword(Keyword::If) {
                 self.expect_keyword(Keyword::Not, "expected NOT after IF in CREATE VIEW")?;
-                self.expect_keyword(Keyword::Exists, "expected EXISTS after IF NOT in CREATE VIEW")?;
+                self.expect_keyword(
+                    Keyword::Exists,
+                    "expected EXISTS after IF NOT in CREATE VIEW",
+                )?;
                 true
             } else {
                 false
@@ -379,11 +385,13 @@ impl Parser {
         if materialized {
             return Err(self.error_at_current("expected VIEW after CREATE MATERIALIZED"));
         }
-        
+
         // Parse optional TEMP/TEMPORARY or UNLOGGED before TABLE
-        let temporary = temporary_early || self.consume_keyword(Keyword::Temporary) || self.consume_keyword(Keyword::Temp);
+        let temporary = temporary_early
+            || self.consume_keyword(Keyword::Temporary)
+            || self.consume_keyword(Keyword::Temp);
         let unlogged = self.consume_ident("unlogged");
-        
+
         if self.consume_ident("role") {
             if temporary || unlogged {
                 return Err(self.error_at_current("unexpected modifier before CREATE ROLE"));
@@ -419,7 +427,10 @@ impl Parser {
             }
             let if_not_exists = if self.consume_keyword(Keyword::If) {
                 self.expect_keyword(Keyword::Not, "expected NOT after IF in CREATE SEQUENCE")?;
-                self.expect_keyword(Keyword::Exists, "expected EXISTS after IF NOT in CREATE SEQUENCE")?;
+                self.expect_keyword(
+                    Keyword::Exists,
+                    "expected EXISTS after IF NOT in CREATE SEQUENCE",
+                )?;
                 true
             } else {
                 false
@@ -449,7 +460,7 @@ impl Parser {
                 |k| matches!(k, TokenKind::LParen),
                 "expected '(' after CREATE TYPE ... AS ENUM",
             )?;
-            
+
             // Parse first enum value
             let first_value = match self.current_kind() {
                 TokenKind::String(value) => {
@@ -460,7 +471,7 @@ impl Parser {
                 _ => return Err(self.error_at_current("expected string literal for enum value")),
             };
             let mut enum_values = vec![first_value];
-            
+
             // Parse remaining enum values
             while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                 let value = match self.current_kind() {
@@ -469,11 +480,13 @@ impl Parser {
                         self.advance();
                         out
                     }
-                    _ => return Err(self.error_at_current("expected string literal for enum value")),
+                    _ => {
+                        return Err(self.error_at_current("expected string literal for enum value"));
+                    }
                 };
                 enum_values.push(value);
             }
-            
+
             self.expect_token(
                 |k| matches!(k, TokenKind::RParen),
                 "expected ')' after enum values",
@@ -514,18 +527,21 @@ impl Parser {
             Keyword::Table,
             "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, TYPE, DOMAIN, or SUBSCRIPTION after CREATE",
         )?;
-        
+
         // Parse optional IF NOT EXISTS clause
         let if_not_exists = if self.consume_keyword(Keyword::If) {
             self.expect_keyword(Keyword::Not, "expected NOT after IF in CREATE TABLE")?;
-            self.expect_keyword(Keyword::Exists, "expected EXISTS after IF NOT in CREATE TABLE")?;
+            self.expect_keyword(
+                Keyword::Exists,
+                "expected EXISTS after IF NOT in CREATE TABLE",
+            )?;
             true
         } else {
             false
         };
-        
+
         let name = self.parse_qualified_name()?;
-        
+
         // Check for CREATE TABLE AS SELECT (CTAS)
         if self.consume_keyword(Keyword::As) {
             let query = self.parse_query()?;
@@ -539,7 +555,7 @@ impl Parser {
                 as_select: Some(Box::new(query)),
             }));
         }
-        
+
         self.expect_token(
             |k| matches!(k, TokenKind::LParen),
             "expected '(' or AS after CREATE TABLE name",
@@ -572,16 +588,16 @@ impl Parser {
         if self.consume_keyword(Keyword::With)
             && self.consume_if(|k| matches!(k, TokenKind::LParen))
         {
-                let mut depth = 1i32;
-                while depth > 0 {
-                    if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
-                        depth += 1;
-                    } else if self.consume_if(|k| matches!(k, TokenKind::RParen)) {
-                        depth -= 1;
-                    } else {
-                        self.advance();
-                    }
+            let mut depth = 1i32;
+            while depth > 0 {
+                if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+                    depth += 1;
+                } else if self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+                    depth -= 1;
+                } else {
+                    self.advance();
                 }
+            }
         }
 
         Ok(Statement::CreateTable(CreateTableStatement {
@@ -805,7 +821,10 @@ impl Parser {
                 self.advance(); // consume ROW
                 self.expect_token(|k| matches!(k, TokenKind::LParen), "expected '(' after ROW")?;
                 let values = self.parse_update_value_expr_list()?;
-                self.expect_token(|k| matches!(k, TokenKind::RParen), "expected ')' after ROW values")?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after ROW values",
+                )?;
                 if values.len() != columns.len() {
                     return Err(self.error_at_current(&format!(
                         "number of columns ({}) does not match number of values ({})",
@@ -1037,9 +1056,9 @@ impl Parser {
                     )?;
                     when_clauses.push(MergeWhenClause::NotMatchedDoNothing { condition });
                 } else {
-                    return Err(self.error_at_current(
-                        "expected INSERT or DO NOTHING for WHEN NOT MATCHED",
-                    ));
+                    return Err(
+                        self.error_at_current("expected INSERT or DO NOTHING for WHEN NOT MATCHED")
+                    );
                 }
                 continue;
             }
@@ -1154,7 +1173,10 @@ impl Parser {
                 false
             };
             let name = self.parse_identifier()?;
-            return Ok(Statement::DropSubscription(DropSubscriptionStatement { name, if_exists }));
+            return Ok(Statement::DropSubscription(DropSubscriptionStatement {
+                name,
+                if_exists,
+            }));
         }
         if self.consume_keyword(Keyword::View) {
             let if_exists = if self.consume_keyword(Keyword::If) {
@@ -1304,9 +1326,7 @@ impl Parser {
     fn parse_create_subscription(&mut self) -> Result<Statement, ParseError> {
         let name = self.parse_identifier()?;
         if !self.consume_ident("connection") {
-            return Err(self.error_at_current(
-                "expected CONNECTION after CREATE SUBSCRIPTION name",
-            ));
+            return Err(self.error_at_current("expected CONNECTION after CREATE SUBSCRIPTION name"));
         }
         let connection = match self.current_kind() {
             TokenKind::String(value) => {
@@ -1321,9 +1341,9 @@ impl Parser {
             }
         };
         if !self.consume_ident("publication") {
-            return Err(self.error_at_current(
-                "expected PUBLICATION after CREATE SUBSCRIPTION CONNECTION",
-            ));
+            return Err(
+                self.error_at_current("expected PUBLICATION after CREATE SUBSCRIPTION CONNECTION")
+            );
         }
         let publication = self.parse_identifier()?;
         let options = if self.consume_keyword(Keyword::With) {
@@ -1361,38 +1381,32 @@ impl Parser {
             match option.as_str() {
                 "COPY_DATA" => {
                     let Some(value) = self.take_keyword_or_identifier_upper() else {
-                        return Err(self.error_at_current(
-                            "COPY_DATA requires TRUE or FALSE",
-                        ));
+                        return Err(self.error_at_current("COPY_DATA requires TRUE or FALSE"));
                     };
                     match value.as_str() {
                         "TRUE" => options.copy_data = true,
                         "FALSE" => options.copy_data = false,
                         _ => {
-                            return Err(self.error_at_current(
-                                "COPY_DATA requires TRUE or FALSE",
-                            ));
+                            return Err(self.error_at_current("COPY_DATA requires TRUE or FALSE"));
                         }
                     }
                 }
-                "SLOT_NAME" => {
-                    match self.current_kind() {
-                        TokenKind::String(value) => {
-                            let out = value.clone();
-                            self.advance();
-                            options.slot_name = Some(out);
-                        }
-                        _ => {
-                            return Err(self.error_at_current(
-                                "SLOT_NAME requires a single-quoted string",
-                            ));
-                        }
+                "SLOT_NAME" => match self.current_kind() {
+                    TokenKind::String(value) => {
+                        let out = value.clone();
+                        self.advance();
+                        options.slot_name = Some(out);
                     }
-                }
+                    _ => {
+                        return Err(
+                            self.error_at_current("SLOT_NAME requires a single-quoted string")
+                        );
+                    }
+                },
                 _ => {
-                    return Err(self.error_at_current(&format!(
-                        "unsupported subscription option {option}"
-                    )));
+                    return Err(
+                        self.error_at_current(&format!("unsupported subscription option {option}"))
+                    );
                 }
             }
             if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
@@ -1903,9 +1917,15 @@ impl Parser {
         // Parse optional array subscripts: col[idx], col[start:end], etc.
         while self.consume_if(|k| matches!(k, TokenKind::LBracket)) {
             // Check for empty-start slice [:end]
-            if self.peek_nth_kind(0).is_some_and(|k| matches!(k, TokenKind::Colon)) {
+            if self
+                .peek_nth_kind(0)
+                .is_some_and(|k| matches!(k, TokenKind::Colon))
+            {
                 self.advance(); // consume ':'
-                let end_expr = if self.peek_nth_kind(0).is_some_and(|k| matches!(k, TokenKind::RBracket)) {
+                let end_expr = if self
+                    .peek_nth_kind(0)
+                    .is_some_and(|k| matches!(k, TokenKind::RBracket))
+                {
                     None
                 } else {
                     Some(self.parse_expr()?)
@@ -1915,7 +1935,10 @@ impl Parser {
             } else {
                 let first = self.parse_expr()?;
                 if self.consume_if(|k| matches!(k, TokenKind::Colon)) {
-                    let end_expr = if self.peek_nth_kind(0).is_some_and(|k| matches!(k, TokenKind::RBracket)) {
+                    let end_expr = if self
+                        .peek_nth_kind(0)
+                        .is_some_and(|k| matches!(k, TokenKind::RBracket))
+                    {
                         None
                     } else {
                         Some(self.parse_expr()?)
@@ -1933,7 +1956,11 @@ impl Parser {
             "expected '=' in assignment",
         )?;
         let value = self.parse_update_value_expr()?;
-        Ok(Assignment { column, subscripts, value })
+        Ok(Assignment {
+            column,
+            subscripts,
+            value,
+        })
     }
 
     fn parse_insert_value_expr(&mut self) -> Result<Expr, ParseError> {
@@ -2348,7 +2375,9 @@ impl Parser {
                     "name" => TypeName::Name,
                     "numeric" | "decimal" => TypeName::Numeric,
                     _ => {
-                        return Err(self.error_at_current(&format!("unsupported type name \"{other}\"")));
+                        return Err(
+                            self.error_at_current(&format!("unsupported type name \"{other}\""))
+                        );
                     }
                 };
                 return Ok(TypeName::Array(Box::new(inner_ty)));
@@ -2398,7 +2427,7 @@ impl Parser {
             let mut ctes = Vec::new();
             loop {
                 let name = self.parse_identifier()?;
-                
+
                 // Optional column list: WITH cte(a, b) AS (...)
                 let column_names = if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
                     let mut cols = vec![self.parse_identifier()?];
@@ -2413,9 +2442,9 @@ impl Parser {
                 } else {
                     Vec::new()
                 };
-                
+
                 self.expect_keyword(Keyword::As, "expected AS in common table expression")?;
-                
+
                 // Optional MATERIALIZED / NOT MATERIALIZED hint
                 let materialized = if self.consume_keyword(Keyword::Materialized) {
                     Some(true)
@@ -2425,7 +2454,7 @@ impl Parser {
                 } else {
                     None
                 };
-                
+
                 self.expect_token(
                     |k| matches!(k, TokenKind::LParen),
                     "expected '(' to open common table expression",
@@ -2435,21 +2464,21 @@ impl Parser {
                     |k| matches!(k, TokenKind::RParen),
                     "expected ')' to close common table expression",
                 )?;
-                
+
                 // Optional SEARCH clause
                 let search_clause = if self.consume_keyword(Keyword::Search) {
                     Some(self.parse_search_clause()?)
                 } else {
                     None
                 };
-                
+
                 // Optional CYCLE clause
                 let cycle_clause = if self.consume_keyword(Keyword::Cycle) {
                     Some(self.parse_cycle_clause()?)
                 } else {
                     None
                 };
-                
+
                 ctes.push(CommonTableExpr {
                     name,
                     column_names,
@@ -2506,18 +2535,18 @@ impl Parser {
         } else {
             return Err(self.error_at_current("expected DEPTH or BREADTH after SEARCH"));
         };
-        
+
         self.expect_keyword(Keyword::First, "expected FIRST after DEPTH/BREADTH")?;
         self.expect_keyword(Keyword::By, "expected BY in SEARCH clause")?;
-        
+
         let mut by_columns = vec![self.parse_identifier()?];
         while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
             by_columns.push(self.parse_identifier()?);
         }
-        
+
         self.expect_keyword(Keyword::Set, "expected SET in SEARCH clause")?;
         let set_column = self.parse_identifier()?;
-        
+
         Ok(SearchClause {
             depth_first,
             by_columns,
@@ -2531,22 +2560,25 @@ impl Parser {
         while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
             columns.push(self.parse_identifier()?);
         }
-        
+
         self.expect_keyword(Keyword::Set, "expected SET in CYCLE clause")?;
         let set_column = self.parse_identifier()?;
-        
+
         let (mark_value, default_value) = if self.consume_keyword(Keyword::To) {
             let mark = self.parse_literal_string()?;
-            self.expect_keyword(Keyword::Default, "expected DEFAULT after TO value in CYCLE clause")?;
+            self.expect_keyword(
+                Keyword::Default,
+                "expected DEFAULT after TO value in CYCLE clause",
+            )?;
             let default = self.parse_literal_string()?;
             (Some(mark), Some(default))
         } else {
             (None, None)
         };
-        
+
         self.expect_keyword(Keyword::Using, "expected USING in CYCLE clause")?;
         let using_column = self.parse_identifier()?;
-        
+
         Ok(CycleClause {
             columns,
             set_column,
@@ -2640,7 +2672,9 @@ impl Parser {
             return Ok(QueryExpr::Nested(Box::new(nested)));
         }
 
-        Err(self.error_at_current("expected query term (SELECT, VALUES, INSERT, UPDATE, DELETE, or parenthesized query)"))
+        Err(self.error_at_current(
+            "expected query term (SELECT, VALUES, INSERT, UPDATE, DELETE, or parenthesized query)",
+        ))
     }
 
     fn parse_select_after_select_keyword(&mut self) -> Result<SelectStatement, ParseError> {
@@ -2940,7 +2974,7 @@ impl Parser {
         let mut out = Vec::new();
         loop {
             let expr = self.parse_expr()?;
-            
+
             // Check for USING operator before ASC/DESC
             let (using_operator, ascending) = if self.consume_keyword(Keyword::Using) {
                 // Parse the operator after USING
@@ -2972,9 +3006,9 @@ impl Parser {
                 };
                 // Map common operators to ascending/descending
                 let asc = match operator.as_str() {
-                    "<" | "<=" => Some(true),   // USING < means ascending
-                    ">" | ">=" => Some(false),  // USING > means descending
-                    _ => None,                   // Other operators don't have clear mapping
+                    "<" | "<=" => Some(true),  // USING < means ascending
+                    ">" | ">=" => Some(false), // USING > means descending
+                    _ => None,                 // Other operators don't have clear mapping
                 };
                 (Some(operator), asc)
             } else if self.consume_keyword(Keyword::Asc) {
@@ -2984,7 +3018,7 @@ impl Parser {
             } else {
                 (None, None)
             };
-            
+
             out.push(OrderByExpr {
                 expr,
                 ascending,
@@ -3123,16 +3157,25 @@ impl Parser {
                     break;
                 }
                 self.advance(); // consume '['
-                
+
                 // Check for empty-start slice [:end] or [:]
-                if self.peek_nth_kind(0).is_some_and(|k| matches!(k, TokenKind::Colon)) {
+                if self
+                    .peek_nth_kind(0)
+                    .is_some_and(|k| matches!(k, TokenKind::Colon))
+                {
                     self.advance(); // consume ':'
-                    let end_expr = if self.peek_nth_kind(0).is_some_and(|k| matches!(k, TokenKind::RBracket)) {
+                    let end_expr = if self
+                        .peek_nth_kind(0)
+                        .is_some_and(|k| matches!(k, TokenKind::RBracket))
+                    {
                         None // [:]
                     } else {
                         Some(Box::new(self.parse_expr()?)) // [:end]
                     };
-                    self.expect_token(|k| matches!(k, TokenKind::RBracket), "expected ']' after array slice")?;
+                    self.expect_token(
+                        |k| matches!(k, TokenKind::RBracket),
+                        "expected ']' after array slice",
+                    )?;
                     lhs = Expr::ArraySlice {
                         expr: Box::new(lhs),
                         start: None,
@@ -3141,13 +3184,19 @@ impl Parser {
                 } else {
                     // Parse first expression
                     let first_expr = self.parse_expr()?;
-                    
+
                     // Check for slice syntax ':'
-                    if self.peek_nth_kind(0).is_some_and(|k| matches!(k, TokenKind::Colon)) {
+                    if self
+                        .peek_nth_kind(0)
+                        .is_some_and(|k| matches!(k, TokenKind::Colon))
+                    {
                         self.advance(); // consume ':'
-                        
+
                         // Check for end expression
-                        if self.peek_nth_kind(0).is_some_and(|k| matches!(k, TokenKind::RBracket)) {
+                        if self
+                            .peek_nth_kind(0)
+                            .is_some_and(|k| matches!(k, TokenKind::RBracket))
+                        {
                             // arr[start:]
                             self.expect_token(
                                 |k| matches!(k, TokenKind::RBracket),
@@ -3286,7 +3335,8 @@ impl Parser {
                     continue;
                 }
                 // IS [NOT] UNKNOWN
-                if matches!(self.current_kind(), TokenKind::Identifier(id) if id.eq_ignore_ascii_case("unknown")) {
+                if matches!(self.current_kind(), TokenKind::Identifier(id) if id.eq_ignore_ascii_case("unknown"))
+                {
                     self.advance();
                     lhs = Expr::BooleanTest {
                         expr: Box::new(lhs),
@@ -3295,7 +3345,10 @@ impl Parser {
                     };
                     continue;
                 }
-                self.expect_keyword(Keyword::Distinct, "expected NULL, TRUE, FALSE, UNKNOWN, or DISTINCT after IS")?;
+                self.expect_keyword(
+                    Keyword::Distinct,
+                    "expected NULL, TRUE, FALSE, UNKNOWN, or DISTINCT after IS",
+                )?;
                 self.expect_keyword(Keyword::From, "expected FROM after IS DISTINCT")?;
                 let rhs = self.parse_expr_bp(6)?;
                 lhs = Expr::IsDistinctFrom {
@@ -3399,7 +3452,11 @@ impl Parser {
             return Err(self.error_at_current("expected ARRAY[ or ARRAY("));
         }
         // ROW constructor: ROW(expr, expr, ...)
-        if self.peek_keyword(Keyword::Row) && self.peek_nth_kind(1).is_some_and(|k| matches!(k, TokenKind::LParen)) {
+        if self.peek_keyword(Keyword::Row)
+            && self
+                .peek_nth_kind(1)
+                .is_some_and(|k| matches!(k, TokenKind::LParen))
+        {
             self.advance(); // consume ROW
             self.advance(); // consume (
             let mut fields = Vec::new();
@@ -3421,7 +3478,9 @@ impl Parser {
             || self.peek_keyword(Keyword::Time)
             || self.peek_keyword(Keyword::Timestamp)
             || self.peek_keyword(Keyword::Interval))
-            && self.peek_nth_kind(1).is_some_and(|k| matches!(k, TokenKind::String(_)))
+            && self
+                .peek_nth_kind(1)
+                .is_some_and(|k| matches!(k, TokenKind::String(_)))
         {
             let type_name = if self.consume_keyword(Keyword::Date) {
                 "date"
@@ -3434,7 +3493,7 @@ impl Parser {
             } else {
                 unreachable!()
             };
-            
+
             // Get the string literal
             if let Some(TokenKind::String(value)) = self.peek_nth_kind(0) {
                 let value_str = value.clone();
@@ -3590,32 +3649,45 @@ impl Parser {
         // Handle type-name 'literal' syntax for types like bool, int, etc.
         if name.len() == 1 {
             let type_lower = name[0].to_ascii_lowercase();
-            let is_type_literal = matches!(type_lower.as_str(),
-                "bool" | "boolean" | "int" | "integer" | "int2" | "int4" | "int8"
-                | "smallint" | "bigint" | "float" | "float4" | "float8"
-                | "real" | "numeric" | "decimal" | "text" | "varchar"
+            let is_type_literal = matches!(
+                type_lower.as_str(),
+                "bool"
+                    | "boolean"
+                    | "int"
+                    | "integer"
+                    | "int2"
+                    | "int4"
+                    | "int8"
+                    | "smallint"
+                    | "bigint"
+                    | "float"
+                    | "float4"
+                    | "float8"
+                    | "real"
+                    | "numeric"
+                    | "decimal"
+                    | "text"
+                    | "varchar"
             );
-            if is_type_literal
-                && let Some(TokenKind::String(value)) = self.peek_nth_kind(0)
-            {
-                    let value_str = value.clone();
-                    self.advance();
-                    // Normalize type name for TypedLiteral
-                    let normalized = match type_lower.as_str() {
-                        "bool" | "boolean" => "boolean",
-                        "int" | "integer" | "int4" => "integer",
-                        "int2" | "smallint" => "smallint",
-                        "int8" | "bigint" => "bigint",
-                        "float" | "float8" => "double precision",
-                        "float4" | "real" => "real",
-                        "numeric" | "decimal" => "numeric",
-                        "text" | "varchar" => "text",
-                        _ => &type_lower,
-                    };
-                    return Ok(Expr::TypedLiteral {
-                        type_name: normalized.to_string(),
-                        value: value_str,
-                    });
+            if is_type_literal && let Some(TokenKind::String(value)) = self.peek_nth_kind(0) {
+                let value_str = value.clone();
+                self.advance();
+                // Normalize type name for TypedLiteral
+                let normalized = match type_lower.as_str() {
+                    "bool" | "boolean" => "boolean",
+                    "int" | "integer" | "int4" => "integer",
+                    "int2" | "smallint" => "smallint",
+                    "int8" | "bigint" => "bigint",
+                    "float" | "float8" => "double precision",
+                    "float4" | "real" => "real",
+                    "numeric" | "decimal" => "numeric",
+                    "text" | "varchar" => "text",
+                    _ => &type_lower,
+                };
+                return Ok(Expr::TypedLiteral {
+                    type_name: normalized.to_string(),
+                    value: value_str,
+                });
             }
         }
 
@@ -3737,21 +3809,21 @@ impl Parser {
                         }
                         _ => None,
                     };
-                    
+
                     // Check if there's a characters expression before FROM
                     let chars_expr = if !self.peek_keyword(Keyword::From) {
                         Some(self.parse_expr_bp(6)?)
                     } else {
                         None
                     };
-                    
+
                     if self.consume_keyword(Keyword::From) {
                         let string = self.parse_expr_bp(6)?;
                         self.expect_token(
                             |k| matches!(k, TokenKind::RParen),
                             "expected ')' after TRIM arguments",
                         )?;
-                        
+
                         // Build args: [mode, chars, string] or subsets
                         args = Vec::new();
                         if let Some(mode) = trim_mode {
@@ -3761,7 +3833,7 @@ impl Parser {
                             args.push(chars);
                         }
                         args.push(string);
-                        
+
                         return Ok(Expr::FunctionCall {
                             name,
                             args,
@@ -3857,8 +3929,7 @@ impl Parser {
                 // OVER can be followed by:
                 // 1. Window name: OVER window_name
                 // 2. Window spec: OVER (...)
-                if matches!(self.current_kind(), TokenKind::Identifier(_))
-                {
+                if matches!(self.current_kind(), TokenKind::Identifier(_)) {
                     // Check if next token is LParen - if not, this is OVER window_name
                     let next_is_lparen = matches!(self.peek_nth_kind(1), Some(TokenKind::LParen));
                     if !next_is_lparen {
@@ -3910,7 +3981,7 @@ impl Parser {
                 "expected ')' to close window definition",
             )?;
             definitions.push(WindowDefinition { name, spec });
-            
+
             if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                 break;
             }
@@ -3923,9 +3994,9 @@ impl Parser {
             |k| matches!(k, TokenKind::LParen),
             "expected '(' after OVER",
         )?;
-        
+
         // Check for a named window reference: OVER (window_name) or OVER (window_name ORDER BY ...)
-        let name = if matches!(self.current_kind(), TokenKind::Identifier(_)) 
+        let name = if matches!(self.current_kind(), TokenKind::Identifier(_))
             && !self.peek_keyword(Keyword::Partition)
             && !self.peek_keyword(Keyword::Order)
             && !self.peek_keyword(Keyword::Rows)
@@ -3952,9 +4023,9 @@ impl Parser {
         } else {
             None
         };
-        
+
         let spec = self.parse_window_spec_body()?;
-        
+
         self.expect_token(
             |k| matches!(k, TokenKind::RParen),
             "expected ')' to close OVER clause",
@@ -4006,9 +4077,9 @@ impl Parser {
         } else if self.consume_keyword(Keyword::Groups) {
             WindowFrameUnits::Groups
         } else {
-            return Err(self.error_at_current(
-                "expected ROWS, RANGE, or GROUPS in window frame clause",
-            ));
+            return Err(
+                self.error_at_current("expected ROWS, RANGE, or GROUPS in window frame clause")
+            );
         };
 
         self.expect_keyword(Keyword::Between, "expected BETWEEN in window frame clause")?;
@@ -4207,9 +4278,8 @@ impl Parser {
                     "numeric" | "decimal" => "float8",
                     "text" | "varchar" | "char" | "name" => "text",
                     _ => {
-                        return Err(
-                            self.error_at_current(&format!("unsupported cast type name \"{other}\""))
-                        );
+                        return Err(self
+                            .error_at_current(&format!("unsupported cast type name \"{other}\"")));
                     }
                 };
                 format!("{inner_norm}[]")
@@ -4386,14 +4456,14 @@ impl Parser {
         case_insensitive: bool,
     ) -> Result<Expr, ParseError> {
         let pattern = self.parse_expr_bp(6)?;
-        
+
         // Check for optional ESCAPE clause
         let escape = if self.consume_keyword(Keyword::Escape) {
             Some(Box::new(self.parse_expr_bp(6)?))
         } else {
             None
         };
-        
+
         Ok(Expr::Like {
             expr: Box::new(lhs),
             pattern: Box::new(pattern),
@@ -4539,8 +4609,14 @@ impl Parser {
             let mut depth = 1usize;
             while depth > 0 {
                 match self.current_kind() {
-                    TokenKind::LBracket => { depth += 1; self.advance(); }
-                    TokenKind::RBracket => { depth -= 1; self.advance(); }
+                    TokenKind::LBracket => {
+                        depth += 1;
+                        self.advance();
+                    }
+                    TokenKind::RBracket => {
+                        depth -= 1;
+                        self.advance();
+                    }
                     TokenKind::Eof => break,
                     _ => self.advance(),
                 }
@@ -5329,9 +5405,8 @@ mod tests {
 
     #[test]
     fn parses_with_cte_not_materialized() {
-        let stmt =
-            parse_statement("WITH t AS NOT MATERIALIZED (SELECT 1 AS id) SELECT id FROM t")
-                .expect("parse should succeed");
+        let stmt = parse_statement("WITH t AS NOT MATERIALIZED (SELECT 1 AS id) SELECT id FROM t")
+            .expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -5343,10 +5418,8 @@ mod tests {
 
     #[test]
     fn parses_with_cte_column_list_and_materialized() {
-        let stmt = parse_statement(
-            "WITH t(x, y) AS MATERIALIZED (SELECT 1, 2) SELECT x, y FROM t",
-        )
-        .expect("parse should succeed");
+        let stmt = parse_statement("WITH t(x, y) AS MATERIALIZED (SELECT 1, 2) SELECT x, y FROM t")
+            .expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -5370,7 +5443,10 @@ mod tests {
         };
         let with = query.with.as_ref().expect("with clause should exist");
         assert_eq!(with.ctes.len(), 1);
-        let search = with.ctes[0].search_clause.as_ref().expect("search clause should exist");
+        let search = with.ctes[0]
+            .search_clause
+            .as_ref()
+            .expect("search clause should exist");
         assert!(search.depth_first);
         assert_eq!(search.by_columns, vec!["id"]);
         assert_eq!(search.set_column, "ordercol");
@@ -5388,7 +5464,10 @@ mod tests {
             panic!("expected query statement");
         };
         let with = query.with.as_ref().expect("with clause should exist");
-        let search = with.ctes[0].search_clause.as_ref().expect("search clause should exist");
+        let search = with.ctes[0]
+            .search_clause
+            .as_ref()
+            .expect("search clause should exist");
         assert!(!search.depth_first);
         assert_eq!(search.by_columns, vec!["id", "name"]);
         assert_eq!(search.set_column, "seqcol");
@@ -5406,7 +5485,10 @@ mod tests {
             panic!("expected query statement");
         };
         let with = query.with.as_ref().expect("with clause should exist");
-        let cycle = with.ctes[0].cycle_clause.as_ref().expect("cycle clause should exist");
+        let cycle = with.ctes[0]
+            .cycle_clause
+            .as_ref()
+            .expect("cycle clause should exist");
         assert_eq!(cycle.columns, vec!["id"]);
         assert_eq!(cycle.set_column, "is_cycle");
         assert_eq!(cycle.using_column, "path");
@@ -5426,7 +5508,10 @@ mod tests {
             panic!("expected query statement");
         };
         let with = query.with.as_ref().expect("with clause should exist");
-        let cycle = with.ctes[0].cycle_clause.as_ref().expect("cycle clause should exist");
+        let cycle = with.ctes[0]
+            .cycle_clause
+            .as_ref()
+            .expect("cycle clause should exist");
         assert_eq!(cycle.columns, vec!["id"]);
         assert_eq!(cycle.set_column, "is_cycle");
         assert_eq!(cycle.using_column, "path");
@@ -7178,8 +7263,8 @@ mod tests {
         assert!(!create.options.copy_data);
         assert_eq!(create.options.slot_name.as_deref(), Some("slot1"));
 
-        let stmt = parse_statement("DROP SUBSCRIPTION IF EXISTS sub1")
-            .expect("parse should succeed");
+        let stmt =
+            parse_statement("DROP SUBSCRIPTION IF EXISTS sub1").expect("parse should succeed");
         let Statement::DropSubscription(drop) = stmt else {
             panic!("expected drop subscription");
         };
@@ -7202,8 +7287,8 @@ mod tests {
 
     #[test]
     fn parses_create_temporary_table() {
-        let stmt = parse_statement("CREATE TEMPORARY TABLE bar (id INT)")
-            .expect("parse should succeed");
+        let stmt =
+            parse_statement("CREATE TEMPORARY TABLE bar (id INT)").expect("parse should succeed");
         let Statement::CreateTable(create) = stmt else {
             panic!("expected create table statement");
         };
@@ -7266,7 +7351,14 @@ mod tests {
             panic!("expected create type statement");
         };
         assert_eq!(create.name, vec!["mood".to_string()]);
-        assert_eq!(create.as_enum, vec!["happy".to_string(), "sad".to_string(), "neutral".to_string()]);
+        assert_eq!(
+            create.as_enum,
+            vec![
+                "happy".to_string(),
+                "sad".to_string(),
+                "neutral".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -7276,14 +7368,16 @@ mod tests {
         let Statement::CreateType(create) = stmt else {
             panic!("expected create type statement");
         };
-        assert_eq!(create.name, vec!["public".to_string(), "status".to_string()]);
+        assert_eq!(
+            create.name,
+            vec!["public".to_string(), "status".to_string()]
+        );
         assert_eq!(create.as_enum.len(), 2);
     }
 
     #[test]
     fn parses_create_domain() {
-        let stmt = parse_statement("CREATE DOMAIN posint AS INT")
-            .expect("parse should succeed");
+        let stmt = parse_statement("CREATE DOMAIN posint AS INT").expect("parse should succeed");
         let Statement::CreateDomain(create) = stmt else {
             panic!("expected create domain statement");
         };
@@ -7304,8 +7398,7 @@ mod tests {
 
     #[test]
     fn parses_drop_type() {
-        let stmt = parse_statement("DROP TYPE mood")
-            .expect("parse should succeed");
+        let stmt = parse_statement("DROP TYPE mood").expect("parse should succeed");
         let Statement::DropType(drop) = stmt else {
             panic!("expected drop type statement");
         };
@@ -7315,8 +7408,8 @@ mod tests {
 
     #[test]
     fn parses_drop_type_if_exists_cascade() {
-        let stmt = parse_statement("DROP TYPE IF EXISTS mood CASCADE")
-            .expect("parse should succeed");
+        let stmt =
+            parse_statement("DROP TYPE IF EXISTS mood CASCADE").expect("parse should succeed");
         let Statement::DropType(drop) = stmt else {
             panic!("expected drop type statement");
         };
@@ -7326,8 +7419,7 @@ mod tests {
 
     #[test]
     fn parses_drop_domain() {
-        let stmt = parse_statement("DROP DOMAIN posint")
-            .expect("parse should succeed");
+        let stmt = parse_statement("DROP DOMAIN posint").expect("parse should succeed");
         let Statement::DropDomain(drop) = stmt else {
             panic!("expected drop domain statement");
         };
@@ -7337,8 +7429,7 @@ mod tests {
 
     #[test]
     fn parses_drop_domain_if_exists() {
-        let stmt = parse_statement("DROP DOMAIN IF EXISTS posint")
-            .expect("parse should succeed");
+        let stmt = parse_statement("DROP DOMAIN IF EXISTS posint").expect("parse should succeed");
         let Statement::DropDomain(drop) = stmt else {
             panic!("expected drop domain statement");
         };
@@ -7604,15 +7695,21 @@ mod tests {
 
     #[test]
     fn parses_multiple_wildcards() {
-        let stmt = parse_statement("SELECT t1.*, t2.*, * FROM t1, t2")
-            .expect("parse should succeed");
+        let stmt =
+            parse_statement("SELECT t1.*, t2.*, * FROM t1, t2").expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
         let select = as_select(&query);
         assert_eq!(select.targets.len(), 3);
-        assert!(matches!(&select.targets[0].expr, Expr::QualifiedWildcard(_)));
-        assert!(matches!(&select.targets[1].expr, Expr::QualifiedWildcard(_)));
+        assert!(matches!(
+            &select.targets[0].expr,
+            Expr::QualifiedWildcard(_)
+        ));
+        assert!(matches!(
+            &select.targets[1].expr,
+            Expr::QualifiedWildcard(_)
+        ));
         assert!(matches!(&select.targets[2].expr, Expr::Wildcard));
     }
 
@@ -7625,7 +7722,10 @@ mod tests {
             panic!("expected query statement");
         };
         let select = as_select(&query);
-        if let Expr::FunctionCall { over: Some(window), .. } = &select.targets[1].expr {
+        if let Expr::FunctionCall {
+            over: Some(window), ..
+        } = &select.targets[1].expr
+        {
             let frame = window.frame.as_ref().expect("should have frame");
             assert!(matches!(frame.units, WindowFrameUnits::Groups));
         } else {
@@ -7642,7 +7742,10 @@ mod tests {
             panic!("expected query statement");
         };
         let select = as_select(&query);
-        if let Expr::FunctionCall { over: Some(window), .. } = &select.targets[1].expr {
+        if let Expr::FunctionCall {
+            over: Some(window), ..
+        } = &select.targets[1].expr
+        {
             let frame = window.frame.as_ref().expect("should have frame");
             assert!(matches!(frame.units, WindowFrameUnits::Rows));
             assert!(matches!(
@@ -7663,7 +7766,10 @@ mod tests {
             panic!("expected query statement");
         };
         let select = as_select(&query);
-        if let Expr::FunctionCall { over: Some(window), .. } = &select.targets[1].expr {
+        if let Expr::FunctionCall {
+            over: Some(window), ..
+        } = &select.targets[1].expr
+        {
             let frame = window.frame.as_ref().expect("should have frame");
             assert!(matches!(frame.units, WindowFrameUnits::Range));
             assert!(matches!(frame.exclusion, Some(WindowFrameExclusion::Group)));
@@ -7887,7 +7993,12 @@ mod tests {
         let QueryExpr::Select(select) = &query.body else {
             panic!("expected select");
         };
-        let Expr::ArraySlice { expr: _, start, end } = &select.targets[0].expr else {
+        let Expr::ArraySlice {
+            expr: _,
+            start,
+            end,
+        } = &select.targets[0].expr
+        else {
             panic!("expected array slice");
         };
         assert!(start.is_some());
@@ -7896,7 +8007,8 @@ mod tests {
 
     #[test]
     fn parses_jsonb_contains_operator() {
-        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb @> '{\"a\":1}'::jsonb").expect("parse should succeed");
+        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb @> '{\"a\":1}'::jsonb")
+            .expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -7911,7 +8023,8 @@ mod tests {
 
     #[test]
     fn parses_jsonb_contained_by_operator() {
-        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb <@ '{\"a\":1,\"b\":2}'::jsonb").expect("parse should succeed");
+        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb <@ '{\"a\":1,\"b\":2}'::jsonb")
+            .expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -7926,7 +8039,8 @@ mod tests {
 
     #[test]
     fn parses_jsonb_has_key_operator() {
-        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb ? 'a'").expect("parse should succeed");
+        let stmt =
+            parse_statement("SELECT '{\"a\":1}'::jsonb ? 'a'").expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -7941,7 +8055,8 @@ mod tests {
 
     #[test]
     fn parses_jsonb_has_any_operator() {
-        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb ?| ARRAY['a','b']").expect("parse should succeed");
+        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb ?| ARRAY['a','b']")
+            .expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -7956,7 +8071,8 @@ mod tests {
 
     #[test]
     fn parses_jsonb_has_all_operator() {
-        let stmt = parse_statement("SELECT '{\"a\":1,\"b\":2}'::jsonb ?& ARRAY['a','b']").expect("parse should succeed");
+        let stmt = parse_statement("SELECT '{\"a\":1,\"b\":2}'::jsonb ?& ARRAY['a','b']")
+            .expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -7971,7 +8087,8 @@ mod tests {
 
     #[test]
     fn parses_jsonb_concat_operator() {
-        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb || '{\"b\":2}'::jsonb").expect("parse should succeed");
+        let stmt = parse_statement("SELECT '{\"a\":1}'::jsonb || '{\"b\":2}'::jsonb")
+            .expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -7986,14 +8103,20 @@ mod tests {
 
     #[test]
     fn parses_string_concat_operator() {
-        let stmt = parse_statement("SELECT 'hello' || ' ' || 'world'").expect("parse should succeed");
+        let stmt =
+            parse_statement("SELECT 'hello' || ' ' || 'world'").expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
         let QueryExpr::Select(select) = &query.body else {
             panic!("expected select");
         };
-        let Expr::Binary { op: op1, left, right: _ } = &select.targets[0].expr else {
+        let Expr::Binary {
+            op: op1,
+            left,
+            right: _,
+        } = &select.targets[0].expr
+        else {
             panic!("expected binary expression");
         };
         assert_eq!(*op1, BinaryOp::JsonConcat);
@@ -8005,7 +8128,8 @@ mod tests {
 
     #[test]
     fn parses_jsonb_delete_path_operator() {
-        let stmt = parse_statement("SELECT '{\"a\":{\"b\":1}}'::jsonb #- '{a,b}'").expect("parse should succeed");
+        let stmt = parse_statement("SELECT '{\"a\":{\"b\":1}}'::jsonb #- '{a,b}'")
+            .expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -8033,7 +8157,8 @@ mod tests {
 
     #[test]
     fn parses_standalone_values_multi_row() {
-        let stmt = parse_statement("VALUES (1, 'a'), (2, 'b'), (3, 'c')").expect("parse should succeed");
+        let stmt =
+            parse_statement("VALUES (1, 'a'), (2, 'b'), (3, 'c')").expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -8048,7 +8173,8 @@ mod tests {
 
     #[test]
     fn parses_values_with_order_by() {
-        let stmt = parse_statement("VALUES (3), (1), (2) ORDER BY 1").expect("parse should succeed");
+        let stmt =
+            parse_statement("VALUES (3), (1), (2) ORDER BY 1").expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -8061,8 +8187,9 @@ mod tests {
 
     #[test]
     fn parses_lateral_subquery() {
-        let stmt = parse_statement("SELECT * FROM t1, LATERAL (SELECT * FROM t2 WHERE t2.id = t1.id) sub")
-            .expect("parse should succeed");
+        let stmt =
+            parse_statement("SELECT * FROM t1, LATERAL (SELECT * FROM t2 WHERE t2.id = t1.id) sub")
+                .expect("parse should succeed");
         let Statement::Query(query) = stmt else {
             panic!("expected query statement");
         };
@@ -8070,7 +8197,7 @@ mod tests {
             panic!("expected select");
         };
         assert_eq!(select.from.len(), 2);
-        
+
         // Second table should be a lateral subquery
         if let TableExpression::Subquery(subq_ref) = &select.from[1] {
             assert!(subq_ref.lateral, "subquery should be marked as lateral");
@@ -8090,7 +8217,7 @@ mod tests {
             panic!("expected select");
         };
         assert_eq!(select.from.len(), 2);
-        
+
         // Second table should be a lateral function
         if let TableExpression::Function(func_ref) = &select.from[1] {
             assert!(func_ref.lateral, "function should be marked as lateral");

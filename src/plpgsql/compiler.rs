@@ -8,19 +8,19 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::parser::ast::{CreateFunctionStatement, DoStatement, Statement};
+use crate::parser::ast::{CreateFunctionStatement, DoStatement, Statement, TypeName};
 use crate::parser::sql_parser::{ParseError as SqlParseError, parse_statement};
 use crate::plpgsql::scanner::{
     PlPgSqlKeyword, PlPgSqlScanError, PlPgSqlToken, PlPgSqlTokenKind, extract_sql_expression,
     tokenize,
 };
 use crate::plpgsql::types::{
-    PlPgSqlDtype, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlIfElsif, PlPgSqlPromiseType,
-    PlPgSqlRaiseOption, PlPgSqlRaiseOptionType, PlPgSqlResolveOption, PlPgSqlStmt, PlPgSqlStmtAssign,
-    PlPgSqlStmtBlock, PlPgSqlStmtCall, PlPgSqlStmtCommit, PlPgSqlStmtExecSql, PlPgSqlStmtGetdiag,
-    PlPgSqlStmtIf, PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn, PlPgSqlStmtRollback,
-    PlPgSqlStmtType, PlPgSqlTrigtype, PlPgSqlType, PlPgSqlTypeType, PlPgSqlValue, PlPgSqlVar,
-    PlPgSqlVariable, PlPgSqlDatum,
+    PlPgSqlDatum, PlPgSqlDtype, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlIfElsif, PlPgSqlPromiseType,
+    PlPgSqlRaiseOption, PlPgSqlRaiseOptionType, PlPgSqlResolveOption, PlPgSqlStmt,
+    PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtCall, PlPgSqlStmtCommit, PlPgSqlStmtExecSql,
+    PlPgSqlStmtGetdiag, PlPgSqlStmtIf, PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn,
+    PlPgSqlStmtRollback, PlPgSqlStmtType, PlPgSqlTrigtype, PlPgSqlType, PlPgSqlTypeType,
+    PlPgSqlValue, PlPgSqlVar, PlPgSqlVariable,
 };
 
 /// Compiler error for PL/pgSQL parse/compile.
@@ -128,9 +128,13 @@ pub fn compile_create_function_statement(
         });
     }
 
-    let mut compiled = compile_function_body(&create_stmt.body)?;
+    let tokens = tokenize(&create_stmt.body)?;
+    let mut parser = BodyParser::new(&create_stmt.body, tokens);
+    let argvarnos = parser.add_argument_datums(create_stmt);
+    let mut compiled = parser.parse_function_body()?;
     compiled.fn_signature = create_stmt.name.join(".");
     compiled.fn_nargs = i32::try_from(create_stmt.params.len()).unwrap_or(i32::MAX);
+    compiled.fn_argvarnos = argvarnos;
     Ok(compiled)
 }
 
@@ -228,6 +232,47 @@ impl<'a> BodyParser<'a> {
             cur_estate: None,
             cached_function: None,
         })
+    }
+
+    fn add_argument_datums(&mut self, create_stmt: &CreateFunctionStatement) -> Vec<i32> {
+        let mut argvarnos = Vec::with_capacity(create_stmt.params.len());
+
+        for (idx, param) in create_stmt.params.iter().enumerate() {
+            let dno = self.allocate_dno();
+            let type_name = type_name_to_decl_string(&param.data_type);
+            let refname = param
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("${}", idx + 1));
+            let variable = PlPgSqlVariable {
+                dtype: PlPgSqlDtype::Var,
+                dno,
+                refname: refname.clone(),
+                lineno: 1,
+                isconst: false,
+                notnull: false,
+                default_val: None,
+            };
+            let var = PlPgSqlVar {
+                variable,
+                datatype: Some(self.make_type(&type_name)),
+                cursor_explicit_expr: None,
+                cursor_explicit_argrow: -1,
+                cursor_options: 0,
+                value: Some(PlPgSqlValue::Null),
+                isnull: true,
+                freeval: false,
+                promise: PlPgSqlPromiseType::None,
+            };
+            if let Some(name) = &param.name {
+                self.variables_by_name
+                    .insert(name.to_ascii_lowercase(), dno);
+            }
+            self.datums.push(PlPgSqlDatum::Var(var));
+            argvarnos.push(dno);
+        }
+
+        argvarnos
     }
 
     fn parse_declare_section(&mut self) -> Result<Vec<i32>, PlPgSqlCompileError> {
@@ -359,7 +404,10 @@ impl<'a> BodyParser<'a> {
         self.parse_execsql_statement()
     }
 
-    fn parse_assignment_statement(&mut self, name: String) -> Result<PlPgSqlStmt, PlPgSqlCompileError> {
+    fn parse_assignment_statement(
+        &mut self,
+        name: String,
+    ) -> Result<PlPgSqlStmt, PlPgSqlCompileError> {
         let token = self.current_token().clone();
         self.advance();
         self.expect_assign()?;
@@ -839,6 +887,34 @@ impl<'a> BodyParser<'a> {
             line: token.span.line,
             column: token.span.column,
         }
+    }
+}
+
+fn type_name_to_decl_string(type_name: &TypeName) -> String {
+    match type_name {
+        TypeName::Bool => "boolean".to_string(),
+        TypeName::Int2 => "smallint".to_string(),
+        TypeName::Int4 => "integer".to_string(),
+        TypeName::Int8 => "bigint".to_string(),
+        TypeName::Float4 => "real".to_string(),
+        TypeName::Float8 => "double precision".to_string(),
+        TypeName::Text => "text".to_string(),
+        TypeName::Varchar => "varchar".to_string(),
+        TypeName::Char => "char".to_string(),
+        TypeName::Bytea => "bytea".to_string(),
+        TypeName::Uuid => "uuid".to_string(),
+        TypeName::Json => "json".to_string(),
+        TypeName::Jsonb => "jsonb".to_string(),
+        TypeName::Date => "date".to_string(),
+        TypeName::Time => "time".to_string(),
+        TypeName::Timestamp => "timestamp".to_string(),
+        TypeName::TimestampTz => "timestamptz".to_string(),
+        TypeName::Interval => "interval".to_string(),
+        TypeName::Serial => "serial".to_string(),
+        TypeName::BigSerial => "bigserial".to_string(),
+        TypeName::Numeric => "numeric".to_string(),
+        TypeName::Array(inner) => format!("{}[]", type_name_to_decl_string(inner)),
+        TypeName::Name => "name".to_string(),
     }
 }
 

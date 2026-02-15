@@ -60,7 +60,9 @@ where
         }
         LogicalPlan::Subquery(subquery) => logical_contains(&subquery.plan, predicate),
         LogicalPlan::Cte(cte) => {
-            cte.ctes.iter().any(|cte| logical_contains(&cte.plan, predicate))
+            cte.ctes
+                .iter()
+                .any(|cte| logical_contains(&cte.plan, predicate))
                 || logical_contains(&cte.input, predicate)
         }
         LogicalPlan::Result
@@ -86,14 +88,17 @@ where
         PhysicalPlan::Sort(sort) => physical_contains(&sort.input, predicate),
         PhysicalPlan::Limit(limit) => physical_contains(&limit.input, predicate),
         PhysicalPlan::SetOp(set_op) => {
-            physical_contains(&set_op.left, predicate) || physical_contains(&set_op.right, predicate)
+            physical_contains(&set_op.left, predicate)
+                || physical_contains(&set_op.right, predicate)
         }
         PhysicalPlan::HashJoin(join) | PhysicalPlan::NestedLoopJoin(join) => {
             physical_contains(&join.left, predicate) || physical_contains(&join.right, predicate)
         }
         PhysicalPlan::Subquery(subquery) => physical_contains(&subquery.plan, predicate),
         PhysicalPlan::Cte(cte) => {
-            cte.ctes.iter().any(|cte| physical_contains(&cte.plan, predicate))
+            cte.ctes
+                .iter()
+                .any(|cte| physical_contains(&cte.plan, predicate))
                 || physical_contains(&cte.input, predicate)
         }
         PhysicalPlan::Result(_)
@@ -163,50 +168,98 @@ fn plans_nested_loop_join_for_small_inputs() {
 #[test]
 fn plans_cte_queries() {
     let plan = plan_query("WITH cte AS (SELECT 1) SELECT * FROM cte");
-    assert!(logical_contains(&plan.logical, &|plan| matches!(plan, LogicalPlan::Cte(_))));
-    assert!(logical_contains(&plan.logical, &|plan| matches!(plan, LogicalPlan::CteScan(_))));
-    assert!(physical_contains(&plan.physical, &|plan| matches!(plan, PhysicalPlan::Cte(_))));
-    assert!(physical_contains(&plan.physical, &|plan| matches!(plan, PhysicalPlan::CteScan(_))));
+    assert!(logical_contains(&plan.logical, &|plan| matches!(
+        plan,
+        LogicalPlan::Cte(_)
+    )));
+    assert!(logical_contains(&plan.logical, &|plan| matches!(
+        plan,
+        LogicalPlan::CteScan(_)
+    )));
+    assert!(physical_contains(&plan.physical, &|plan| matches!(
+        plan,
+        PhysicalPlan::Cte(_)
+    )));
+    assert!(physical_contains(&plan.physical, &|plan| matches!(
+        plan,
+        PhysicalPlan::CteScan(_)
+    )));
 }
 
 #[test]
 fn plans_window_queries() {
     let plan = plan_query("SELECT row_number() OVER (ORDER BY 1)");
-    assert!(logical_contains(&plan.logical, &|plan| matches!(plan, LogicalPlan::Window(_))));
-    assert!(physical_contains(&plan.physical, &|plan| matches!(plan, PhysicalPlan::Window(_))));
+    assert!(logical_contains(&plan.logical, &|plan| matches!(
+        plan,
+        LogicalPlan::Window(_)
+    )));
+    assert!(physical_contains(&plan.physical, &|plan| matches!(
+        plan,
+        PhysicalPlan::Window(_)
+    )));
 }
 
 #[test]
 fn plans_aggregate_queries() {
     let plan = plan_query("SELECT count(*) FROM (SELECT 1 AS id) t GROUP BY id");
-    assert!(logical_contains(&plan.logical, &|plan| matches!(plan, LogicalPlan::Aggregate(_))));
-    assert!(physical_contains(&plan.physical, &|plan| matches!(plan, PhysicalPlan::Aggregate(_))));
+    assert!(logical_contains(&plan.logical, &|plan| matches!(
+        plan,
+        LogicalPlan::Aggregate(_)
+    )));
+    assert!(physical_contains(&plan.physical, &|plan| matches!(
+        plan,
+        PhysicalPlan::Aggregate(_)
+    )));
 }
 
 #[test]
 fn plans_order_by_queries() {
     let plan = plan_query("SELECT 1 ORDER BY 1");
-    assert!(logical_contains(&plan.logical, &|plan| matches!(plan, LogicalPlan::Sort(_))));
-    assert!(physical_contains(&plan.physical, &|plan| matches!(plan, PhysicalPlan::Sort(_))));
+    assert!(logical_contains(&plan.logical, &|plan| matches!(
+        plan,
+        LogicalPlan::Sort(_)
+    )));
+    assert!(physical_contains(&plan.physical, &|plan| matches!(
+        plan,
+        PhysicalPlan::Sort(_)
+    )));
 }
 
 #[test]
 fn plans_limit_queries() {
     let plan = plan_query("SELECT 1 LIMIT 1 OFFSET 1");
-    assert!(logical_contains(&plan.logical, &|plan| matches!(plan, LogicalPlan::Limit(_))));
-    assert!(physical_contains(&plan.physical, &|plan| matches!(plan, PhysicalPlan::Limit(_))));
+    assert!(logical_contains(&plan.logical, &|plan| matches!(
+        plan,
+        LogicalPlan::Limit(_)
+    )));
+    assert!(physical_contains(&plan.physical, &|plan| matches!(
+        plan,
+        PhysicalPlan::Limit(_)
+    )));
 }
 
 #[test]
 fn plans_distinct_queries() {
     let plan = plan_query("SELECT DISTINCT 1");
-    assert!(logical_contains(&plan.logical, &|plan| matches!(plan, LogicalPlan::Distinct(_))));
-    assert!(physical_contains(&plan.physical, &|plan| matches!(plan, PhysicalPlan::Distinct(_))));
+    assert!(logical_contains(&plan.logical, &|plan| matches!(
+        plan,
+        LogicalPlan::Distinct(_)
+    )));
+    assert!(physical_contains(&plan.physical, &|plan| matches!(
+        plan,
+        PhysicalPlan::Distinct(_)
+    )));
 }
 
 #[test]
 fn plans_set_op_queries() {
     let plan = plan_query("SELECT 1 UNION SELECT 2");
-    assert!(logical_contains(&plan.logical, &|plan| matches!(plan, LogicalPlan::SetOp(_))));
-    assert!(physical_contains(&plan.physical, &|plan| matches!(plan, PhysicalPlan::SetOp(_))));
+    assert!(logical_contains(&plan.logical, &|plan| matches!(
+        plan,
+        LogicalPlan::SetOp(_)
+    )));
+    assert!(physical_contains(&plan.physical, &|plan| matches!(
+        plan,
+        PhysicalPlan::SetOp(_)
+    )));
 }

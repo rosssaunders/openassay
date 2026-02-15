@@ -102,7 +102,9 @@ pub async fn execute_create_index(
             columns: index_columns,
             unique: false,
         };
-        let result = with_catalog_write(|catalog| catalog.add_index(table.schema_name(), table.name(), index));
+        let result = with_catalog_write(|catalog| {
+            catalog.add_index(table.schema_name(), table.name(), index)
+        });
         match result {
             Ok(()) => {}
             Err(err) => {

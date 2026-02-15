@@ -269,8 +269,8 @@ impl ClientStream {
                 return Ok(());
             }
         };
-        let conn = ServerConnection::new(config)
-            .map_err(|err| io::Error::other(format!("tls: {err}")))?;
+        let conn =
+            ServerConnection::new(config).map_err(|err| io::Error::other(format!("tls: {err}")))?;
         *self = Self::Tls(StreamOwned::new(conn, plain));
         Ok(())
     }

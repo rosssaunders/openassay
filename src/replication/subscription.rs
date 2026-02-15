@@ -35,11 +35,9 @@ fn subscriptions() -> &'static RwLock<HashMap<String, SubscriptionHandle>> {
 
 pub fn create_subscription(config: SubscriptionConfig) -> Result<(), ReplicationError> {
     ConnectionConfig::parse(&config.conninfo)?;
-    let mut registry = subscriptions()
-        .write()
-        .map_err(|_| ReplicationError {
-            message: "subscription registry lock poisoned".to_string(),
-        })?;
+    let mut registry = subscriptions().write().map_err(|_| ReplicationError {
+        message: "subscription registry lock poisoned".to_string(),
+    })?;
     if registry.contains_key(&config.name) {
         return Err(ReplicationError {
             message: format!("subscription \"{}\" already exists", config.name),
@@ -76,11 +74,9 @@ pub fn create_subscription(config: SubscriptionConfig) -> Result<(), Replication
 }
 
 pub fn drop_subscription(name: &str) -> Result<(), ReplicationError> {
-    let mut registry = subscriptions()
-        .write()
-        .map_err(|_| ReplicationError {
-            message: "subscription registry lock poisoned".to_string(),
-        })?;
+    let mut registry = subscriptions().write().map_err(|_| ReplicationError {
+        message: "subscription registry lock poisoned".to_string(),
+    })?;
     let Some(handle) = registry.remove(name) else {
         return Err(ReplicationError {
             message: format!("subscription \"{name}\" does not exist"),
@@ -102,7 +98,10 @@ async fn run_subscription(config: SubscriptionConfig, mut stop: oneshot::Receive
         match attempt {
             Ok(()) => return,
             Err(err) => {
-                eprintln!("replication subscription {} error: {}", config.name, err.message);
+                eprintln!(
+                    "replication subscription {} error: {}",
+                    config.name, err.message
+                );
                 let delay = backoff;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
                 tokio::select! {
@@ -129,9 +128,9 @@ async fn run_subscription_once(config: &SubscriptionConfig) -> Result<(), Replic
 
     let start_lsn = match client.create_replication_slot(&config.slot_name).await {
         Ok(slot) => slot.consistent_point,
-        Err(err) if slot_exists_error(&err) => {
-            fetch_slot_lsn(&standard_client, &config.slot_name).await?.unwrap_or(system.xlog_pos)
-        }
+        Err(err) if slot_exists_error(&err) => fetch_slot_lsn(&standard_client, &config.slot_name)
+            .await?
+            .unwrap_or(system.xlog_pos),
         Err(err) => return Err(err),
     };
 

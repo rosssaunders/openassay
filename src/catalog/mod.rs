@@ -430,9 +430,7 @@ impl Catalog {
         if table.kind() != expected_kind {
             return Err(CatalogError {
                 message: if materialized {
-                    format!(
-                        "\"{schema_name}.{view_name}\" is not a materialized view"
-                    )
+                    format!("\"{schema_name}.{view_name}\" is not a materialized view")
                 } else {
                     format!("\"{schema_name}.{view_name}\" is not a view")
                 },
@@ -497,9 +495,7 @@ impl Catalog {
         }
         let Some(mut table) = schema.remove_table(&relation_name) else {
             return Err(CatalogError {
-                message: format!(
-                    "relation \"{schema_name}.{relation_name}\" does not exist"
-                ),
+                message: format!("relation \"{schema_name}.{relation_name}\" does not exist"),
             });
         };
         table.set_name(new_name);
@@ -1479,9 +1475,7 @@ impl Catalog {
                 let table_name = normalize_name(table_name)?;
                 let Some(table) = self.table(&schema_name, &table_name) else {
                     return Err(CatalogError {
-                        message: format!(
-                            "relation \"{schema_name}.{table_name}\" does not exist"
-                        ),
+                        message: format!("relation \"{schema_name}.{table_name}\" does not exist"),
                     });
                 };
                 Ok(table)
@@ -1592,8 +1586,10 @@ fn query_expr_references_sequence(expr: &QueryExpr, sequence_name: &str) -> bool
         QueryExpr::Nested(query) => query_references_sequence(query, sequence_name),
         QueryExpr::Values(rows) => {
             // Check if any value expression references the sequence
-            rows.iter()
-                .any(|row| row.iter().any(|expr| expr_references_sequence(expr, sequence_name)))
+            rows.iter().any(|row| {
+                row.iter()
+                    .any(|expr| expr_references_sequence(expr, sequence_name))
+            })
         }
         QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
             // DML statements in CTEs not yet fully supported

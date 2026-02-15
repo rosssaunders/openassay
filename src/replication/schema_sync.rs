@@ -2,9 +2,9 @@ use crate::catalog::search_path::SearchPath;
 use crate::catalog::{
     ColumnSpec, Table, TableKind, TypeSignature, with_catalog_read, with_catalog_write,
 };
+use crate::replication::ReplicationError;
 use crate::replication::pgoutput::RelationMessage;
 use crate::replication::tuple_decoder::type_signature_for_oid;
-use crate::replication::ReplicationError;
 use crate::storage::heap::with_storage_write;
 
 #[derive(Debug, Clone)]
@@ -54,7 +54,9 @@ pub async fn fetch_publication_schema(
     Ok(out)
 }
 
-pub fn ensure_local_table(schema: &TableSchema) -> Result<crate::catalog::oid::Oid, ReplicationError> {
+pub fn ensure_local_table(
+    schema: &TableSchema,
+) -> Result<crate::catalog::oid::Oid, ReplicationError> {
     if let Ok(table) = with_catalog_read(|catalog| {
         catalog
             .resolve_table(

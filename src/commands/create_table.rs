@@ -11,7 +11,7 @@ pub async fn execute_create_table(
     if let Some(query) = &create.as_select {
         return execute_create_table_as_select(create, query).await;
     }
-    
+
     if create.columns.is_empty() {
         return Err(EngineError {
             message: "CREATE TABLE requires at least one column".to_string(),
@@ -92,7 +92,7 @@ pub async fn execute_create_table(
             foreign_key_specs,
         )
     });
-    
+
     // Handle IF NOT EXISTS
     let table_oid = match table_oid {
         Ok(oid) => oid,
@@ -330,25 +330,25 @@ async fn execute_create_table_as_select(
     query: &crate::parser::ast::Query,
 ) -> Result<QueryResult, EngineError> {
     use crate::tcop::pquery::derive_query_output_columns;
-    
+
     let (schema_name, table_name) = relation_name_for_create(&create.name)?;
-    
+
     // Derive columns from the query
     let output_columns = derive_query_output_columns(query)?;
-    
+
     // Convert output columns to column specs
     let column_specs: Vec<ColumnSpec> = output_columns
         .iter()
         .map(|col| {
             let type_signature = match col.type_oid {
-                16 => TypeSignature::Bool,  // bool
-                20 | 21 | 23 => TypeSignature::Int8,  // bigint, smallint, int
-                25 | 1043 | 1042 | 17 | 2950 | 114 | 3802 => TypeSignature::Text,  // text, varchar, char, bytea, uuid, json, jsonb
-                700 | 701 => TypeSignature::Float8,  // float4, float8
-                1700 => TypeSignature::Numeric,  // numeric
-                1082 => TypeSignature::Date,  // date
-                1114 | 1184 => TypeSignature::Timestamp,  // timestamp, timestamptz
-                _ => TypeSignature::Text,  // default to text for unknown types
+                16 => TypeSignature::Bool,                                        // bool
+                20 | 21 | 23 => TypeSignature::Int8, // bigint, smallint, int
+                25 | 1043 | 1042 | 17 | 2950 | 114 | 3802 => TypeSignature::Text, // text, varchar, char, bytea, uuid, json, jsonb
+                700 | 701 => TypeSignature::Float8,                               // float4, float8
+                1700 => TypeSignature::Numeric,                                   // numeric
+                1082 => TypeSignature::Date,                                      // date
+                1114 | 1184 => TypeSignature::Timestamp, // timestamp, timestamptz
+                _ => TypeSignature::Text,                // default to text for unknown types
             };
             ColumnSpec {
                 name: col.name.clone(),
@@ -362,7 +362,7 @@ async fn execute_create_table_as_select(
             }
         })
         .collect();
-    
+
     // Create the table
     let table_oid = with_catalog_write(|catalog| {
         catalog.create_table(
@@ -370,11 +370,11 @@ async fn execute_create_table_as_select(
             &table_name,
             TableKind::Heap,
             column_specs,
-            Vec::new(),  // no key constraints
-            Vec::new(),  // no foreign key constraints
+            Vec::new(), // no key constraints
+            Vec::new(), // no foreign key constraints
         )
     });
-    
+
     let table_oid = match table_oid {
         Ok(oid) => oid,
         Err(err) => {
@@ -391,24 +391,24 @@ async fn execute_create_table_as_select(
             });
         }
     };
-    
+
     with_storage_write(|storage| {
         storage.rows_by_table.entry(table_oid).or_default();
     });
     security::set_relation_owner(table_oid, &security::current_role());
-    
+
     // Execute the query and insert results
     use crate::executor::exec_main::execute_query;
     let query_result = execute_query(query, &[]).await?;
     let row_count = query_result.rows.len() as u64;
-    
+
     with_storage_write(|storage| {
         let rows = storage.rows_by_table.entry(table_oid).or_default();
         for row in query_result.rows {
             rows.push(row);
         }
     });
-    
+
     Ok(QueryResult {
         columns: Vec::new(),
         rows: Vec::new(),

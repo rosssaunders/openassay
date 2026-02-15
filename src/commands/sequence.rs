@@ -337,9 +337,7 @@ pub fn sequence_next_value(
         || state.increment < 0 && next < state.min_value
     {
         return Err(EngineError {
-            message: format!(
-                "nextval: sequence \"{sequence_name}\" has reached its limit"
-            ),
+            message: format!("nextval: sequence \"{sequence_name}\" has reached its limit"),
         });
     }
     Ok(next)

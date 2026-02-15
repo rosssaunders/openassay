@@ -26,7 +26,7 @@ pub(crate) fn scalar_to_json_value(value: &ScalarValue) -> Result<JsonValue, Eng
                 .ok_or_else(|| EngineError {
                     message: "cannot convert non-finite numeric to JSON value".to_string(),
                 })
-        },
+        }
         ScalarValue::Text(v) => Ok(JsonValue::String(v.clone())),
         ScalarValue::Array(values) => {
             let mut items = Vec::with_capacity(values.len());
@@ -2033,13 +2033,9 @@ fn url_encode_component(input: &str) -> String {
     let mut out = String::new();
     for byte in input.as_bytes() {
         match byte {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'~' => out.push(*byte as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{:02X}", *byte)),
         }
@@ -2112,7 +2108,9 @@ fn build_http_response(
     );
     response.insert(
         "content_type".to_string(),
-        content_type.map(JsonValue::String).unwrap_or(JsonValue::Null),
+        content_type
+            .map(JsonValue::String)
+            .unwrap_or(JsonValue::Null),
     );
     response.insert("headers".to_string(), headers);
     response.insert("content".to_string(), JsonValue::String(content));
@@ -2188,9 +2186,11 @@ async fn execute_http_request(
             let headers = web_sys::Headers::new().map_err(|_| EngineError {
                 message: format!("{fn_name}(): failed to create headers"),
             })?;
-            headers.append("Content-Type", header).map_err(|_| EngineError {
-                message: format!("{fn_name}(): failed to set content type"),
-            })?;
+            headers
+                .append("Content-Type", header)
+                .map_err(|_| EngineError {
+                    message: format!("{fn_name}(): failed to set content type"),
+                })?;
             opts.headers(headers.as_ref());
         }
         let resp_value = JsFuture::from(window.fetch_with_str_and_init(url, &opts))

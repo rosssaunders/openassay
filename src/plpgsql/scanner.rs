@@ -275,7 +275,9 @@ pub fn tokenize(source: &str) -> Result<Vec<PlPgSqlToken>, PlPgSqlScanError> {
             continue;
         }
 
-        if ch == '$' && let Some(end_idx) = scan_dollar_quoted(source, start) {
+        if ch == '$'
+            && let Some(end_idx) = scan_dollar_quoted(source, start)
+        {
             idx = end_idx;
             tokens.push(PlPgSqlToken {
                 kind: PlPgSqlTokenKind::StringLiteral(source[start..idx].to_string()),
@@ -307,8 +309,7 @@ pub fn tokenize(source: &str) -> Result<Vec<PlPgSqlToken>, PlPgSqlScanError> {
                     let mut end = idx;
                     while end < source.len() {
                         let c = next_char(source, end).expect("idx validated by loop condition");
-                        if !(c == '=' || c == '>' || c == '<' || c == '|' || c == '!' || c == '#')
-                        {
+                        if !(c == '=' || c == '>' || c == '<' || c == '|' || c == '!' || c == '#') {
                             break;
                         }
                         end += c.len_utf8();
@@ -475,24 +476,28 @@ fn scan_dollar_quoted(source: &str, start: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        PlPgSqlKeyword, PlPgSqlTokenKind, extract_sql_expression, tokenize,
-    };
+    use super::{PlPgSqlKeyword, PlPgSqlTokenKind, extract_sql_expression, tokenize};
 
     #[test]
     fn tokenizes_declare_begin_end_blocks() {
         let src = "DECLARE x integer := 1; BEGIN x := x + 1; END;";
         let tokens = tokenize(src).expect("scan should succeed");
 
-        assert!(tokens.iter().any(|t| {
-            matches!(t.kind, PlPgSqlTokenKind::Keyword(PlPgSqlKeyword::Declare))
-        }));
-        assert!(tokens.iter().any(|t| {
-            matches!(t.kind, PlPgSqlTokenKind::Keyword(PlPgSqlKeyword::Begin))
-        }));
-        assert!(tokens.iter().any(|t| {
-            matches!(t.kind, PlPgSqlTokenKind::Keyword(PlPgSqlKeyword::End))
-        }));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| { matches!(t.kind, PlPgSqlTokenKind::Keyword(PlPgSqlKeyword::Declare)) })
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| { matches!(t.kind, PlPgSqlTokenKind::Keyword(PlPgSqlKeyword::Begin)) })
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| { matches!(t.kind, PlPgSqlTokenKind::Keyword(PlPgSqlKeyword::End)) })
+        );
     }
 
     #[test]

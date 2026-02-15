@@ -243,7 +243,7 @@ fn test_analyze_cte_reference() {
                             where_clause: None,
                             group_by: vec![],
                             having: None,
-                window_definitions: Vec::new(),
+                            window_definitions: Vec::new(),
                         }),
                         order_by: vec![],
                         limit: None,

@@ -1,5 +1,7 @@
 use crate::parser::ast::{CreateSubscriptionStatement, DropSubscriptionStatement};
-use crate::replication::subscription::{create_subscription, drop_subscription, SubscriptionConfig};
+use crate::replication::subscription::{
+    SubscriptionConfig, create_subscription, drop_subscription,
+};
 use crate::tcop::engine::{EngineError, QueryResult};
 
 pub async fn execute_create_subscription(
@@ -16,7 +18,9 @@ pub async fn execute_create_subscription(
             .unwrap_or_else(|| statement.name.clone()),
         copy_data: statement.options.copy_data,
     };
-    create_subscription(config).map_err(|err| EngineError { message: err.message })?;
+    create_subscription(config).map_err(|err| EngineError {
+        message: err.message,
+    })?;
     Ok(QueryResult {
         columns: Vec::new(),
         rows: Vec::new(),
@@ -31,7 +35,11 @@ pub async fn execute_drop_subscription(
     match drop_subscription(&statement.name) {
         Ok(()) => {}
         Err(err) if statement.if_exists => {}
-        Err(err) => return Err(EngineError { message: err.message }),
+        Err(err) => {
+            return Err(EngineError {
+                message: err.message,
+            });
+        }
     }
     Ok(QueryResult {
         columns: Vec::new(),

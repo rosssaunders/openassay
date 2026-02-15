@@ -163,33 +163,33 @@ pub(crate) fn rand_f64() -> f64 {
 /// Matches PostgreSQL's gen_random_uuid() function.
 pub(crate) fn gen_random_uuid() -> String {
     use std::time::SystemTime;
-    
+
     // Generate random bytes using SystemTime as seed
     let seed = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    
+
     // Simple pseudo-random number generator
     let mut state = seed as u64;
     let mut next_random = || {
         state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
         ((state >> 32) as u32) as u64
     };
-    
+
     // Generate UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
     // where y is 8, 9, A, or B
     let r1 = next_random();
     let r2 = next_random();
     let r3 = next_random();
     let r4 = next_random();
-    
+
     format!(
         "{:08x}-{:04x}-4{:03x}-{:x}{:03x}-{:08x}{:04x}",
         (r1 & 0xFFFFFFFF),
         ((r2 >> 16) & 0xFFFF),
         (r2 & 0x0FFF),
-        (8 + ((r3 >> 60) & 0x3)),  // y must be 8, 9, A, or B
+        (8 + ((r3 >> 60) & 0x3)), // y must be 8, 9, A, or B
         ((r3 >> 48) & 0x0FFF),
         (r3 & 0xFFFFFFFF),
         ((r4 >> 16) & 0xFFFF)
@@ -213,9 +213,7 @@ pub(crate) fn eval_regexp_replace(
 }
 
 /// regexp_count(string, pattern [, start [, flags]]) - count pattern matches
-pub(crate) fn eval_regexp_count(
-    args: &[ScalarValue],
-) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_regexp_count(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     if args.iter().take(2).any(|a| matches!(a, ScalarValue::Null)) {
         return Ok(ScalarValue::Null);
     }
@@ -226,7 +224,11 @@ pub(crate) fn eval_regexp_count(
     } else {
         1
     };
-    let flags = if args.len() >= 4 { args[3].render() } else { String::new() };
+    let flags = if args.len() >= 4 {
+        args[3].render()
+    } else {
+        String::new()
+    };
     if start < 1 {
         return Err(EngineError {
             message: "invalid value for parameter \"start\": 0".to_string(),
@@ -238,10 +240,8 @@ pub(crate) fn eval_regexp_count(
     Ok(ScalarValue::Int(count as i64))
 }
 
-/// regexp_instr(string, pattern [, start [, N [, endoption [, flags [, subexpr]]]]]) 
-pub(crate) fn eval_regexp_instr(
-    args: &[ScalarValue],
-) -> Result<ScalarValue, EngineError> {
+/// regexp_instr(string, pattern [, start [, N [, endoption [, flags [, subexpr]]]]])
+pub(crate) fn eval_regexp_instr(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     if args.iter().take(2).any(|a| matches!(a, ScalarValue::Null)) {
         return Ok(ScalarValue::Null);
     }
@@ -249,17 +249,29 @@ pub(crate) fn eval_regexp_instr(
     let pattern = args[1].render();
     let start = if args.len() >= 3 {
         parse_i64_scalar(&args[2], "regexp_instr() start")? as usize
-    } else { 1 };
+    } else {
+        1
+    };
     let n = if args.len() >= 4 {
         parse_i64_scalar(&args[3], "regexp_instr() N")? as usize
-    } else { 1 };
+    } else {
+        1
+    };
     let endoption = if args.len() >= 5 {
         parse_i64_scalar(&args[4], "regexp_instr() endoption")? as usize
-    } else { 0 };
-    let flags = if args.len() >= 6 { args[5].render() } else { String::new() };
+    } else {
+        0
+    };
+    let flags = if args.len() >= 6 {
+        args[5].render()
+    } else {
+        String::new()
+    };
     let subexpr = if args.len() >= 7 {
         parse_i64_scalar(&args[6], "regexp_instr() subexpr")? as usize
-    } else { 0 };
+    } else {
+        0
+    };
 
     if start < 1 || n < 1 {
         return Ok(ScalarValue::Int(0));
@@ -299,9 +311,7 @@ pub(crate) fn eval_regexp_instr(
 }
 
 /// regexp_substr(string, pattern [, start [, N [, flags [, subexpr]]]])
-pub(crate) fn eval_regexp_substr(
-    args: &[ScalarValue],
-) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_regexp_substr(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     if args.iter().take(2).any(|a| matches!(a, ScalarValue::Null)) {
         return Ok(ScalarValue::Null);
     }
@@ -309,14 +319,24 @@ pub(crate) fn eval_regexp_substr(
     let pattern = args[1].render();
     let start = if args.len() >= 3 {
         parse_i64_scalar(&args[2], "regexp_substr() start")? as usize
-    } else { 1 };
+    } else {
+        1
+    };
     let n = if args.len() >= 4 {
         parse_i64_scalar(&args[3], "regexp_substr() N")? as usize
-    } else { 1 };
-    let flags = if args.len() >= 5 { args[4].render() } else { String::new() };
+    } else {
+        1
+    };
+    let flags = if args.len() >= 5 {
+        args[4].render()
+    } else {
+        String::new()
+    };
     let subexpr = if args.len() >= 6 {
         parse_i64_scalar(&args[5], "regexp_substr() subexpr")? as usize
-    } else { 0 };
+    } else {
+        0
+    };
 
     if start < 1 || n < 1 {
         return Ok(ScalarValue::Null);
@@ -343,15 +363,17 @@ pub(crate) fn eval_regexp_substr(
 }
 
 /// regexp_like(string, pattern [, flags]) - boolean match test
-pub(crate) fn eval_regexp_like(
-    args: &[ScalarValue],
-) -> Result<ScalarValue, EngineError> {
+pub(crate) fn eval_regexp_like(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     if args.iter().take(2).any(|a| matches!(a, ScalarValue::Null)) {
         return Ok(ScalarValue::Null);
     }
     let text = args[0].render();
     let pattern = args[1].render();
-    let flags = if args.len() >= 3 { args[2].render() } else { String::new() };
+    let flags = if args.len() >= 3 {
+        args[2].render()
+    } else {
+        String::new()
+    };
     let regex = build_regex(&pattern, &flags, "regexp_like")?;
     Ok(ScalarValue::Bool(regex.is_match(&text)))
 }
@@ -373,7 +395,7 @@ pub(crate) fn eval_unistr(text: &str) -> Result<ScalarValue, EngineError> {
                         message: "invalid Unicode escape sequence".to_string(),
                     });
                 }
-                let hex: String = chars[i+2..i+8].iter().collect();
+                let hex: String = chars[i + 2..i + 8].iter().collect();
                 let code = u32::from_str_radix(&hex, 16).map_err(|_| EngineError {
                     message: format!("invalid Unicode escape value: \\+{hex}"),
                 })?;
@@ -389,7 +411,7 @@ pub(crate) fn eval_unistr(text: &str) -> Result<ScalarValue, EngineError> {
                         message: "invalid Unicode escape sequence".to_string(),
                     });
                 }
-                let hex: String = chars[i+1..i+5].iter().collect();
+                let hex: String = chars[i + 1..i + 5].iter().collect();
                 let code = u32::from_str_radix(&hex, 16).map_err(|_| EngineError {
                     message: format!("invalid Unicode escape value: \\{hex}"),
                 })?;
@@ -698,11 +720,11 @@ pub(crate) fn pg_input_is_valid(
     type_name: &str,
 ) -> Result<bool, crate::tcop::engine::EngineError> {
     let input = input.trim();
-    
+
     // Normalize type name
     let normalized_type = type_name.trim().to_lowercase();
     let normalized_type = normalized_type.as_str();
-    
+
     let is_valid = match normalized_type {
         "integer" | "int" | "int4" => input.parse::<i32>().is_ok(),
         "bigint" | "int8" => input.parse::<i64>().is_ok(),
@@ -712,7 +734,9 @@ pub(crate) fn pg_input_is_valid(
             input.parse::<f64>().is_ok() || input.parse::<i64>().is_ok()
         }
         "real" | "float4" => crate::utils::adt::float::float4in(input).is_ok(),
-        "double precision" | "float8" | "float" => crate::utils::adt::float::float8in(input).is_ok(),
+        "double precision" | "float8" | "float" => {
+            crate::utils::adt::float::float8in(input).is_ok()
+        }
         "boolean" | "bool" => {
             matches!(
                 input.to_lowercase().as_str(),
@@ -745,7 +769,7 @@ pub(crate) fn pg_input_is_valid(
             true
         }
     };
-    
+
     Ok(is_valid)
 }
 
@@ -841,9 +865,9 @@ pub(crate) fn pg_get_viewdef(
 #[allow(dead_code)]
 fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> String {
     use crate::parser::ast::QueryExpr;
-    
+
     let mut sql = String::new();
-    
+
     // Handle WITH clause if present
     if let Some(with_clause) = &query.with {
         sql.push_str("WITH ");
@@ -871,7 +895,7 @@ fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> Strin
         }
         sql.push(' ');
     }
-    
+
     // Handle query body
     match &query.body {
         QueryExpr::Select(select) => {
@@ -898,7 +922,12 @@ fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> Strin
                 sql.push(')');
             }
         }
-        QueryExpr::SetOperation { left, op, quantifier, right } => {
+        QueryExpr::SetOperation {
+            left,
+            op,
+            quantifier,
+            right,
+        } => {
             // Create temporary Query for left side
             let left_query = crate::parser::ast::Query {
                 with: None,
@@ -935,7 +964,7 @@ fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> Strin
             sql.push_str("<data-modifying CTE>");
         }
     }
-    
+
     // Handle ORDER BY
     if !query.order_by.is_empty() {
         sql.push_str(" ORDER BY ");
@@ -944,7 +973,9 @@ fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> Strin
                 sql.push_str(", ");
             }
             sql.push_str(&render_expr_to_sql(&order.expr));
-            if let Some(asc) = order.ascending && !asc {
+            if let Some(asc) = order.ascending
+                && !asc
+            {
                 sql.push_str(" DESC");
             }
             if let Some(op) = &order.using_operator {
@@ -953,40 +984,40 @@ fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> Strin
             }
         }
     }
-    
+
     // Handle LIMIT
     if let Some(ref limit) = query.limit {
         sql.push_str(" LIMIT ");
         sql.push_str(&render_expr_to_sql(limit));
     }
-    
+
     // Handle OFFSET
     if let Some(ref offset) = query.offset {
         sql.push_str(" OFFSET ");
         sql.push_str(&render_expr_to_sql(offset));
     }
-    
+
     if pretty {
         // Add basic pretty-printing (newlines and indentation)
         sql = sql.replace(" FROM ", "\n FROM ");
         sql = sql.replace(" WHERE ", "\n WHERE ");
         sql = sql.replace(" ORDER BY ", "\n ORDER BY ");
     }
-    
+
     sql
 }
 
 #[allow(dead_code)]
 fn render_select_to_sql(select: &crate::parser::ast::SelectStatement) -> String {
     let mut sql = String::from("SELECT");
-    
+
     if let Some(ref quantifier) = select.quantifier {
         match quantifier {
             crate::parser::ast::SelectQuantifier::Distinct => sql.push_str(" DISTINCT"),
             crate::parser::ast::SelectQuantifier::All => sql.push_str(" ALL"),
         }
     }
-    
+
     if !select.distinct_on.is_empty() {
         sql.push_str(" DISTINCT ON (");
         for (i, expr) in select.distinct_on.iter().enumerate() {
@@ -997,7 +1028,7 @@ fn render_select_to_sql(select: &crate::parser::ast::SelectStatement) -> String 
         }
         sql.push(')');
     }
-    
+
     // Target list
     sql.push(' ');
     for (i, target) in select.targets.iter().enumerate() {
@@ -1010,7 +1041,7 @@ fn render_select_to_sql(select: &crate::parser::ast::SelectStatement) -> String 
             sql.push_str(alias);
         }
     }
-    
+
     // FROM clause
     if !select.from.is_empty() {
         sql.push_str(" FROM ");
@@ -1021,13 +1052,13 @@ fn render_select_to_sql(select: &crate::parser::ast::SelectStatement) -> String 
             sql.push_str(&render_table_expr_to_sql(from));
         }
     }
-    
+
     // WHERE clause
     if let Some(ref where_expr) = select.where_clause {
         sql.push_str(" WHERE ");
         sql.push_str(&render_expr_to_sql(where_expr));
     }
-    
+
     // GROUP BY
     if !select.group_by.is_empty() {
         sql.push_str(" GROUP BY ");
@@ -1079,20 +1110,20 @@ fn render_select_to_sql(select: &crate::parser::ast::SelectStatement) -> String 
             }
         }
     }
-    
+
     // HAVING
     if let Some(ref having) = select.having {
         sql.push_str(" HAVING ");
         sql.push_str(&render_expr_to_sql(having));
     }
-    
+
     sql
 }
 
 #[allow(dead_code)]
 fn render_table_expr_to_sql(table: &crate::parser::ast::TableExpression) -> String {
     use crate::parser::ast::TableExpression;
-    
+
     match table {
         TableExpression::Relation(table_ref) => {
             let mut sql = table_ref.name.join(".");
@@ -1214,7 +1245,7 @@ fn binary_op_to_sql(op: &crate::parser::ast::BinaryOp) -> &'static str {
 #[allow(dead_code)]
 fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
     use crate::parser::ast::Expr;
-    
+
     match expr {
         // Simple literals
         Expr::String(s) => format!("'{}'", s.replace('\'', "''")),
@@ -1224,10 +1255,10 @@ fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
         Expr::Null => "NULL".to_string(),
         Expr::Default => "DEFAULT".to_string(),
         Expr::MultiColumnSubqueryRef { .. } => "(multi-column subquery ref)".to_string(),
-        
+
         // Identifiers
         Expr::Identifier(parts) => parts.join("."),
-        
+
         // Binary operations
         Expr::Binary { left, op, right } => {
             format!(
@@ -1237,12 +1268,12 @@ fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
                 render_expr_to_sql(right)
             )
         }
-        
+
         // Unary operations
         Expr::Unary { op, expr } => {
             format!("{} {}", unary_op_to_sql(op), render_expr_to_sql(expr))
         }
-        
+
         // Function calls
         Expr::FunctionCall { name, args, .. } => {
             let mut func_sql = name.join(".");
@@ -1256,14 +1287,18 @@ fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
             func_sql.push(')');
             func_sql
         }
-        
+
         // Cast
         Expr::Cast { expr, type_name } => {
             format!("CAST({} AS {})", render_expr_to_sql(expr), type_name)
         }
-        
+
         // Case expressions
-        Expr::CaseSimple { operand, when_then, else_expr } => {
+        Expr::CaseSimple {
+            operand,
+            when_then,
+            else_expr,
+        } => {
             let mut sql = String::from("CASE ");
             sql.push_str(&render_expr_to_sql(operand));
             for (cond, result) in when_then {
@@ -1279,8 +1314,11 @@ fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
             sql.push_str(" END");
             sql
         }
-        
-        Expr::CaseSearched { when_then, else_expr } => {
+
+        Expr::CaseSearched {
+            when_then,
+            else_expr,
+        } => {
             let mut sql = String::from("CASE");
             for (cond, result) in when_then {
                 sql.push_str(" WHEN ");
@@ -1295,14 +1333,18 @@ fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
             sql.push_str(" END");
             sql
         }
-        
+
         // Subqueries
         Expr::ScalarSubquery(query) | Expr::Exists(query) | Expr::ArraySubquery(query) => {
             format!("({})", render_query_to_sql(query, false))
         }
-        
+
         // IN expression
-        Expr::InList { expr, list, negated } => {
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } => {
             let mut sql = render_expr_to_sql(expr);
             if *negated {
                 sql.push_str(" NOT");
@@ -1317,8 +1359,12 @@ fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
             sql.push(')');
             sql
         }
-        
-        Expr::InSubquery { expr, subquery, negated } => {
+
+        Expr::InSubquery {
+            expr,
+            subquery,
+            negated,
+        } => {
             let mut sql = render_expr_to_sql(expr);
             if *negated {
                 sql.push_str(" NOT");
@@ -1328,9 +1374,14 @@ fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
             sql.push(')');
             sql
         }
-        
+
         // BETWEEN
-        Expr::Between { expr, low, high, negated } => {
+        Expr::Between {
+            expr,
+            low,
+            high,
+            negated,
+        } => {
             let mut sql = render_expr_to_sql(expr);
             if *negated {
                 sql.push_str(" NOT");
@@ -1341,7 +1392,7 @@ fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
             sql.push_str(&render_expr_to_sql(high));
             sql
         }
-        
+
         // IS NULL
         Expr::IsNull { expr, negated } => {
             let mut sql = render_expr_to_sql(expr);
@@ -1352,11 +1403,11 @@ fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
             sql.push_str(" NULL");
             sql
         }
-        
+
         // Wildcard
         Expr::Wildcard => "*".to_string(),
         Expr::QualifiedWildcard(parts) => format!("{}.*", parts.join(".")),
-        
+
         // Array constructor
         Expr::ArrayConstructor(elements) => {
             let mut sql = String::from("ARRAY[");
@@ -1369,7 +1420,7 @@ fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
             sql.push(']');
             sql
         }
-        
+
         // For any other expression types, return a placeholder
         _ => "<expr>".to_string(),
     }
