@@ -8,7 +8,7 @@ use crate::tcop::engine::{EngineStateSnapshot, restore_state, snapshot_state};
 use crate::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
 
 #[cfg(target_arch = "wasm32")]
-use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
+use wasm_bindgen::prelude::wasm_bindgen;
 
 const SNAPSHOT_HEADER: &str = "POSTGRUST_BROWSER_SNAPSHOT_V1";
 

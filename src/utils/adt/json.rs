@@ -2178,9 +2178,9 @@ async fn execute_http_request(
             message: format!("{fn_name}(): window is not available"),
         })?;
         let mut opts = web_sys::RequestInit::new();
-        opts.method(method);
+        opts.set_method(method);
         if let Some(body) = content.as_ref() {
-            opts.body(Some(&wasm_bindgen::JsValue::from_str(body)));
+            opts.set_body(&wasm_bindgen::JsValue::from_str(body));
         }
         if let Some(header) = content_type.as_ref() {
             let headers = web_sys::Headers::new().map_err(|_| EngineError {
@@ -2191,7 +2191,7 @@ async fn execute_http_request(
                 .map_err(|_| EngineError {
                     message: format!("{fn_name}(): failed to set content type"),
                 })?;
-            opts.headers(headers.as_ref());
+            opts.set_headers(headers.as_ref());
         }
         let resp_value = JsFuture::from(window.fetch_with_str_and_init(url, &opts))
             .await

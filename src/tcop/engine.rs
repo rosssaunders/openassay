@@ -1,5 +1,3 @@
-#[cfg(target_arch = "wasm32")]
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::{OnceLock, RwLock};
