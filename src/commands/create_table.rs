@@ -308,7 +308,8 @@ pub(crate) fn type_signature_from_ast(ty: TypeName) -> TypeSignature {
         | TypeName::Int8
         | TypeName::Serial
         | TypeName::BigSerial => TypeSignature::Int8,
-        TypeName::Float4 | TypeName::Float8 | TypeName::Numeric => TypeSignature::Float8,
+        TypeName::Float4 | TypeName::Float8 => TypeSignature::Float8,
+        TypeName::Numeric => TypeSignature::Numeric,
         TypeName::Text
         | TypeName::Varchar
         | TypeName::Char
@@ -343,7 +344,8 @@ async fn execute_create_table_as_select(
                 16 => TypeSignature::Bool,  // bool
                 20 | 21 | 23 => TypeSignature::Int8,  // bigint, smallint, int
                 25 | 1043 | 1042 | 17 | 2950 | 114 | 3802 => TypeSignature::Text,  // text, varchar, char, bytea, uuid, json, jsonb
-                700 | 701 | 1700 => TypeSignature::Float8,  // float4, float8, numeric
+                700 | 701 => TypeSignature::Float8,  // float4, float8
+                1700 => TypeSignature::Numeric,  // numeric
                 1082 => TypeSignature::Date,  // date
                 1114 | 1184 => TypeSignature::Timestamp,  // timestamp, timestamptz
                 _ => TypeSignature::Text,  // default to text for unknown types

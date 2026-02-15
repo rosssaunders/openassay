@@ -196,10 +196,15 @@ pub(crate) fn eval_expr<'a>(
             Expr::Boolean(v) => Ok(ScalarValue::Bool(*v)),
             Expr::Integer(v) => Ok(ScalarValue::Int(*v)),
             Expr::Float(v) => {
-                let parsed = v.parse::<f64>().map_err(|_| EngineError {
-                    message: format!("invalid float literal \"{v}\""),
-                })?;
-                Ok(ScalarValue::Float(parsed))
+                // Try to parse as Decimal first for better precision
+                if let Ok(decimal) = v.parse::<rust_decimal::Decimal>() {
+                    Ok(ScalarValue::Numeric(decimal))
+                } else {
+                    let parsed = v.parse::<f64>().map_err(|_| EngineError {
+                        message: format!("invalid float literal \"{v}\""),
+                    })?;
+                    Ok(ScalarValue::Float(parsed))
+                }
             }
             Expr::String(v) => Ok(ScalarValue::Text(v.clone())),
             Expr::Parameter(idx) => parse_param(*idx, params),
@@ -502,10 +507,15 @@ pub(crate) fn eval_expr_with_window<'a>(
             Expr::Boolean(v) => Ok(ScalarValue::Bool(*v)),
             Expr::Integer(v) => Ok(ScalarValue::Int(*v)),
             Expr::Float(v) => {
-                let parsed = v.parse::<f64>().map_err(|_| EngineError {
-                    message: format!("invalid float literal \"{v}\""),
-                })?;
-                Ok(ScalarValue::Float(parsed))
+                // Try to parse as Decimal first for better precision
+                if let Ok(decimal) = v.parse::<rust_decimal::Decimal>() {
+                    Ok(ScalarValue::Numeric(decimal))
+                } else {
+                    let parsed = v.parse::<f64>().map_err(|_| EngineError {
+                        message: format!("invalid float literal \"{v}\""),
+                    })?;
+                    Ok(ScalarValue::Float(parsed))
+                }
             }
             Expr::String(v) => Ok(ScalarValue::Text(v.clone())),
             Expr::Parameter(idx) => parse_param(*idx, params),
@@ -1702,23 +1712,43 @@ pub(crate) fn eval_cast_scalar(
             )?))
         }
         "int2" | "smallint" => {
-            if let ScalarValue::Float(v) = &value {
-                let result = crate::utils::adt::float::float8_to_int2(*v)?;
-                Ok(ScalarValue::Int(result))
-            } else {
-                let val = parse_i64_scalar(&value, "cannot cast value to smallint")?;
-                crate::utils::adt::int_arithmetic::validate_int2(val)?;
-                Ok(ScalarValue::Int(val))
+            match &value {
+                ScalarValue::Float(v) => {
+                    let result = crate::utils::adt::float::float8_to_int2(*v)?;
+                    Ok(ScalarValue::Int(result))
+                }
+                ScalarValue::Numeric(v) => {
+                    let int_val: i64 = (*v).try_into().map_err(|_| EngineError {
+                        message: "numeric value out of range for int2".to_string(),
+                    })?;
+                    crate::utils::adt::int_arithmetic::validate_int2(int_val)?;
+                    Ok(ScalarValue::Int(int_val))
+                }
+                _ => {
+                    let val = parse_i64_scalar(&value, "cannot cast value to smallint")?;
+                    crate::utils::adt::int_arithmetic::validate_int2(val)?;
+                    Ok(ScalarValue::Int(val))
+                }
             }
         }
         "int4" | "integer" | "int" => {
-            if let ScalarValue::Float(v) = &value {
-                let result = crate::utils::adt::float::float8_to_int4(*v)?;
-                Ok(ScalarValue::Int(result))
-            } else {
-                let val = parse_i64_scalar(&value, "cannot cast value to integer")?;
-                crate::utils::adt::int_arithmetic::validate_int4(val)?;
-                Ok(ScalarValue::Int(val))
+            match &value {
+                ScalarValue::Float(v) => {
+                    let result = crate::utils::adt::float::float8_to_int4(*v)?;
+                    Ok(ScalarValue::Int(result))
+                }
+                ScalarValue::Numeric(v) => {
+                    let int_val: i64 = (*v).try_into().map_err(|_| EngineError {
+                        message: "numeric value out of range for int4".to_string(),
+                    })?;
+                    crate::utils::adt::int_arithmetic::validate_int4(int_val)?;
+                    Ok(ScalarValue::Int(int_val))
+                }
+                _ => {
+                    let val = parse_i64_scalar(&value, "cannot cast value to integer")?;
+                    crate::utils::adt::int_arithmetic::validate_int4(val)?;
+                    Ok(ScalarValue::Int(val))
+                }
             }
         }
         "int8" | "bigint" => {
@@ -1726,6 +1756,12 @@ pub(crate) fn eval_cast_scalar(
                 ScalarValue::Float(v) => {
                     let result = crate::utils::adt::float::float8_to_int8(*v)?;
                     Ok(ScalarValue::Int(result))
+                }
+                ScalarValue::Numeric(v) => {
+                    let int_val: i64 = (*v).try_into().map_err(|_| EngineError {
+                        message: "numeric value out of range for int8".to_string(),
+                    })?;
+                    Ok(ScalarValue::Int(int_val))
                 }
                 _ => Ok(ScalarValue::Int(parse_i64_scalar(
                     &value,
@@ -1740,6 +1776,13 @@ pub(crate) fn eval_cast_scalar(
                     Ok(ScalarValue::Float(result))
                 }
                 ScalarValue::Int(v) => Ok(ScalarValue::Float(*v as f64)),
+                ScalarValue::Numeric(v) => {
+                    let float_val = v.to_string().parse::<f64>().map_err(|_| EngineError {
+                        message: "cannot convert numeric to real".to_string(),
+                    })?;
+                    let result = crate::utils::adt::float::float8_to_float4(float_val)?;
+                    Ok(ScalarValue::Float(result))
+                }
                 ScalarValue::Text(s) => {
                     let result = crate::utils::adt::float::float4in(s)?;
                     Ok(ScalarValue::Float(result))
@@ -1753,6 +1796,12 @@ pub(crate) fn eval_cast_scalar(
             match &value {
                 ScalarValue::Float(v) => Ok(ScalarValue::Float(*v)),
                 ScalarValue::Int(v) => Ok(ScalarValue::Float(*v as f64)),
+                ScalarValue::Numeric(v) => {
+                    let float_val = v.to_string().parse::<f64>().map_err(|_| EngineError {
+                        message: "cannot convert numeric to double precision".to_string(),
+                    })?;
+                    Ok(ScalarValue::Float(float_val))
+                }
                 ScalarValue::Text(s) => {
                     let result = crate::utils::adt::float::float8in(s)?;
                     Ok(ScalarValue::Float(result))
@@ -1766,6 +1815,7 @@ pub(crate) fn eval_cast_scalar(
             // PostgreSQL's boolout outputs "true"/"false" when casting to text
             match &value {
                 ScalarValue::Bool(v) => Ok(ScalarValue::Text(if *v { "true" } else { "false" }.to_string())),
+                ScalarValue::Numeric(v) => Ok(ScalarValue::Text(v.to_string())),
                 _ => Ok(ScalarValue::Text(value.render())),
             }
         }
@@ -1793,6 +1843,27 @@ pub(crate) fn eval_cast_scalar(
             let text = value.render();
             parse_json_document_arg(&ScalarValue::Text(text.clone()), type_name, 1)?;
             Ok(ScalarValue::Text(text))
+        }
+        "numeric" | "decimal" => {
+            match &value {
+                ScalarValue::Int(v) => Ok(ScalarValue::Numeric(rust_decimal::Decimal::from(*v))),
+                ScalarValue::Float(v) => {
+                    let decimal = rust_decimal::Decimal::try_from(*v).map_err(|_| EngineError {
+                        message: "cannot convert float to numeric: value out of range or NaN/infinity".to_string(),
+                    })?;
+                    Ok(ScalarValue::Numeric(decimal))
+                }
+                ScalarValue::Numeric(v) => Ok(ScalarValue::Numeric(*v)),
+                ScalarValue::Text(s) => {
+                    let decimal = s.parse::<rust_decimal::Decimal>().map_err(|_| EngineError {
+                        message: format!("invalid input syntax for type numeric: \"{s}\""),
+                    })?;
+                    Ok(ScalarValue::Numeric(decimal))
+                }
+                _ => Err(EngineError {
+                    message: "cannot cast value to numeric".to_string(),
+                }),
+            }
         }
         other => Err(EngineError {
             message: format!("unsupported cast type {other}"),
@@ -1931,6 +2002,7 @@ pub(crate) fn eval_binary(
             right,
             crate::utils::adt::int_arithmetic::int4_mul,
             |a, b| a * b,
+            |a, b| Ok(a * b),
         ),
         Div => numeric_div(left, right),
         Mod => numeric_mod(left, right),
@@ -1985,6 +2057,7 @@ fn eval_add(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
             right,
             crate::utils::adt::int_arithmetic::int4_add,
             |a, b| a + b,
+            |a, b| Ok(a + b),
         );
     }
 
@@ -2013,6 +2086,7 @@ fn eval_sub(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
             right,
             crate::utils::adt::int_arithmetic::int4_sub,
             |a, b| a - b,
+            |a, b| Ok(a - b),
         );
     }
 
@@ -2172,6 +2246,7 @@ fn numeric_bin(
     right: ScalarValue,
     int_op: impl Fn(i64, i64) -> Result<i64, EngineError>,
     float_op: impl Fn(f64, f64) -> f64,
+    decimal_op: impl Fn(rust_decimal::Decimal, rust_decimal::Decimal) -> Result<rust_decimal::Decimal, EngineError>,
 ) -> Result<ScalarValue, EngineError> {
     if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
@@ -2189,6 +2264,31 @@ fn numeric_bin(
         (NumericOperand::Float(a), NumericOperand::Float(b)) => {
             Ok(ScalarValue::Float(float_op(a, b)))
         }
+        (NumericOperand::Int(a), NumericOperand::Numeric(b)) => {
+            let a_decimal = rust_decimal::Decimal::from(a);
+            Ok(ScalarValue::Numeric(decimal_op(a_decimal, b)?))
+        }
+        (NumericOperand::Numeric(a), NumericOperand::Int(b)) => {
+            let b_decimal = rust_decimal::Decimal::from(b);
+            Ok(ScalarValue::Numeric(decimal_op(a, b_decimal)?))
+        }
+        (NumericOperand::Float(a), NumericOperand::Numeric(b)) => {
+            // Convert numeric to float for mixed operation
+            let b_float = b.to_string().parse::<f64>().map_err(|_| EngineError {
+                message: "Cannot convert numeric to float".to_string(),
+            })?;
+            Ok(ScalarValue::Float(float_op(a, b_float)))
+        }
+        (NumericOperand::Numeric(a), NumericOperand::Float(b)) => {
+            // Convert numeric to float for mixed operation  
+            let a_float = a.to_string().parse::<f64>().map_err(|_| EngineError {
+                message: "Cannot convert numeric to float".to_string(),
+            })?;
+            Ok(ScalarValue::Float(float_op(a_float, b)))
+        }
+        (NumericOperand::Numeric(a), NumericOperand::Numeric(b)) => {
+            Ok(ScalarValue::Numeric(decimal_op(a, b)?))
+        }
     }
 }
 
@@ -2200,6 +2300,7 @@ fn numeric_div(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Eng
     let right_num = parse_numeric_operand(&right)?;
 
     // NaN handling: NaN / anything = NaN, anything / NaN = NaN
+    // Note: rust_decimal doesn't have NaN, so only check floats
     let left_is_nan = matches!(left_num, NumericOperand::Float(v) if v.is_nan());
     let right_is_nan = matches!(right_num, NumericOperand::Float(v) if v.is_nan());
     if left_is_nan || right_is_nan {
@@ -2208,7 +2309,8 @@ fn numeric_div(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Eng
 
     // Check for zero divisor
     let right_is_zero = matches!(right_num, NumericOperand::Int(0))
-        || matches!(right_num, NumericOperand::Float(v) if v == 0.0);
+        || matches!(right_num, NumericOperand::Float(v) if v == 0.0)
+        || matches!(right_num, NumericOperand::Numeric(v) if v.is_zero());
     if right_is_zero {
         return Err(EngineError {
             message: "division by zero".to_string(),
@@ -2226,6 +2328,29 @@ fn numeric_div(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Eng
             Ok(ScalarValue::Float(a / (b as f64)))
         }
         (NumericOperand::Float(a), NumericOperand::Float(b)) => Ok(ScalarValue::Float(a / b)),
+        (NumericOperand::Int(a), NumericOperand::Numeric(b)) => {
+            let a_decimal = rust_decimal::Decimal::from(a);
+            Ok(ScalarValue::Numeric(a_decimal / b))
+        }
+        (NumericOperand::Numeric(a), NumericOperand::Int(b)) => {
+            let b_decimal = rust_decimal::Decimal::from(b);
+            Ok(ScalarValue::Numeric(a / b_decimal))
+        }
+        (NumericOperand::Float(a), NumericOperand::Numeric(b)) => {
+            let b_float = b.to_string().parse::<f64>().map_err(|_| EngineError {
+                message: "Cannot convert numeric to float".to_string(),
+            })?;
+            Ok(ScalarValue::Float(a / b_float))
+        }
+        (NumericOperand::Numeric(a), NumericOperand::Float(b)) => {
+            let a_float = a.to_string().parse::<f64>().map_err(|_| EngineError {
+                message: "Cannot convert numeric to float".to_string(),
+            })?;
+            Ok(ScalarValue::Float(a_float / b))
+        }
+        (NumericOperand::Numeric(a), NumericOperand::Numeric(b)) => {
+            Ok(ScalarValue::Numeric(a / b))
+        }
     }
 }
 

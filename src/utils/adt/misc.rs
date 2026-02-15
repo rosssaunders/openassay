@@ -452,6 +452,23 @@ pub(crate) fn compare_values_for_predicate(
             (NumericOperand::Float(a), NumericOperand::Float(b)) => {
                 a.partial_cmp(&b).unwrap_or(Ordering::Equal)
             }
+            (NumericOperand::Int(a), NumericOperand::Numeric(b)) => {
+                let a_decimal = rust_decimal::Decimal::from(a);
+                a_decimal.cmp(&b)
+            }
+            (NumericOperand::Numeric(a), NumericOperand::Int(b)) => {
+                let b_decimal = rust_decimal::Decimal::from(b);
+                a.cmp(&b_decimal)
+            }
+            (NumericOperand::Float(a), NumericOperand::Numeric(b)) => {
+                let b_float = b.to_string().parse::<f64>().unwrap_or(f64::NAN);
+                a.partial_cmp(&b_float).unwrap_or(Ordering::Equal)
+            }
+            (NumericOperand::Numeric(a), NumericOperand::Float(b)) => {
+                let a_float = a.to_string().parse::<f64>().unwrap_or(f64::NAN);
+                a_float.partial_cmp(&b).unwrap_or(Ordering::Equal)
+            }
+            (NumericOperand::Numeric(a), NumericOperand::Numeric(b)) => a.cmp(&b),
         };
         return Ok(ord);
     }
@@ -661,6 +678,7 @@ pub(crate) fn truthy(value: &ScalarValue) -> bool {
         ScalarValue::Null => false,
         ScalarValue::Int(v) => *v != 0,
         ScalarValue::Float(v) => *v != 0.0,
+        ScalarValue::Numeric(v) => !v.is_zero(),
         ScalarValue::Text(v) => !v.is_empty(),
         ScalarValue::Array(values) => !values.is_empty(),
         ScalarValue::Record(fields) => !fields.is_empty(),

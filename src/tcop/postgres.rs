@@ -2993,6 +2993,7 @@ fn infer_row_description_fields(
             Some(ScalarValue::Bool(_)) => (16, 1),
             Some(ScalarValue::Int(_)) => (20, 8),
             Some(ScalarValue::Float(_)) => (701, 8),
+            Some(ScalarValue::Numeric(_)) => (1700, -1),
             Some(ScalarValue::Text(_)) => (25, -1),
             Some(ScalarValue::Array(_)) => (25, -1),
             Some(ScalarValue::Record(_)) => (2249, -1),

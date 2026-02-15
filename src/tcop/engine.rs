@@ -3023,6 +3023,7 @@ fn scalar_key(value: &ScalarValue) -> String {
         ScalarValue::Bool(v) => format!("B:{v}"),
         ScalarValue::Int(v) => format!("I:{v}"),
         ScalarValue::Float(v) => format!("F:{v}"),
+        ScalarValue::Numeric(v) => format!("N:{v}"),
         ScalarValue::Text(v) => format!("T:{v}"),
         ScalarValue::Array(_) => format!("A:{}", value.render()),
         ScalarValue::Record(_) => format!("R:{}", value.render()),

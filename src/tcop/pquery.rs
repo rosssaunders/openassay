@@ -17,6 +17,7 @@ const PG_BOOL_OID: u32 = 16;
 const PG_INT8_OID: u32 = 20;
 const PG_TEXT_OID: u32 = 25;
 const PG_FLOAT8_OID: u32 = 701;
+const PG_NUMERIC_OID: u32 = 1700;
 const PG_DATE_OID: u32 = 1082;
 const PG_TIMESTAMP_OID: u32 = 1114;
 
@@ -25,6 +26,7 @@ pub(crate) fn type_signature_to_oid(ty: TypeSignature) -> u32 {
         TypeSignature::Bool => PG_BOOL_OID,
         TypeSignature::Int8 => PG_INT8_OID,
         TypeSignature::Float8 => PG_FLOAT8_OID,
+        TypeSignature::Numeric => PG_NUMERIC_OID,
         TypeSignature::Text => PG_TEXT_OID,
         TypeSignature::Date => PG_DATE_OID,
         TypeSignature::Timestamp => PG_TIMESTAMP_OID,

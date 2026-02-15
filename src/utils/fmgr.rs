@@ -1072,6 +1072,7 @@ pub(crate) async fn eval_scalar_function(
                 ScalarValue::Bool(_) => "boolean",
                 ScalarValue::Int(_) => "bigint",
                 ScalarValue::Float(_) => "double precision",
+                ScalarValue::Numeric(_) => "numeric",
                 ScalarValue::Text(_) => "text",
                 ScalarValue::Array(_) => "text[]",
                 ScalarValue::Record(_) => "record",
@@ -1093,6 +1094,7 @@ pub(crate) async fn eval_scalar_function(
                 ScalarValue::Bool(_) => 1,
                 ScalarValue::Int(_) => 8,
                 ScalarValue::Float(_) => 8,
+                ScalarValue::Numeric(_) => 16, // Variable size, but 16 is a reasonable estimate
                 ScalarValue::Text(s) => s.len() as i64 + 4, // 4-byte length prefix
                 ScalarValue::Array(a) => {
                     let mut total = 20i64; // array header
@@ -1102,6 +1104,7 @@ pub(crate) async fn eval_scalar_function(
                             ScalarValue::Bool(_) => 1,
                             ScalarValue::Int(_) => 8,
                             ScalarValue::Float(_) => 8,
+                            ScalarValue::Numeric(_) => 16,
                             ScalarValue::Text(s) => s.len() as i64 + 4,
                             ScalarValue::Array(_) => 8, // rough estimate
                             ScalarValue::Record(r) => (r.len() * 8) as i64,

@@ -1700,6 +1700,7 @@ fn information_schema_data_type(signature: TypeSignature) -> &'static str {
         TypeSignature::Bool => "boolean",
         TypeSignature::Int8 => "bigint",
         TypeSignature::Float8 => "double precision",
+        TypeSignature::Numeric => "numeric",
         TypeSignature::Text => "text",
         TypeSignature::Date => "date",
         TypeSignature::Timestamp => "timestamp without time zone",
@@ -2643,7 +2644,9 @@ pub(crate) async fn eval_aggregate_function(
 
             let mut int_sum: i64 = 0;
             let mut float_sum: f64 = 0.0;
+            let mut decimal_sum: rust_decimal::Decimal = rust_decimal::Decimal::ZERO;
             let mut saw_float = false;
+            let mut saw_decimal = false;
             let mut saw_any = false;
             for row in rows {
                 match row.args[0] {
@@ -2651,11 +2654,19 @@ pub(crate) async fn eval_aggregate_function(
                     ScalarValue::Int(v) => {
                         int_sum += v;
                         float_sum += v as f64;
+                        decimal_sum += rust_decimal::Decimal::from(v);
                         saw_any = true;
                     }
                     ScalarValue::Float(v) => {
                         float_sum += v;
+                        decimal_sum += rust_decimal::Decimal::try_from(v).unwrap_or(rust_decimal::Decimal::ZERO);
                         saw_float = true;
+                        saw_any = true;
+                    }
+                    ScalarValue::Numeric(v) => {
+                        decimal_sum += v;
+                        float_sum += v.to_string().parse::<f64>().unwrap_or(0.0);
+                        saw_decimal = true;
                         saw_any = true;
                     }
                     _ => {
@@ -2668,7 +2679,9 @@ pub(crate) async fn eval_aggregate_function(
             if !saw_any {
                 return Ok(ScalarValue::Null);
             }
-            if saw_float {
+            if saw_decimal {
+                Ok(ScalarValue::Numeric(decimal_sum))
+            } else if saw_float {
                 Ok(ScalarValue::Float(float_sum))
             } else {
                 Ok(ScalarValue::Int(int_sum))
@@ -2687,17 +2700,27 @@ pub(crate) async fn eval_aggregate_function(
             }
             sort_aggregate_rows(&mut rows, order_by);
 
-            let mut total = 0.0f64;
+            let mut float_total = 0.0f64;
+            let mut decimal_total = rust_decimal::Decimal::ZERO;
             let mut count = 0u64;
+            let mut saw_decimal = false;
             for row in rows {
                 match row.args[0] {
                     ScalarValue::Null => {}
                     ScalarValue::Int(v) => {
-                        total += v as f64;
+                        float_total += v as f64;
+                        decimal_total += rust_decimal::Decimal::from(v);
                         count += 1;
                     }
                     ScalarValue::Float(v) => {
-                        total += v;
+                        float_total += v;
+                        decimal_total += rust_decimal::Decimal::try_from(v).unwrap_or(rust_decimal::Decimal::ZERO);
+                        count += 1;
+                    }
+                    ScalarValue::Numeric(v) => {
+                        float_total += v.to_string().parse::<f64>().unwrap_or(0.0);
+                        decimal_total += v;
+                        saw_decimal = true;
                         count += 1;
                     }
                     _ => {
@@ -2709,8 +2732,11 @@ pub(crate) async fn eval_aggregate_function(
             }
             if count == 0 {
                 Ok(ScalarValue::Null)
+            } else if saw_decimal {
+                let avg = decimal_total / rust_decimal::Decimal::from(count);
+                Ok(ScalarValue::Numeric(avg))
             } else {
-                Ok(ScalarValue::Float(total / count as f64))
+                Ok(ScalarValue::Float(float_total / count as f64))
             }
         }
         "min" | "max" => {
@@ -3521,6 +3547,7 @@ pub(crate) fn row_key(row: &[ScalarValue]) -> String {
             ScalarValue::Bool(b) => format!("B:{b}"),
             ScalarValue::Int(i) => format!("I:{i}"),
             ScalarValue::Float(f) => format!("F:{f}"),
+            ScalarValue::Numeric(n) => format!("N:{n}"),
             ScalarValue::Text(t) => format!("T:{t}"),
             ScalarValue::Array(_) => format!("A:{}", v.render()),
             ScalarValue::Record(_) => format!("R:{}", v.render()),

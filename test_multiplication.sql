@@ -1,0 +1,1 @@
+SELECT 19.99 * 5 as result;

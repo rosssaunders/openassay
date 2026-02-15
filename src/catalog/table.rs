@@ -15,6 +15,7 @@ pub enum TypeSignature {
     Bool,
     Int8,
     Float8,
+    Numeric,
     Text,
     Date,
     Timestamp,
