@@ -2034,7 +2034,7 @@ fn url_encode_component(input: &str) -> String {
     for byte in input.as_bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char)
+                out.push(*byte as char);
             }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{:02X}", *byte)),

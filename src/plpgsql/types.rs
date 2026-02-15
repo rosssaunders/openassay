@@ -58,7 +58,9 @@ pub enum PlPgSqlPromiseType {
 
 /// Corresponds to `PLpgSQL_type_type` in `plpgsql.h:93-100`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PlPgSqlTypeType {
+    #[default]
     Scalar,
     Rec,
     Pseudo,
@@ -164,11 +166,6 @@ pub struct PlPgSqlType {
     pub tupdesc_id: u64,
 }
 
-impl Default for PlPgSqlTypeType {
-    fn default() -> Self {
-        Self::Scalar
-    }
-}
 
 /// Corresponds to `PLpgSQL_nsitem` in `plpgsql.h:460-472`.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -187,10 +187,13 @@ async fn execute_simple_query_via_session(sql: &str) -> Result<Vec<CliQueryResul
                         .map(|value| match value {
                             None => "NULL".to_string(),
                             Some(bytes) => String::from_utf8(bytes.clone()).unwrap_or_else(|_| {
-                                format!(
-                                    "\\x{}",
-                                    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-                                )
+                                use std::fmt::Write;
+                                let mut hex = String::with_capacity(2 + bytes.len() * 2);
+                                hex.push_str("\\x");
+                                for b in &bytes {
+                                    let _ = write!(hex, "{b:02x}");
+                                }
+                                hex
                             }),
                         })
                         .collect(),

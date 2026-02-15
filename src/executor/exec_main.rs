@@ -3094,7 +3094,8 @@ pub(crate) async fn eval_aggregate_function(
                     if count < 2 || sxx <= 0.0 || syy <= 0.0 {
                         Ok(ScalarValue::Null)
                     } else {
-                        Ok(ScalarValue::Float((sxy * sxy) / (sxx * syy)))
+                        #[allow(clippy::suspicious_operation_groupings)]
+                        Ok(ScalarValue::Float((sxy * sxy) / (sxx * syy))) // r² = sxy²/(sxx·syy)
                     }
                 }
                 "regr_avgx" => Ok(ScalarValue::Float(avgx)),

@@ -109,7 +109,6 @@ fn run_startup_handshake(
                 stream.write_all(b"S")?;
                 stream.flush()?;
                 stream.upgrade_tls(tls_config.clone())?;
-                continue;
             }
             Ok(StartupAction::CancelRequest { .. }) => return Ok(false),
             Ok(StartupAction::Startup(startup)) => {
