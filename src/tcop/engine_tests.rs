@@ -4402,6 +4402,36 @@ fn do_block_select_into_assigns_variables() {
     assert_eq!(r.command_tag, "DO");
 }
 
+#[test]
+fn do_block_for_integer_range_loop_executes() {
+    let r = run(
+        "DO 'DECLARE total integer := 0; BEGIN FOR i IN 1..10 LOOP total := total + i; END LOOP; IF total <> 55 OR NOT found THEN RAISE; END IF; END'",
+    );
+    assert_eq!(r.command_tag, "DO");
+}
+
+#[test]
+fn do_block_for_query_loop_executes() {
+    let r = run(
+        "DO 'DECLARE rec integer; total integer := 0; BEGIN FOR rec IN SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 LOOP total := total + rec; END LOOP; IF total <> 6 OR NOT found THEN RAISE; END IF; END'",
+    );
+    assert_eq!(r.command_tag, "DO");
+}
+
+#[test]
+fn do_block_execute_dynamic_sql_executes() {
+    let r = run("DO 'BEGIN EXECUTE ''SELECT 1''; IF NOT found THEN RAISE; END IF; END'");
+    assert_eq!(r.command_tag, "DO");
+}
+
+#[test]
+fn do_block_execute_dynamic_sql_into_assigns_variable() {
+    let r = run(
+        "DO 'DECLARE v integer; BEGIN EXECUTE ''SELECT 42'' INTO v; IF NOT found OR v <> 42 THEN RAISE; END IF; END'",
+    );
+    assert_eq!(r.command_tag, "DO");
+}
+
 // 1.11 System catalogs
 #[test]
 fn pg_settings_returns_guc_variables() {

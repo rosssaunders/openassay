@@ -14,9 +14,9 @@ use crate::parser::sql_parser::parse_statement;
 use crate::plpgsql::scanner::{PlPgSqlTokenKind, tokenize};
 use crate::plpgsql::types::{
     PlPgSqlDatum, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlStmt, PlPgSqlStmtAssign, PlPgSqlStmtBlock,
-    PlPgSqlStmtExecSql, PlPgSqlStmtExit, PlPgSqlStmtFori, PlPgSqlStmtIf, PlPgSqlStmtLoop,
-    PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn, PlPgSqlStmtReturnNext,
-    PlPgSqlStmtWhile, PlPgSqlValue,
+    PlPgSqlStmtDynexecute, PlPgSqlStmtExecSql, PlPgSqlStmtExit, PlPgSqlStmtFori, PlPgSqlStmtFors,
+    PlPgSqlStmtIf, PlPgSqlStmtLoop, PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn,
+    PlPgSqlStmtReturnNext, PlPgSqlStmtWhile, PlPgSqlValue,
 };
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{QueryResult, execute_planned_query, plan_statement};
@@ -220,11 +220,13 @@ fn exec_stmts(
             PlPgSqlStmt::Loop(stmt) => exec_stmt_loop(estate, stmt)?,
             PlPgSqlStmt::While(stmt) => exec_stmt_while(estate, stmt)?,
             PlPgSqlStmt::Fori(stmt) => exec_stmt_fori(estate, stmt)?,
+            PlPgSqlStmt::Fors(stmt) => exec_stmt_fors(estate, stmt)?,
             PlPgSqlStmt::Exit(stmt) => exec_stmt_exit(estate, stmt)?,
             PlPgSqlStmt::Return(stmt) => exec_stmt_return(estate, stmt)?,
             PlPgSqlStmt::ReturnNext(stmt) => exec_stmt_return_next(estate, stmt)?,
             PlPgSqlStmt::Raise(stmt) => exec_stmt_raise(estate, stmt)?,
             PlPgSqlStmt::ExecSql(stmt) => exec_stmt_execsql(estate, stmt)?,
+            PlPgSqlStmt::DynExecute(stmt) => exec_stmt_dynexecute(estate, stmt)?,
             PlPgSqlStmt::Perform(stmt) => exec_stmt_perform(estate, stmt)?,
             _ => {
                 return Err(format!(
@@ -390,6 +392,50 @@ fn exec_stmt_fori(
     Ok(ExecResultCode::Ok)
 }
 
+/// Query FOR-loop execution corresponding to `exec_stmt_fors`
+/// (`pl_exec.c:2930-3024`) for single-target scalar variables.
+fn exec_stmt_fors(
+    estate: &mut PLpgSQLExecState,
+    stmt: &PlPgSqlStmtFors,
+) -> Result<ExecResultCode, String> {
+    let loop_var = stmt
+        .var
+        .as_ref()
+        .ok_or_else(|| "FOR query variable is missing".to_string())?;
+
+    let result = execute_sql_statement(estate, &stmt.query.query)?;
+    let mut found = false;
+
+    for row in &result.rows {
+        if row.len() != 1 {
+            return Err(format!(
+                "FOR query returned {} columns, but loop variable \"{}\" expects exactly 1",
+                row.len(),
+                loop_var.refname
+            ));
+        }
+
+        found = true;
+        exec_assign_value_dno(estate, loop_var.dno, row[0].clone())?;
+
+        let rc = exec_stmts(estate, &stmt.body)?;
+        match process_loop_rc(estate, stmt.label.as_deref(), rc) {
+            LoopControl::Continue => {}
+            LoopControl::BreakWith(rc) => {
+                set_found(estate, found)?;
+                return Ok(rc);
+            }
+            LoopControl::Propagate(rc) => {
+                set_found(estate, found)?;
+                return Ok(rc);
+            }
+        }
+    }
+
+    set_found(estate, found)?;
+    Ok(ExecResultCode::Ok)
+}
+
 /// EXIT/CONTINUE execution corresponding to `exec_stmt_exit`
 /// (`pl_exec.c:3163-3186`).
 fn exec_stmt_exit(
@@ -502,6 +548,59 @@ fn exec_stmt_execsql(
 
     if stmt.into {
         exec_select_into_targets(estate, stmt, &result)?;
+        set_found(estate, !result.rows.is_empty())?;
+    } else {
+        let found = result.rows_affected > 0 || !result.rows.is_empty();
+        set_found(estate, found)?;
+    }
+
+    Ok(ExecResultCode::Ok)
+}
+
+/// Dynamic EXECUTE execution corresponding to `exec_stmt_dynexecute`
+/// (`pl_exec.c:4483-4848`) with simplified INTO handling.
+fn exec_stmt_dynexecute(
+    estate: &mut PLpgSQLExecState,
+    stmt: &PlPgSqlStmtDynexecute,
+) -> Result<ExecResultCode, String> {
+    let query_value = exec_eval_expr(estate, &stmt.query)?;
+    let query = scalar_to_dynamic_sql(query_value)?;
+    let result = execute_sql_statement(estate, &query)?;
+
+    if stmt.into {
+        let target = stmt
+            .target
+            .as_ref()
+            .ok_or_else(|| "EXECUTE INTO target variable is missing".to_string())?;
+
+        if stmt.strict && result.rows.len() != 1 {
+            return Err(format!(
+                "query returned {} rows but EXECUTE INTO STRICT expects exactly one row",
+                result.rows.len()
+            ));
+        }
+
+        let source_cols = if !result.columns.is_empty() {
+            result.columns.len()
+        } else if let Some(row) = result.rows.first() {
+            row.len()
+        } else {
+            0
+        };
+
+        if source_cols != 1 {
+            return Err(format!(
+                "EXECUTE INTO target count (1) does not match query column count ({source_cols})"
+            ));
+        }
+
+        let value = result
+            .rows
+            .first()
+            .and_then(|row| row.first())
+            .cloned()
+            .unwrap_or(ScalarValue::Null);
+        exec_assign_value_dno(estate, target.dno, value)?;
         set_found(estate, !result.rows.is_empty())?;
     } else {
         let found = result.rows_affected > 0 || !result.rows.is_empty();
@@ -838,6 +937,14 @@ fn decode_single_quoted_string(input: &str) -> Option<String> {
 
 fn decode_sql_string_literal(input: &str) -> String {
     decode_single_quoted_string(input).unwrap_or_else(|| input.to_string())
+}
+
+fn scalar_to_dynamic_sql(value: ScalarValue) -> Result<String, String> {
+    match value {
+        ScalarValue::Null => Err("query string argument of EXECUTE is null".to_string()),
+        ScalarValue::Text(text) => Ok(text),
+        other => Ok(other.render()),
+    }
 }
 
 fn format_raise_message(template: &str, params: &[String]) -> Result<String, String> {

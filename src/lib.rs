@@ -53,7 +53,8 @@
     clippy::needless_late_init,
     clippy::branches_sharing_code,
     clippy::useless_let_if_seq,
-    clippy::suspicious_operation_groupings
+    clippy::suspicious_operation_groupings,
+    clippy::bool_to_int_with_if
 )]
 
 pub mod access;

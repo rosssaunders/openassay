@@ -17,10 +17,10 @@ use crate::plpgsql::scanner::{
 use crate::plpgsql::types::{
     PlPgSqlDatum, PlPgSqlDtype, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlIfElsif, PlPgSqlPromiseType,
     PlPgSqlRaiseOption, PlPgSqlRaiseOptionType, PlPgSqlResolveOption, PlPgSqlStmt,
-    PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtCall, PlPgSqlStmtCommit, PlPgSqlStmtExecSql,
-    PlPgSqlStmtGetdiag, PlPgSqlStmtIf, PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn,
-    PlPgSqlStmtRollback, PlPgSqlStmtType, PlPgSqlTrigtype, PlPgSqlType, PlPgSqlTypeType,
-    PlPgSqlValue, PlPgSqlVar, PlPgSqlVariable,
+    PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtCall, PlPgSqlStmtCommit, PlPgSqlStmtDynexecute,
+    PlPgSqlStmtExecSql, PlPgSqlStmtFori, PlPgSqlStmtFors, PlPgSqlStmtGetdiag, PlPgSqlStmtIf,
+    PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn, PlPgSqlStmtRollback, PlPgSqlStmtType,
+    PlPgSqlTrigtype, PlPgSqlType, PlPgSqlTypeType, PlPgSqlValue, PlPgSqlVar, PlPgSqlVariable,
 };
 
 /// Compiler error for PL/pgSQL parse/compile.
@@ -407,11 +407,17 @@ impl<'a> BodyParser<'a> {
         if self.is_keyword(PlPgSqlKeyword::If) {
             return self.parse_if_statement();
         }
+        if self.is_keyword(PlPgSqlKeyword::For) {
+            return self.parse_for_statement();
+        }
         if self.is_keyword(PlPgSqlKeyword::Return) {
             return self.parse_return_statement();
         }
         if self.is_keyword(PlPgSqlKeyword::Raise) {
             return self.parse_raise_statement();
+        }
+        if self.is_keyword(PlPgSqlKeyword::Execute) {
+            return self.parse_execute_statement();
         }
         if self.is_keyword(PlPgSqlKeyword::Perform) {
             return self.parse_perform_statement();
@@ -520,6 +526,152 @@ impl<'a> BodyParser<'a> {
         }))
     }
 
+    fn parse_for_statement(&mut self) -> Result<PlPgSqlStmt, PlPgSqlCompileError> {
+        enum ForHeader {
+            Integer {
+                var: PlPgSqlVar,
+                lower: String,
+                upper: String,
+                step: Option<String>,
+                reverse: i32,
+            },
+            Query {
+                var: PlPgSqlVariable,
+                query: String,
+            },
+        }
+
+        let token = self.current_token().clone();
+        self.expect_keyword(PlPgSqlKeyword::For, "expected FOR")?;
+        let var_name = self.expect_identifier("expected loop variable after FOR")?;
+        self.expect_identifier_word("in", "expected IN in FOR statement")?;
+        let reverse = if self.consume_identifier_word("reverse") {
+            1
+        } else {
+            0
+        };
+
+        let header_start_idx = self.idx;
+        let mut idx = self.idx;
+        let mut depth = 0usize;
+        let mut loop_idx = None;
+        let mut range_idx = None;
+        let mut by_idx = None;
+
+        while idx < self.tokens.len() {
+            match &self.tokens[idx].kind {
+                PlPgSqlTokenKind::LParen => depth += 1,
+                PlPgSqlTokenKind::RParen => depth = depth.saturating_sub(1),
+                PlPgSqlTokenKind::Keyword(PlPgSqlKeyword::Loop) if depth == 0 => {
+                    loop_idx = Some(idx);
+                    break;
+                }
+                PlPgSqlTokenKind::Dot if depth == 0 => {
+                    if matches!(
+                        self.tokens.get(idx + 1).map(|t| &t.kind),
+                        Some(PlPgSqlTokenKind::Dot)
+                    ) && range_idx.is_none()
+                    {
+                        range_idx = Some(idx);
+                        idx += 1;
+                    }
+                }
+                PlPgSqlTokenKind::Identifier(word)
+                    if depth == 0 && range_idx.is_some() && by_idx.is_none() =>
+                {
+                    if word.eq_ignore_ascii_case("by") {
+                        by_idx = Some(idx);
+                    }
+                }
+                PlPgSqlTokenKind::Eof => break,
+                _ => {}
+            }
+            idx += 1;
+        }
+
+        let Some(loop_idx) = loop_idx else {
+            return Err(self.error_at_current("expected LOOP in FOR statement"));
+        };
+
+        let for_header = if let Some(range_idx) = range_idx {
+            let lower = self.slice_token_range(header_start_idx, range_idx);
+            if lower.is_empty() {
+                return Err(self.error_at_current("expected lower bound expression in FOR range"));
+            }
+
+            let upper_end = by_idx.unwrap_or(loop_idx);
+            let upper = self.slice_token_range(range_idx + 2, upper_end);
+            if upper.is_empty() {
+                return Err(self.error_at_current("expected upper bound expression in FOR range"));
+            }
+
+            let step = by_idx.map(|by_idx| self.slice_token_range(by_idx + 1, loop_idx));
+            if step.as_deref().is_some_and(str::is_empty) {
+                return Err(self.error_at_current("expected step expression after BY"));
+            }
+
+            let loop_var =
+                self.lookup_or_create_loop_var(&var_name, token.span.line, Some("integer"))?;
+            ForHeader::Integer {
+                var: loop_var,
+                lower,
+                upper,
+                step,
+                reverse,
+            }
+        } else {
+            if reverse != 0 {
+                return Err(self.error_at_current("REVERSE is only valid for integer FOR loops"));
+            }
+            let query = self.slice_token_range(header_start_idx, loop_idx);
+            if query.is_empty() {
+                return Err(self.error_at_current("expected query expression in FOR statement"));
+            }
+            let loop_var = self.lookup_or_create_loop_var(&var_name, token.span.line, None)?;
+            ForHeader::Query {
+                var: loop_var.variable,
+                query,
+            }
+        };
+
+        self.idx = loop_idx;
+        self.expect_keyword(PlPgSqlKeyword::Loop, "expected LOOP in FOR statement")?;
+        let body = self.parse_statement_list_until_keywords(&[PlPgSqlKeyword::End])?;
+        self.expect_keyword(PlPgSqlKeyword::End, "expected END to close FOR loop")?;
+        self.expect_keyword(PlPgSqlKeyword::Loop, "expected LOOP after END in FOR loop")?;
+        self.expect_semicolon()?;
+
+        match for_header {
+            ForHeader::Integer {
+                var,
+                lower,
+                upper,
+                step,
+                reverse,
+            } => Ok(PlPgSqlStmt::Fori(PlPgSqlStmtFori {
+                cmd_type: PlPgSqlStmtType::Fori,
+                lineno: i32::try_from(token.span.line).unwrap_or(i32::MAX),
+                stmtid: self.alloc_stmtid(),
+                label: None,
+                var: Some(var),
+                lower: self.make_expr(lower),
+                upper: self.make_expr(upper),
+                step: step.map(|s| self.make_expr(s)),
+                reverse,
+                body,
+            })),
+            ForHeader::Query { var, query } => Ok(PlPgSqlStmt::Fors(PlPgSqlStmtFors {
+                cmd_type: PlPgSqlStmtType::Fors,
+                lineno: i32::try_from(token.span.line).unwrap_or(i32::MAX),
+                stmtid: self.alloc_stmtid(),
+                label: None,
+                var: Some(var),
+                body,
+                query: self.make_expr(query),
+            })),
+        }
+    }
+
     fn parse_return_statement(&mut self) -> Result<PlPgSqlStmt, PlPgSqlCompileError> {
         let token = self.current_token().clone();
         self.expect_keyword(PlPgSqlKeyword::Return, "expected RETURN")?;
@@ -607,6 +759,104 @@ impl<'a> BodyParser<'a> {
             lineno: i32::try_from(token.span.line).unwrap_or(i32::MAX),
             stmtid: self.alloc_stmtid(),
             expr: self.make_expr(expr_text),
+        }))
+    }
+
+    fn parse_execute_statement(&mut self) -> Result<PlPgSqlStmt, PlPgSqlCompileError> {
+        let token = self.current_token().clone();
+        self.expect_keyword(PlPgSqlKeyword::Execute, "expected EXECUTE")?;
+
+        let query_start_idx = self.idx;
+        let mut idx = self.idx;
+        let mut depth = 0usize;
+        let mut into_idx = None;
+        let mut semicolon_idx = None;
+
+        while idx < self.tokens.len() {
+            match &self.tokens[idx].kind {
+                PlPgSqlTokenKind::LParen => depth += 1,
+                PlPgSqlTokenKind::RParen => depth = depth.saturating_sub(1),
+                PlPgSqlTokenKind::Identifier(word) if depth == 0 && into_idx.is_none() => {
+                    if word.eq_ignore_ascii_case("into") {
+                        into_idx = Some(idx);
+                    }
+                }
+                PlPgSqlTokenKind::Semicolon if depth == 0 => {
+                    semicolon_idx = Some(idx);
+                    break;
+                }
+                PlPgSqlTokenKind::Eof => break,
+                _ => {}
+            }
+            idx += 1;
+        }
+
+        let Some(semicolon_idx) = semicolon_idx else {
+            return Err(self.error_at_current("unterminated EXECUTE statement"));
+        };
+
+        let query_end_idx = into_idx.unwrap_or(semicolon_idx);
+        let query = self.slice_token_range(query_start_idx, query_end_idx);
+        if query.is_empty() {
+            return Err(self.error_at_current("expected dynamic SQL expression after EXECUTE"));
+        }
+
+        let mut into = false;
+        let mut strict = false;
+        let mut target = None;
+
+        if let Some(into_idx) = into_idx {
+            into = true;
+            let mut target_idx = into_idx + 1;
+
+            if let Some(PlPgSqlTokenKind::Identifier(word)) =
+                self.tokens.get(target_idx).map(|t| &t.kind)
+                && word.eq_ignore_ascii_case("strict")
+            {
+                strict = true;
+                target_idx += 1;
+            }
+
+            let Some(PlPgSqlToken {
+                kind: PlPgSqlTokenKind::Identifier(target_name),
+                ..
+            }) = self.tokens.get(target_idx)
+            else {
+                return Err(self.error_at_current("expected target variable after INTO"));
+            };
+
+            target = self.variable_by_name(target_name);
+            if target.is_none() {
+                return Err(PlPgSqlCompileError {
+                    message: format!("unknown variable \"{target_name}\" in EXECUTE INTO"),
+                    position: self.tokens[target_idx].span.start,
+                    line: self.tokens[target_idx].span.line,
+                    column: self.tokens[target_idx].span.column,
+                });
+            }
+
+            if target_idx + 1 != semicolon_idx {
+                return Err(PlPgSqlCompileError {
+                    message: "invalid EXECUTE INTO target list".to_string(),
+                    position: self.tokens[target_idx + 1].span.start,
+                    line: self.tokens[target_idx + 1].span.line,
+                    column: self.tokens[target_idx + 1].span.column,
+                });
+            }
+        }
+
+        self.idx = semicolon_idx;
+        self.expect_semicolon()?;
+
+        Ok(PlPgSqlStmt::DynExecute(PlPgSqlStmtDynexecute {
+            cmd_type: PlPgSqlStmtType::DynExecute,
+            lineno: i32::try_from(token.span.line).unwrap_or(i32::MAX),
+            stmtid: self.alloc_stmtid(),
+            query: self.make_expr(query),
+            into,
+            strict,
+            target,
+            params: Vec::new(),
         }))
     }
 
@@ -875,6 +1125,83 @@ impl<'a> BodyParser<'a> {
         }
     }
 
+    fn variable_by_name(&self, name: &str) -> Option<PlPgSqlVariable> {
+        let dno = *self.variables_by_name.get(&name.to_ascii_lowercase())?;
+        self.variable_by_dno(dno)
+    }
+
+    fn lookup_or_create_loop_var(
+        &mut self,
+        name: &str,
+        decl_line: usize,
+        datatype_hint: Option<&str>,
+    ) -> Result<PlPgSqlVar, PlPgSqlCompileError> {
+        let key = name.to_ascii_lowercase();
+        if let Some(dno) = self.variables_by_name.get(&key).copied() {
+            let idx = usize::try_from(dno).unwrap_or(usize::MAX);
+            match self.datums.get(idx) {
+                Some(PlPgSqlDatum::Var(var)) => return Ok(var.clone()),
+                Some(_) => {
+                    return Err(PlPgSqlCompileError {
+                        message: format!("loop variable \"{name}\" is not a scalar variable"),
+                        position: self.current_token().span.start,
+                        line: self.current_token().span.line,
+                        column: self.current_token().span.column,
+                    });
+                }
+                None => {
+                    return Err(PlPgSqlCompileError {
+                        message: format!("loop variable \"{name}\" is unresolved"),
+                        position: self.current_token().span.start,
+                        line: self.current_token().span.line,
+                        column: self.current_token().span.column,
+                    });
+                }
+            }
+        }
+
+        let dno = self.allocate_dno();
+        let variable = PlPgSqlVariable {
+            dtype: PlPgSqlDtype::Var,
+            dno,
+            refname: name.to_string(),
+            lineno: i32::try_from(decl_line).unwrap_or(i32::MAX),
+            isconst: false,
+            notnull: false,
+            default_val: None,
+        };
+        let var = PlPgSqlVar {
+            variable: variable.clone(),
+            datatype: datatype_hint.map(|hint| self.make_type(hint)),
+            cursor_explicit_expr: None,
+            cursor_explicit_argrow: -1,
+            cursor_options: 0,
+            value: Some(PlPgSqlValue::Null),
+            isnull: true,
+            freeval: false,
+            promise: PlPgSqlPromiseType::None,
+        };
+
+        self.variables_by_name.insert(key, dno);
+        self.datums.push(PlPgSqlDatum::Var(var.clone()));
+        Ok(var)
+    }
+
+    fn slice_token_range(&self, start_idx: usize, end_idx: usize) -> String {
+        if end_idx <= start_idx || start_idx >= self.tokens.len() {
+            return String::new();
+        }
+
+        let safe_end = end_idx.min(self.tokens.len());
+        if safe_end <= start_idx {
+            return String::new();
+        }
+
+        let start = self.tokens[start_idx].span.start;
+        let end = self.tokens[safe_end - 1].span.end;
+        self.source[start..end].trim().to_string()
+    }
+
     fn extract_expression_until_keywords(
         &mut self,
         keywords: &[PlPgSqlKeyword],
@@ -1080,6 +1407,28 @@ impl<'a> BodyParser<'a> {
             Ok(())
         } else {
             Err(self.error_at_current("expected ';'"))
+        }
+    }
+
+    fn consume_identifier_word(&mut self, expected: &str) -> bool {
+        if let PlPgSqlTokenKind::Identifier(word) = self.current_kind()
+            && word.eq_ignore_ascii_case(expected)
+        {
+            self.advance();
+            return true;
+        }
+        false
+    }
+
+    fn expect_identifier_word(
+        &mut self,
+        expected: &str,
+        message: &str,
+    ) -> Result<(), PlPgSqlCompileError> {
+        if self.consume_identifier_word(expected) {
+            Ok(())
+        } else {
+            Err(self.error_at_current(message))
         }
     }
 
