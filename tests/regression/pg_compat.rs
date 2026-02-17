@@ -47,6 +47,147 @@ fn load_pg_compat_tests() -> Vec<(String, String, Option<String>)> {
         .collect()
 }
 
+fn parse_dollar_tag(bytes: &[u8], start: usize) -> Option<usize> {
+    if bytes.get(start) != Some(&b'$') {
+        return None;
+    }
+
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'$' => return Some(i - start + 1),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' => i += 1,
+            _ => return None,
+        }
+    }
+
+    None
+}
+
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let bytes = sql.as_bytes();
+    let mut statements = Vec::new();
+    let mut statement_start = 0usize;
+    let mut i = 0usize;
+
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut in_line_comment = false;
+    let mut block_comment_depth = 0usize;
+    let mut dollar_tag: Option<Vec<u8>> = None;
+
+    while i < bytes.len() {
+        if in_line_comment {
+            if bytes[i] == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if block_comment_depth > 0 {
+            if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                block_comment_depth += 1;
+                i += 2;
+                continue;
+            }
+            if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                block_comment_depth -= 1;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if let Some(tag) = dollar_tag.as_ref() {
+            let tag_len = tag.len();
+            let matches_tag =
+                i + tag_len <= bytes.len() && &bytes[i..i + tag_len] == tag.as_slice();
+            if matches_tag {
+                dollar_tag = None;
+                i += tag_len;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_single_quote {
+            if bytes[i] == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double_quote {
+            if bytes[i] == b'"' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'"' {
+                    i += 2;
+                    continue;
+                }
+                in_double_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if i + 1 < bytes.len() && bytes[i] == b'-' && bytes[i + 1] == b'-' {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+
+        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            block_comment_depth = 1;
+            i += 2;
+            continue;
+        }
+
+        if bytes[i] == b'\'' {
+            in_single_quote = true;
+            i += 1;
+            continue;
+        }
+
+        if bytes[i] == b'"' {
+            in_double_quote = true;
+            i += 1;
+            continue;
+        }
+
+        if bytes[i] == b'$' {
+            if let Some(tag_len) = parse_dollar_tag(bytes, i) {
+                dollar_tag = Some(bytes[i..i + tag_len].to_vec());
+                i += tag_len;
+                continue;
+            }
+        }
+
+        if bytes[i] == b';' {
+            let statement = sql[statement_start..i].trim();
+            if !statement.is_empty() {
+                statements.push(statement.to_string());
+            }
+            statement_start = i + 1;
+        }
+
+        i += 1;
+    }
+
+    let trailing_statement = sql[statement_start..].trim();
+    if !trailing_statement.is_empty() {
+        statements.push(trailing_statement.to_string());
+    }
+
+    statements
+}
+
 /// Run a single SQL statement and return the formatted result
 fn run_sql_statement(session: &mut PostgresSession, sql: &str) -> Result<String, String> {
     let messages = session.run_sync([FrontendMessage::Query {
@@ -205,12 +346,8 @@ fn postgresql_compatibility_suite() {
 
         let mut session = PostgresSession::new();
 
-        // Split SQL into individual statements
-        let statements: Vec<&str> = sql
-            .split(';')
-            .map(|stmt| stmt.trim())
-            .filter(|stmt| !stmt.is_empty() && !stmt.starts_with("--"))
-            .collect();
+        // Split SQL while respecting quotes/comments/dollar-quoted PL/pgSQL bodies.
+        let statements = split_sql_statements(&sql);
 
         if statements.is_empty() {
             println!("SKIP (no valid statements)");
