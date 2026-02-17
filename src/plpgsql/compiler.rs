@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::parser::ast::{CreateFunctionStatement, DoStatement, Statement, TypeName};
+use crate::parser::ast::{
+    CreateFunctionStatement, DoStatement, FunctionParamMode, Statement, TypeName,
+};
 use crate::parser::sql_parser::{ParseError as SqlParseError, parse_statement};
 use crate::plpgsql::scanner::{
     PlPgSqlKeyword, PlPgSqlScanError, PlPgSqlToken, PlPgSqlTokenKind, extract_sql_expression,
@@ -23,6 +25,7 @@ use crate::plpgsql::types::{
     PlPgSqlStmtFori, PlPgSqlStmtFors, PlPgSqlStmtGetdiag, PlPgSqlStmtIf, PlPgSqlStmtOpen,
     PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn, PlPgSqlStmtRollback, PlPgSqlStmtType,
     PlPgSqlTrigtype, PlPgSqlType, PlPgSqlTypeType, PlPgSqlValue, PlPgSqlVar, PlPgSqlVariable,
+    PlPgSqlRow,
 };
 
 /// Compiler error for PL/pgSQL parse/compile.
@@ -132,11 +135,12 @@ pub fn compile_create_function_statement(
 
     let tokens = tokenize(&create_stmt.body)?;
     let mut parser = BodyParser::new(&create_stmt.body, tokens);
-    let argvarnos = parser.add_argument_datums(create_stmt);
+    let (argvarnos, out_param_varno) = parser.add_argument_datums(create_stmt);
     let mut compiled = parser.parse_function_body()?;
     compiled.fn_signature = create_stmt.name.join(".");
-    compiled.fn_nargs = i32::try_from(create_stmt.params.len()).unwrap_or(i32::MAX);
+    compiled.fn_nargs = i32::try_from(argvarnos.len()).unwrap_or(i32::MAX);
     compiled.fn_argvarnos = argvarnos;
+    compiled.out_param_varno = out_param_varno;
     Ok(compiled)
 }
 
@@ -225,8 +229,10 @@ impl<'a> BodyParser<'a> {
         })
     }
 
-    fn add_argument_datums(&mut self, create_stmt: &CreateFunctionStatement) -> Vec<i32> {
+    fn add_argument_datums(&mut self, create_stmt: &CreateFunctionStatement) -> (Vec<i32>, i32) {
         let mut argvarnos = Vec::with_capacity(create_stmt.params.len());
+        let mut out_varnos = Vec::new();
+        let mut out_fieldnames = Vec::new();
 
         for (idx, param) in create_stmt.params.iter().enumerate() {
             let dno = self.allocate_dno();
@@ -260,10 +266,41 @@ impl<'a> BodyParser<'a> {
                     .insert(name.to_ascii_lowercase(), dno);
             }
             self.datums.push(PlPgSqlDatum::Var(var));
-            argvarnos.push(dno);
+            if matches!(param.mode, FunctionParamMode::In | FunctionParamMode::InOut) {
+                argvarnos.push(dno);
+            }
+            if matches!(param.mode, FunctionParamMode::Out | FunctionParamMode::InOut) {
+                out_varnos.push(dno);
+                out_fieldnames.push(refname);
+            }
         }
 
-        argvarnos
+        let out_param_varno = if out_varnos.is_empty() {
+            -1
+        } else if out_varnos.len() == 1 {
+            out_varnos[0]
+        } else {
+            let dno = self.allocate_dno();
+            let variable = PlPgSqlVariable {
+                dtype: PlPgSqlDtype::Row,
+                dno,
+                refname: "__out_params__".to_string(),
+                lineno: 1,
+                isconst: true,
+                notnull: false,
+                default_val: None,
+            };
+            self.datums.push(PlPgSqlDatum::Row(PlPgSqlRow {
+                variable,
+                rowtupdesc: None,
+                nfields: i32::try_from(out_fieldnames.len()).unwrap_or(i32::MAX),
+                fieldnames: out_fieldnames,
+                varnos: out_varnos,
+            }));
+            dno
+        };
+
+        (argvarnos, out_param_varno)
     }
 
     fn add_found_datum(&mut self) -> i32 {
@@ -2216,7 +2253,7 @@ fn parse_dollar_quoted_string(input: &str) -> Result<(String, usize), PlPgSqlCom
 
 #[cfg(test)]
 mod tests {
-    use super::{compile_do_block_sql, compile_function_body};
+    use super::{compile_create_function_sql, compile_do_block_sql, compile_function_body};
     use crate::plpgsql::types::{PlPgSqlDatum, PlPgSqlStmt};
 
     #[test]
@@ -2370,5 +2407,34 @@ END;
             panic!("first statement should be GET DIAGNOSTICS");
         };
         assert_eq!(stmt.diag_items.len(), 1);
+    }
+
+    #[test]
+    fn compiles_out_and_inout_parameters() {
+        let out_sql = "
+CREATE FUNCTION out_only(OUT x integer)
+RETURNS integer
+AS $$
+BEGIN
+  x := 5;
+  RETURN;
+END;
+$$ LANGUAGE plpgsql;";
+        let out_compiled = compile_create_function_sql(out_sql).expect("compile should succeed");
+        assert_eq!(out_compiled.fn_argvarnos.len(), 0);
+        assert!(out_compiled.out_param_varno >= 0);
+
+        let inout_sql = "
+CREATE FUNCTION bump(INOUT x integer)
+RETURNS integer
+AS $$
+BEGIN
+  x := x + 1;
+  RETURN;
+END;
+$$ LANGUAGE plpgsql;";
+        let inout_compiled = compile_create_function_sql(inout_sql).expect("compile should succeed");
+        assert_eq!(inout_compiled.fn_argvarnos.len(), 1);
+        assert_eq!(inout_compiled.out_param_varno, inout_compiled.fn_argvarnos[0]);
     }
 }

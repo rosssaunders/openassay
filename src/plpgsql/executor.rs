@@ -148,6 +148,13 @@ impl PLpgSQLExecState {
                     ))
                 }
             }
+            PlPgSqlDatum::Row(row) => {
+                let mut values = Vec::with_capacity(row.varnos.len());
+                for varno in &row.varnos {
+                    values.push(self.datum_value(*varno)?);
+                }
+                Ok(ScalarValue::Record(values))
+            }
             _ => Err(format!("datum {dno} is not a scalar variable")),
         }
     }
@@ -168,6 +175,11 @@ pub fn plpgsql_exec_function(
     };
 
     let rc = exec_stmt_block(&mut estate, &action)?;
+    if estate.retval.is_none() && estate.func.out_param_varno >= 0 {
+        let value = estate.datum_value(estate.func.out_param_varno)?;
+        estate.ret_is_null = matches!(value, ScalarValue::Null);
+        estate.retval = Some(value);
+    }
     match rc {
         ExecResultCode::Ok | ExecResultCode::Return => Ok(estate.retval.clone()),
         ExecResultCode::Exit | ExecResultCode::Continue => {
@@ -634,8 +646,14 @@ fn exec_stmt_return(
         return Ok(ExecResultCode::Return);
     }
 
-    estate.retval = None;
-    estate.ret_is_null = true;
+    if estate.func.out_param_varno >= 0 {
+        let value = estate.datum_value(estate.func.out_param_varno)?;
+        estate.ret_is_null = matches!(value, ScalarValue::Null);
+        estate.retval = Some(value);
+    } else {
+        estate.retval = None;
+        estate.ret_is_null = true;
+    }
     Ok(ExecResultCode::Return)
 }
 
@@ -1679,7 +1697,9 @@ fn scalar_to_plpgsql_value(value: &ScalarValue) -> PlPgSqlValue {
 #[cfg(test)]
 mod tests {
     use super::plpgsql_exec_function;
-    use crate::plpgsql::compiler::{compile_do_block_sql, compile_function_body};
+    use crate::plpgsql::compiler::{
+        compile_create_function_sql, compile_do_block_sql, compile_function_body,
+    };
     use crate::plpgsql::types::{
         PlPgSqlDatum, PlPgSqlDtype, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlPromiseType, PlPgSqlStmt,
         PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtFori, PlPgSqlStmtLoop, PlPgSqlStmtReturn,
@@ -2033,6 +2053,39 @@ END;
         let func = compile_function_body(src).expect("compile should succeed");
         let result = plpgsql_exec_function(&func, &[]).expect("execution should succeed");
         assert_eq!(result, Some(ScalarValue::Int(2)));
+    }
+
+    #[test]
+    fn executes_function_with_out_parameter() {
+        let sql = "
+CREATE FUNCTION out_only(OUT x integer)
+RETURNS integer
+AS $$
+BEGIN
+  x := 9;
+  RETURN;
+END;
+$$ LANGUAGE plpgsql;";
+        let func = compile_create_function_sql(sql).expect("compile should succeed");
+        let result = plpgsql_exec_function(&func, &[]).expect("execution should succeed");
+        assert_eq!(result, Some(ScalarValue::Int(9)));
+    }
+
+    #[test]
+    fn executes_function_with_inout_parameter() {
+        let sql = "
+CREATE FUNCTION bump(INOUT x integer)
+RETURNS integer
+AS $$
+BEGIN
+  x := x + 1;
+  RETURN;
+END;
+$$ LANGUAGE plpgsql;";
+        let func = compile_create_function_sql(sql).expect("compile should succeed");
+        let result =
+            plpgsql_exec_function(&func, &[ScalarValue::Int(4)]).expect("execution should succeed");
+        assert_eq!(result, Some(ScalarValue::Int(5)));
     }
 
     #[test]

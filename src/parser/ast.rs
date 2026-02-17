@@ -1005,9 +1005,17 @@ pub struct DropSubscriptionStatement {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum FunctionParamMode {
+    In,
+    Out,
+    InOut,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct FunctionParam {
     pub name: Option<String>,
     pub data_type: TypeName,
+    pub mode: FunctionParamMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]

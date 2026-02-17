@@ -12,6 +12,7 @@ use crate::parser::ast::{
     DropIndexStatement, DropRoleStatement, DropSchemaStatement, DropSequenceStatement,
     DropSubscriptionStatement, DropTableStatement, DropTypeStatement, DropViewStatement,
     ExplainStatement, Expr, ForeignKeyAction, ForeignKeyReference, FunctionParam,
+    FunctionParamMode,
     FunctionReturnType, GrantRoleStatement, GrantStatement, GrantTablePrivilegesStatement,
     GroupByExpr, InsertSource, InsertStatement, JoinCondition, JoinExpr, JoinType, ListenStatement,
     MergeStatement, MergeWhenClause, NotifyStatement, OnConflictClause, OrderByExpr, Query,
@@ -5080,6 +5081,25 @@ impl Parser {
         let mut params = Vec::new();
         if !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
             loop {
+                let mode = if self.consume_keyword(Keyword::In) {
+                    FunctionParamMode::In
+                } else if let TokenKind::Identifier(word) = self.current_kind() {
+                    if word.eq_ignore_ascii_case("in") {
+                        self.advance();
+                        FunctionParamMode::In
+                    } else if word.eq_ignore_ascii_case("out") {
+                        self.advance();
+                        FunctionParamMode::Out
+                    } else if word.eq_ignore_ascii_case("inout") {
+                        self.advance();
+                        FunctionParamMode::InOut
+                    } else {
+                        FunctionParamMode::In
+                    }
+                } else {
+                    FunctionParamMode::In
+                };
+
                 // Try name TYPE or just TYPE
                 let first_ident = self.parse_identifier()?;
                 let (param_name, data_type) = if let Ok(dt) = self.try_parse_type_name(&first_ident)
@@ -5106,6 +5126,7 @@ impl Parser {
                 params.push(FunctionParam {
                     name: param_name,
                     data_type,
+                    mode,
                 });
                 if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                     self.expect_token(
