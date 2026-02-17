@@ -33,6 +33,8 @@ impl std::error::Error for PlPgSqlScanError {}
 pub enum PlPgSqlKeyword {
     Declare,
     Begin,
+    Exception,
+    When,
     End,
     If,
     Then,
@@ -420,6 +422,8 @@ fn keyword_from_ident(ident: &str) -> Option<PlPgSqlKeyword> {
     match ident {
         "declare" => Some(PlPgSqlKeyword::Declare),
         "begin" => Some(PlPgSqlKeyword::Begin),
+        "exception" => Some(PlPgSqlKeyword::Exception),
+        "when" => Some(PlPgSqlKeyword::When),
         "end" => Some(PlPgSqlKeyword::End),
         "if" => Some(PlPgSqlKeyword::If),
         "then" => Some(PlPgSqlKeyword::Then),
@@ -513,5 +517,22 @@ mod tests {
 
         assert_eq!(expr, "format('x;y', (1 + 2))");
         assert!(matches!(tokens[end_idx].kind, PlPgSqlTokenKind::Semicolon));
+    }
+
+    #[test]
+    fn tokenizes_exception_keywords() {
+        let src = "BEGIN RAISE EXCEPTION 'x'; EXCEPTION WHEN others THEN NULL; END;";
+        let tokens = tokenize(src).expect("scan should succeed");
+
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, PlPgSqlTokenKind::Keyword(PlPgSqlKeyword::Exception)))
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t.kind, PlPgSqlTokenKind::Keyword(PlPgSqlKeyword::When)))
+        );
     }
 }

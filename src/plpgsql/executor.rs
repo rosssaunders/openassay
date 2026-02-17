@@ -13,10 +13,11 @@ use crate::parser::ast::Statement;
 use crate::parser::sql_parser::parse_statement;
 use crate::plpgsql::scanner::{PlPgSqlTokenKind, tokenize};
 use crate::plpgsql::types::{
-    PlPgSqlDatum, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlStmt, PlPgSqlStmtAssign, PlPgSqlStmtBlock,
-    PlPgSqlStmtDynexecute, PlPgSqlStmtExecSql, PlPgSqlStmtExit, PlPgSqlStmtFori, PlPgSqlStmtFors,
-    PlPgSqlStmtIf, PlPgSqlStmtLoop, PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn,
-    PlPgSqlStmtReturnNext, PlPgSqlStmtWhile, PlPgSqlValue,
+    PLPGSQL_OTHERS, PlPgSqlCondition, PlPgSqlDatum, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlStmt,
+    PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtDynexecute, PlPgSqlStmtExecSql,
+    PlPgSqlStmtExit, PlPgSqlStmtFori, PlPgSqlStmtFors, PlPgSqlStmtIf, PlPgSqlStmtLoop,
+    PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn, PlPgSqlStmtReturnNext,
+    PlPgSqlStmtWhile, PlPgSqlValue,
 };
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{QueryResult, execute_planned_query, plan_statement};
@@ -164,7 +165,47 @@ fn exec_stmt_block(
         initialize_datum(estate, *dno)?;
     }
 
-    let rc = exec_stmts(estate, &block.body)?;
+    let rc = if let Some(exceptions) = &block.exceptions {
+        match exec_stmts(estate, &block.body) {
+            Ok(rc) => rc,
+            Err(err) => {
+                let (sqlstate, sqlerrm) = classify_error_sqlstate(&err);
+                let sqlerrstate =
+                    sqlstate_code_to_int(sqlstate.as_str()).unwrap_or_else(|| sqlstate_internal());
+
+                let mut matched = None;
+                for exception in &exceptions.exc_list {
+                    if exception_matches_conditions(sqlerrstate, &exception.conditions) {
+                        matched = Some(exception);
+                        break;
+                    }
+                }
+
+                let Some(exception) = matched else {
+                    return Err(err);
+                };
+
+                if exceptions.sqlstate_varno >= 0 {
+                    exec_assign_value_dno(
+                        estate,
+                        exceptions.sqlstate_varno,
+                        ScalarValue::Text(sqlstate),
+                    )?;
+                }
+                if exceptions.sqlerrm_varno >= 0 {
+                    exec_assign_value_dno(
+                        estate,
+                        exceptions.sqlerrm_varno,
+                        ScalarValue::Text(sqlerrm),
+                    )?;
+                }
+
+                exec_stmts(estate, &exception.action)?
+            }
+        }
+    } else {
+        exec_stmts(estate, &block.body)?
+    };
 
     match rc {
         ExecResultCode::Ok | ExecResultCode::Return | ExecResultCode::Continue => Ok(rc),
@@ -534,7 +575,7 @@ fn exec_stmt_raise(
         eprintln!("NOTICE: {formatted}");
         Ok(ExecResultCode::Ok)
     } else {
-        Err(formatted)
+        Err(tag_sqlstate_error("P0001", formatted))
     }
 }
 
@@ -862,6 +903,140 @@ fn process_loop_rc(
     }
 }
 
+fn exception_matches_conditions(sqlerrstate: i32, conditions: &[PlPgSqlCondition]) -> bool {
+    for condition in conditions {
+        if condition.sqlerrstate == PLPGSQL_OTHERS {
+            if sqlerrstate != sqlstate_query_canceled() && sqlerrstate != sqlstate_assert_failure()
+            {
+                return true;
+            }
+            continue;
+        }
+
+        if condition.sqlerrstate == sqlerrstate {
+            return true;
+        }
+
+        if errcode_is_category(condition.sqlerrstate)
+            && errcode_to_category(sqlerrstate) == condition.sqlerrstate
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn classify_error_sqlstate(err: &str) -> (String, String) {
+    if let Some((sqlstate, message)) = parse_tagged_sqlstate_error(err) {
+        return (sqlstate, message);
+    }
+
+    let lower = err.to_ascii_lowercase();
+    let sqlstate = if lower.starts_with("parse error:") {
+        "42601"
+    } else if lower.contains("current transaction is aborted") {
+        "25P02"
+    } else if lower.contains("cannot be executed from a transaction block") {
+        "25001"
+    } else if lower.contains("privilege") || lower.contains("permission denied") {
+        "42501"
+    } else if lower.contains("duplicate value for key") {
+        "23505"
+    } else if lower.contains("does not allow null values") {
+        "23502"
+    } else if lower.contains("already exists") {
+        if lower.contains("relation")
+            || lower.contains("table")
+            || lower.contains("view")
+            || lower.contains("index")
+        {
+            "42P07"
+        } else {
+            "42710"
+        }
+    } else if lower.contains("unknown column") {
+        "42703"
+    } else if lower.contains("does not exist") {
+        if lower.contains("column") {
+            "42703"
+        } else if lower.contains("schema")
+            || lower.contains("relation")
+            || lower.contains("table")
+            || lower.contains("view")
+            || lower.contains("sequence")
+        {
+            "42P01"
+        } else {
+            "42704"
+        }
+    } else if lower.contains("division by zero") {
+        "22012"
+    } else {
+        "XX000"
+    };
+
+    (sqlstate.to_string(), err.to_string())
+}
+
+fn parse_tagged_sqlstate_error(err: &str) -> Option<(String, String)> {
+    let prefix = "SQLSTATE ";
+    if !err.starts_with(prefix) {
+        return None;
+    }
+
+    let rest = &err[prefix.len()..];
+    let (code, message) = rest.split_once(": ")?;
+    if !is_valid_sqlstate_code(code) {
+        return None;
+    }
+    Some((code.to_string(), message.to_string()))
+}
+
+fn tag_sqlstate_error(code: &str, message: String) -> String {
+    format!("SQLSTATE {code}: {message}")
+}
+
+fn sqlstate_code_to_int(code: &str) -> Option<i32> {
+    let bytes = code.as_bytes();
+    if bytes.len() != 5 {
+        return None;
+    }
+
+    let mut out = 0i32;
+    for (idx, ch) in bytes.iter().enumerate() {
+        let sixbit = i32::from((*ch).wrapping_sub(b'0') & 0x3F);
+        out |= sixbit << (idx * 6);
+    }
+    Some(out)
+}
+
+fn errcode_to_category(errcode: i32) -> i32 {
+    errcode & ((1 << 12) - 1)
+}
+
+fn errcode_is_category(errcode: i32) -> bool {
+    (errcode & !((1 << 12) - 1)) == 0
+}
+
+fn is_valid_sqlstate_code(code: &str) -> bool {
+    code.len() == 5
+        && code
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+}
+
+fn sqlstate_internal() -> i32 {
+    sqlstate_code_to_int("XX000").expect("valid internal SQLSTATE")
+}
+
+fn sqlstate_query_canceled() -> i32 {
+    sqlstate_code_to_int("57014").expect("valid query canceled SQLSTATE")
+}
+
+fn sqlstate_assert_failure() -> i32 {
+    sqlstate_code_to_int("P0004").expect("valid assert failure SQLSTATE")
+}
+
 fn try_eval_direct_expression(estate: &PLpgSQLExecState, expr: &str) -> Option<ScalarValue> {
     if let Some(value) = try_parse_simple_constant(expr) {
         return Some(value);
@@ -1130,7 +1305,7 @@ fn scalar_to_plpgsql_value(value: &ScalarValue) -> PlPgSqlValue {
 #[cfg(test)]
 mod tests {
     use super::plpgsql_exec_function;
-    use crate::plpgsql::compiler::compile_function_body;
+    use crate::plpgsql::compiler::{compile_do_block_sql, compile_function_body};
     use crate::plpgsql::types::{
         PlPgSqlDatum, PlPgSqlDtype, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlPromiseType, PlPgSqlStmt,
         PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtFori, PlPgSqlStmtLoop, PlPgSqlStmtReturn,
@@ -1429,5 +1604,52 @@ END;
         let func = mk_function(datums, body, vec![0]);
         let result = plpgsql_exec_function(&func, &[]).expect("execution should succeed");
         assert_eq!(result, Some(ScalarValue::Int(1)));
+    }
+
+    #[test]
+    fn executes_do_block_with_sqlstate_exception_handler() {
+        let sql = r#"
+DO $$
+BEGIN
+  BEGIN
+    RAISE EXCEPTION 'boom';
+  EXCEPTION
+    WHEN OTHERS THEN
+      IF sqlstate = 'P0001' AND sqlerrm = 'boom' THEN
+        NULL;
+      ELSE
+        RAISE EXCEPTION 'unexpected exception context';
+      END IF;
+  END;
+END;
+$$ LANGUAGE plpgsql;
+"#;
+
+        let func = compile_do_block_sql(sql).expect("compile should succeed");
+        let result = plpgsql_exec_function(&func, &[]).expect("execution should succeed");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn unmatched_exception_handler_rethrows_error() {
+        let sql = r#"
+DO $$
+BEGIN
+  BEGIN
+    RAISE EXCEPTION 'boom';
+  EXCEPTION
+    WHEN SQLSTATE '22012' THEN
+      NULL;
+  END;
+END;
+$$ LANGUAGE plpgsql;
+"#;
+
+        let func = compile_do_block_sql(sql).expect("compile should succeed");
+        let err = plpgsql_exec_function(&func, &[]).expect_err("execution should fail");
+        assert!(
+            err.contains("boom"),
+            "error should contain original exception message: {err}"
+        );
     }
 }

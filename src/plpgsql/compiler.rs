@@ -15,7 +15,8 @@ use crate::plpgsql::scanner::{
     tokenize,
 };
 use crate::plpgsql::types::{
-    PlPgSqlDatum, PlPgSqlDtype, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlIfElsif, PlPgSqlPromiseType,
+    PLPGSQL_OTHERS, PlPgSqlCondition, PlPgSqlDatum, PlPgSqlDtype, PlPgSqlException,
+    PlPgSqlExceptionBlock, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlIfElsif, PlPgSqlPromiseType,
     PlPgSqlRaiseOption, PlPgSqlRaiseOptionType, PlPgSqlResolveOption, PlPgSqlStmt,
     PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtCall, PlPgSqlStmtCommit, PlPgSqlStmtDynexecute,
     PlPgSqlStmtExecSql, PlPgSqlStmtFori, PlPgSqlStmtFors, PlPgSqlStmtGetdiag, PlPgSqlStmtIf,
@@ -146,6 +147,7 @@ struct BodyParser<'a> {
     variables_by_name: HashMap<String, i32>,
     next_dno: i32,
     next_stmtid: u32,
+    has_exception_block: bool,
 }
 
 struct ParsedSelectInto {
@@ -164,6 +166,7 @@ impl<'a> BodyParser<'a> {
             variables_by_name: HashMap::new(),
             next_dno: 0,
             next_stmtid: 0,
+            has_exception_block: false,
         }
     }
 
@@ -175,33 +178,13 @@ impl<'a> BodyParser<'a> {
             initvarnos.extend(self.parse_declare_section()?);
         }
 
+        let begin_token = self.current_token().clone();
         self.expect_keyword(PlPgSqlKeyword::Begin, "expected BEGIN")?;
-        let body = self.parse_statement_list_until_keywords(&[PlPgSqlKeyword::End])?;
-        self.expect_keyword(PlPgSqlKeyword::End, "expected END")?;
-
-        // Accept optional END <label> and optional trailing semicolon.
-        if matches!(self.current_kind(), PlPgSqlTokenKind::Identifier(_)) {
-            self.advance();
-        }
-        if matches!(self.current_kind(), PlPgSqlTokenKind::Semicolon) {
-            self.advance();
-        }
+        let block = self.parse_block_after_begin(&begin_token, initvarnos, false)?;
 
         if !matches!(self.current_kind(), PlPgSqlTokenKind::Eof) {
             return Err(self.error_at_current("unexpected tokens after END"));
         }
-
-        let block_stmtid = self.alloc_stmtid();
-        let block = PlPgSqlStmtBlock {
-            cmd_type: PlPgSqlStmtType::Block,
-            lineno: 1,
-            stmtid: block_stmtid,
-            label: None,
-            body,
-            n_initvars: i32::try_from(initvarnos.len()).unwrap_or(i32::MAX),
-            initvarnos,
-            exceptions: None,
-        };
 
         let ndatums = i32::try_from(self.datums.len()).unwrap_or(i32::MAX);
 
@@ -235,7 +218,7 @@ impl<'a> BodyParser<'a> {
             action: Some(block),
             nstatements: self.next_stmtid,
             requires_procedure_resowner: false,
-            has_exception_block: false,
+            has_exception_block: self.has_exception_block,
             cur_estate: None,
             cached_function: None,
         })
@@ -384,6 +367,170 @@ impl<'a> BodyParser<'a> {
         Ok(initvarnos)
     }
 
+    fn parse_block_after_begin(
+        &mut self,
+        begin_token: &PlPgSqlToken,
+        initvarnos: Vec<i32>,
+        require_semicolon: bool,
+    ) -> Result<PlPgSqlStmtBlock, PlPgSqlCompileError> {
+        let body = self.parse_statement_list_until_keywords(&[
+            PlPgSqlKeyword::Exception,
+            PlPgSqlKeyword::End,
+        ])?;
+        let exceptions = if self.consume_keyword(PlPgSqlKeyword::Exception) {
+            self.parse_exception_section()?
+        } else {
+            None
+        };
+
+        self.expect_keyword(PlPgSqlKeyword::End, "expected END")?;
+
+        // Accept optional END <label>.
+        if matches!(self.current_kind(), PlPgSqlTokenKind::Identifier(_)) {
+            self.advance();
+        }
+        if require_semicolon {
+            self.expect_semicolon()?;
+        } else if matches!(self.current_kind(), PlPgSqlTokenKind::Semicolon) {
+            self.advance();
+        }
+
+        Ok(PlPgSqlStmtBlock {
+            cmd_type: PlPgSqlStmtType::Block,
+            lineno: i32::try_from(begin_token.span.line).unwrap_or(i32::MAX),
+            stmtid: self.alloc_stmtid(),
+            label: None,
+            body,
+            n_initvars: i32::try_from(initvarnos.len()).unwrap_or(i32::MAX),
+            initvarnos,
+            exceptions,
+        })
+    }
+
+    fn parse_exception_section(
+        &mut self,
+    ) -> Result<Option<PlPgSqlExceptionBlock>, PlPgSqlCompileError> {
+        let sqlstate_varno = self.add_exception_magic_var("sqlstate");
+        let sqlerrm_varno = self.add_exception_magic_var("sqlerrm");
+
+        let mut exc_list = Vec::new();
+        while self.consume_keyword(PlPgSqlKeyword::When) {
+            let when_line = self.previous_token().span.line;
+            let conditions = self.parse_exception_conditions()?;
+            self.expect_keyword(PlPgSqlKeyword::Then, "expected THEN after WHEN conditions")?;
+            let action = self.parse_statement_list_until_keywords(&[
+                PlPgSqlKeyword::When,
+                PlPgSqlKeyword::End,
+            ])?;
+
+            exc_list.push(PlPgSqlException {
+                lineno: i32::try_from(when_line).unwrap_or(i32::MAX),
+                conditions,
+                action,
+            });
+        }
+
+        if exc_list.is_empty() {
+            return Err(self.error_at_current("expected WHEN in EXCEPTION block"));
+        }
+
+        self.has_exception_block = true;
+        Ok(Some(PlPgSqlExceptionBlock {
+            sqlstate_varno,
+            sqlerrm_varno,
+            exc_list,
+        }))
+    }
+
+    fn parse_exception_conditions(&mut self) -> Result<Vec<PlPgSqlCondition>, PlPgSqlCompileError> {
+        let mut conditions = vec![self.parse_exception_condition()?];
+        while self.consume_identifier_word("or") {
+            conditions.push(self.parse_exception_condition()?);
+        }
+        Ok(conditions)
+    }
+
+    fn parse_exception_condition(&mut self) -> Result<PlPgSqlCondition, PlPgSqlCompileError> {
+        if self.consume_identifier_word("sqlstate") {
+            let PlPgSqlTokenKind::StringLiteral(code_literal) = self.current_kind().clone() else {
+                return Err(self.error_at_current("expected SQLSTATE string literal"));
+            };
+            self.advance();
+
+            let Some(code) = decode_single_quoted_string(code_literal.as_str()) else {
+                return Err(self.error_at_current("invalid SQLSTATE code"));
+            };
+            if !is_valid_sqlstate_code(code.as_str()) {
+                return Err(self.error_at_current("invalid SQLSTATE code"));
+            }
+
+            let Some(sqlerrstate) = sqlstate_code_to_int(code.as_str()) else {
+                return Err(self.error_at_current("invalid SQLSTATE code"));
+            };
+            return Ok(PlPgSqlCondition {
+                sqlerrstate,
+                condname: code,
+            });
+        }
+
+        let condname = match self.current_kind().clone() {
+            PlPgSqlTokenKind::Identifier(name) => {
+                self.advance();
+                name
+            }
+            _ => return Err(self.error_at_current("expected exception condition")),
+        };
+
+        if condname.eq_ignore_ascii_case("others") {
+            return Ok(PlPgSqlCondition {
+                sqlerrstate: PLPGSQL_OTHERS,
+                condname,
+            });
+        }
+
+        let Some(sqlerrstate) = exception_condition_name_to_sqlstate(condname.as_str()) else {
+            return Err(PlPgSqlCompileError {
+                message: format!("unrecognized exception condition \"{condname}\""),
+                position: self.previous_token().span.start,
+                line: self.previous_token().span.line,
+                column: self.previous_token().span.column,
+            });
+        };
+
+        Ok(PlPgSqlCondition {
+            sqlerrstate,
+            condname,
+        })
+    }
+
+    fn add_exception_magic_var(&mut self, name: &str) -> i32 {
+        let dno = self.allocate_dno();
+        let variable = PlPgSqlVariable {
+            dtype: PlPgSqlDtype::Var,
+            dno,
+            refname: name.to_string(),
+            lineno: i32::try_from(self.previous_token().span.line).unwrap_or(i32::MAX),
+            isconst: true,
+            notnull: false,
+            default_val: None,
+        };
+        let var = PlPgSqlVar {
+            variable,
+            datatype: Some(self.make_type("text")),
+            cursor_explicit_expr: None,
+            cursor_explicit_argrow: -1,
+            cursor_options: 0,
+            value: Some(PlPgSqlValue::Null),
+            isnull: true,
+            freeval: false,
+            promise: PlPgSqlPromiseType::None,
+        };
+        self.variables_by_name
+            .insert(name.to_ascii_lowercase(), dno);
+        self.datums.push(PlPgSqlDatum::Var(var));
+        dno
+    }
+
     fn parse_statement_list_until_keywords(
         &mut self,
         stop_keywords: &[PlPgSqlKeyword],
@@ -404,6 +551,9 @@ impl<'a> BodyParser<'a> {
     }
 
     fn parse_statement(&mut self) -> Result<PlPgSqlStmt, PlPgSqlCompileError> {
+        if self.is_keyword(PlPgSqlKeyword::Begin) {
+            return self.parse_begin_block_statement();
+        }
         if self.is_keyword(PlPgSqlKeyword::If) {
             return self.parse_if_statement();
         }
@@ -445,6 +595,13 @@ impl<'a> BodyParser<'a> {
         }
 
         self.parse_execsql_statement()
+    }
+
+    fn parse_begin_block_statement(&mut self) -> Result<PlPgSqlStmt, PlPgSqlCompileError> {
+        let begin_token = self.current_token().clone();
+        self.expect_keyword(PlPgSqlKeyword::Begin, "expected BEGIN")?;
+        let block = self.parse_block_after_begin(&begin_token, Vec::new(), true)?;
+        Ok(PlPgSqlStmt::Block(block))
     }
 
     fn parse_assignment_statement(
@@ -701,7 +858,15 @@ impl<'a> BodyParser<'a> {
         let mut condname = None;
         let mut elog_level = 0;
 
-        if self.is_keyword(PlPgSqlKeyword::Notice) {
+        if self.is_keyword(PlPgSqlKeyword::Exception) {
+            self.advance();
+            condname = Some("EXCEPTION".to_string());
+        } else if let PlPgSqlTokenKind::Identifier(word) = self.current_kind().clone()
+            && word.eq_ignore_ascii_case("exception")
+        {
+            self.advance();
+            condname = Some("EXCEPTION".to_string());
+        } else if self.is_keyword(PlPgSqlKeyword::Notice) {
             self.advance();
             condname = Some("NOTICE".to_string());
             elog_level = 1;
@@ -1475,6 +1640,73 @@ fn is_select_clause_boundary(word: &str) -> bool {
     )
 }
 
+fn sqlstate_code_to_int(code: &str) -> Option<i32> {
+    let bytes = code.as_bytes();
+    if bytes.len() != 5 {
+        return None;
+    }
+
+    let mut out = 0i32;
+    for (idx, ch) in bytes.iter().enumerate() {
+        let sixbit = i32::from((*ch).wrapping_sub(b'0') & 0x3F);
+        out |= sixbit << (idx * 6);
+    }
+    Some(out)
+}
+
+fn is_valid_sqlstate_code(code: &str) -> bool {
+    code.len() == 5
+        && code
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+}
+
+fn exception_condition_name_to_sqlstate(name: &str) -> Option<i32> {
+    let code = match name.to_ascii_lowercase().as_str() {
+        "raise_exception" => "P0001",
+        "no_data_found" => "P0002",
+        "too_many_rows" => "P0003",
+        "assert_failure" => "P0004",
+        "division_by_zero" => "22012",
+        "query_canceled" => "57014",
+        "undefined_table" => "42P01",
+        "undefined_column" => "42703",
+        "unique_violation" => "23505",
+        "internal_error" => "XX000",
+        "data_exception" => "22000",
+        "integrity_constraint_violation" => "23000",
+        "syntax_error_or_access_rule_violation" => "42000",
+        _ => return None,
+    };
+
+    sqlstate_code_to_int(code)
+}
+
+fn decode_single_quoted_string(input: &str) -> Option<String> {
+    if input.len() < 2 || !input.starts_with('\'') || !input.ends_with('\'') {
+        return None;
+    }
+
+    let inner = &input[1..input.len() - 1];
+    let mut out = String::with_capacity(inner.len());
+    let chars: Vec<char> = inner.chars().collect();
+    let mut idx = 0usize;
+    while idx < chars.len() {
+        let ch = chars[idx];
+        if ch == '\'' {
+            if idx + 1 < chars.len() && chars[idx + 1] == '\'' {
+                out.push('\'');
+                idx += 2;
+                continue;
+            }
+            return None;
+        }
+        out.push(ch);
+        idx += 1;
+    }
+    Some(out)
+}
+
 fn type_name_to_decl_string(type_name: &TypeName) -> String {
     match type_name {
         TypeName::Bool => "boolean".to_string(),
@@ -1827,5 +2059,25 @@ END;
             panic!("found_varno should reference a scalar variable datum");
         };
         assert_eq!(found_var.variable.refname.to_ascii_lowercase(), "found");
+    }
+
+    #[test]
+    fn compiles_exception_block_with_sqlstate_condition() {
+        let src = "
+BEGIN
+  PERFORM 1 / 0;
+EXCEPTION
+  WHEN SQLSTATE '22012' THEN
+    RETURN 42;
+END;
+";
+        let compiled = compile_function_body(src).expect("compile should succeed");
+        assert!(compiled.has_exception_block);
+        let action = compiled.action.expect("action should be present");
+        let exception_block = action
+            .exceptions
+            .expect("top level block should have exception handlers");
+        assert_eq!(exception_block.exc_list.len(), 1);
+        assert_eq!(exception_block.exc_list[0].conditions.len(), 1);
     }
 }
