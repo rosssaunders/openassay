@@ -7,14 +7,16 @@ use crate::executor::exec_main::{
     compare_order_keys, eval_aggregate_function, execute_query_with_outer, is_aggregate_function,
     parse_non_negative_int, row_key,
 };
+use crate::extensions::openferric::eval_openferric_function;
 use crate::parser::ast::{
-    BinaryOp, BooleanTestType, ComparisonQuantifier, Expr, OrderByExpr, UnaryOp, WindowDefinition,
-    WindowFrameBound, WindowFrameExclusion, WindowFrameUnits, WindowSpec,
+    BinaryOp, BooleanTestType, ComparisonQuantifier, CreateFunctionStatement, Expr, OrderByExpr,
+    UnaryOp, WindowDefinition, WindowFrameBound, WindowFrameExclusion, WindowFrameUnits,
+    WindowSpec,
 };
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{
-    EngineError, QueryResult, WsConnection, execute_planned_query,
-    plan_statement, with_ext_read, with_ext_write,
+    EngineError, QueryResult, UserFunction, WsConnection, execute_planned_query, plan_statement,
+    with_ext_read, with_ext_write,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::tcop::engine::{drain_native_ws_messages, native_ws_handles, ws_native};
@@ -173,11 +175,14 @@ pub(crate) fn eval_expr<'a>(
             Expr::Default => Err(EngineError {
                 message: "DEFAULT is only allowed in INSERT VALUES or UPDATE SET".to_string(),
             }),
-            Expr::MultiColumnSubqueryRef { subquery, index, .. } => {
+            Expr::MultiColumnSubqueryRef {
+                subquery, index, ..
+            } => {
                 let result = crate::tcop::engine::execute_query(subquery, params).await?;
                 if result.rows.len() > 1 {
                     return Err(EngineError {
-                        message: "more than one row returned by a subquery used as an expression".to_string(),
+                        message: "more than one row returned by a subquery used as an expression"
+                            .to_string(),
                     });
                 }
                 if result.rows.is_empty() {
@@ -191,7 +196,7 @@ pub(crate) fn eval_expr<'a>(
                     }
                     Ok(row[*index].clone())
                 }
-            },
+            }
             Expr::Null => Ok(ScalarValue::Null),
             Expr::Boolean(v) => Ok(ScalarValue::Bool(*v)),
             Expr::Integer(v) => Ok(ScalarValue::Int(*v)),
@@ -344,14 +349,24 @@ pub(crate) fn eval_expr<'a>(
                 } else {
                     None
                 };
-                eval_like_predicate(value, pattern_value, *case_insensitive, *negated, escape_char)
+                eval_like_predicate(
+                    value,
+                    pattern_value,
+                    *case_insensitive,
+                    *negated,
+                    escape_char,
+                )
             }
             Expr::IsNull { expr, negated } => {
                 let value = eval_expr(expr, scope, params).await?;
                 let is_null = matches!(value, ScalarValue::Null);
                 Ok(ScalarValue::Bool(if *negated { !is_null } else { is_null }))
             }
-            Expr::BooleanTest { expr, test_type, negated } => {
+            Expr::BooleanTest {
+                expr,
+                test_type,
+                negated,
+            } => {
                 let value = eval_expr(expr, scope, params).await?;
                 let result = match (test_type, &value) {
                     (BooleanTestType::True, ScalarValue::Bool(true)) => true,
@@ -484,11 +499,14 @@ pub(crate) fn eval_expr_with_window<'a>(
             Expr::Default => Err(EngineError {
                 message: "DEFAULT is only allowed in INSERT VALUES or UPDATE SET".to_string(),
             }),
-            Expr::MultiColumnSubqueryRef { subquery, index, .. } => {
+            Expr::MultiColumnSubqueryRef {
+                subquery, index, ..
+            } => {
                 let result = crate::tcop::engine::execute_query(subquery, params).await?;
                 if result.rows.len() > 1 {
                     return Err(EngineError {
-                        message: "more than one row returned by a subquery used as an expression".to_string(),
+                        message: "more than one row returned by a subquery used as an expression"
+                            .to_string(),
                     });
                 }
                 if result.rows.is_empty() {
@@ -502,7 +520,7 @@ pub(crate) fn eval_expr_with_window<'a>(
                     }
                     Ok(row[*index].clone())
                 }
-            },
+            }
             Expr::Null => Ok(ScalarValue::Null),
             Expr::Boolean(v) => Ok(ScalarValue::Bool(*v)),
             Expr::Integer(v) => Ok(ScalarValue::Int(*v)),
@@ -521,12 +539,36 @@ pub(crate) fn eval_expr_with_window<'a>(
             Expr::Parameter(idx) => parse_param(*idx, params),
             Expr::Identifier(parts) => scope.lookup_identifier(parts),
             Expr::Unary { op, expr } => {
-                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
+                let value = eval_expr_with_window(
+                    expr,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 eval_unary(op.clone(), value)
             }
             Expr::Binary { left, op, right } => {
-                let lhs = eval_expr_with_window(left, scope, row_idx, all_rows, window_definitions, params).await?;
-                let rhs = eval_expr_with_window(right, scope, row_idx, all_rows, window_definitions, params).await?;
+                let lhs = eval_expr_with_window(
+                    left,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
+                let rhs = eval_expr_with_window(
+                    right,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 eval_binary(op.clone(), lhs, rhs)
             }
             Expr::AnyAll {
@@ -535,8 +577,24 @@ pub(crate) fn eval_expr_with_window<'a>(
                 right,
                 quantifier,
             } => {
-                let lhs = eval_expr_with_window(left, scope, row_idx, all_rows, window_definitions, params).await?;
-                let rhs = eval_expr_with_window(right, scope, row_idx, all_rows, window_definitions, params).await?;
+                let lhs = eval_expr_with_window(
+                    left,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
+                let rhs = eval_expr_with_window(
+                    right,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 eval_any_all(op.clone(), lhs, rhs, quantifier.clone())
             }
             Expr::Exists(query) => {
@@ -565,15 +623,34 @@ pub(crate) fn eval_expr_with_window<'a>(
             Expr::ArrayConstructor(items) => {
                 let mut values = Vec::with_capacity(items.len());
                 for item in items {
-                    values
-                        .push(eval_expr_with_window(item, scope, row_idx, all_rows, window_definitions, params).await?);
+                    values.push(
+                        eval_expr_with_window(
+                            item,
+                            scope,
+                            row_idx,
+                            all_rows,
+                            window_definitions,
+                            params,
+                        )
+                        .await?,
+                    );
                 }
                 Ok(ScalarValue::Array(values))
             }
             Expr::RowConstructor(fields) => {
                 let mut values = Vec::with_capacity(fields.len());
                 for field in fields {
-                    values.push(eval_expr_with_window(field, scope, row_idx, all_rows, window_definitions, params).await?);
+                    values.push(
+                        eval_expr_with_window(
+                            field,
+                            scope,
+                            row_idx,
+                            all_rows,
+                            window_definitions,
+                            params,
+                        )
+                        .await?,
+                    );
                 }
                 Ok(ScalarValue::Record(values))
             }
@@ -595,10 +672,28 @@ pub(crate) fn eval_expr_with_window<'a>(
                 list,
                 negated,
             } => {
-                let lhs = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
+                let lhs = eval_expr_with_window(
+                    expr,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 let mut rhs = Vec::with_capacity(list.len());
                 for item in list {
-                    rhs.push(eval_expr_with_window(item, scope, row_idx, all_rows, window_definitions, params).await?);
+                    rhs.push(
+                        eval_expr_with_window(
+                            item,
+                            scope,
+                            row_idx,
+                            all_rows,
+                            window_definitions,
+                            params,
+                        )
+                        .await?,
+                    );
                 }
                 eval_in_membership(lhs, rhs, *negated)
             }
@@ -607,7 +702,15 @@ pub(crate) fn eval_expr_with_window<'a>(
                 subquery,
                 negated,
             } => {
-                let lhs = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
+                let lhs = eval_expr_with_window(
+                    expr,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 let result = execute_query_with_outer(subquery, params, Some(scope)).await?;
                 if !result.columns.is_empty() && result.columns.len() != 1 {
                     return Err(EngineError {
@@ -627,11 +730,33 @@ pub(crate) fn eval_expr_with_window<'a>(
                 high,
                 negated,
             } => {
-                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
-                let low_value =
-                    eval_expr_with_window(low, scope, row_idx, all_rows, window_definitions, params).await?;
-                let high_value =
-                    eval_expr_with_window(high, scope, row_idx, all_rows, window_definitions, params).await?;
+                let value = eval_expr_with_window(
+                    expr,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
+                let low_value = eval_expr_with_window(
+                    low,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
+                let high_value = eval_expr_with_window(
+                    high,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 eval_between_predicate(value, low_value, high_value, *negated)
             }
             Expr::Like {
@@ -641,24 +766,73 @@ pub(crate) fn eval_expr_with_window<'a>(
                 negated,
                 escape,
             } => {
-                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
-                let pattern_value =
-                    eval_expr_with_window(pattern, scope, row_idx, all_rows, window_definitions, params).await?;
+                let value = eval_expr_with_window(
+                    expr,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
+                let pattern_value = eval_expr_with_window(
+                    pattern,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 let escape_char = if let Some(escape_expr) = escape {
-                    let escape_value = eval_expr_with_window(escape_expr, scope, row_idx, all_rows, window_definitions, params).await?;
+                    let escape_value = eval_expr_with_window(
+                        escape_expr,
+                        scope,
+                        row_idx,
+                        all_rows,
+                        window_definitions,
+                        params,
+                    )
+                    .await?;
                     Some(escape_value)
                 } else {
                     None
                 };
-                eval_like_predicate(value, pattern_value, *case_insensitive, *negated, escape_char)
+                eval_like_predicate(
+                    value,
+                    pattern_value,
+                    *case_insensitive,
+                    *negated,
+                    escape_char,
+                )
             }
             Expr::IsNull { expr, negated } => {
-                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
+                let value = eval_expr_with_window(
+                    expr,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 let is_null = matches!(value, ScalarValue::Null);
                 Ok(ScalarValue::Bool(if *negated { !is_null } else { is_null }))
             }
-            Expr::BooleanTest { expr, test_type, negated } => {
-                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
+            Expr::BooleanTest {
+                expr,
+                test_type,
+                negated,
+            } => {
+                let value = eval_expr_with_window(
+                    expr,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 let result = match (test_type, &value) {
                     (BooleanTestType::True, ScalarValue::Bool(true)) => true,
                     (BooleanTestType::True, _) => false,
@@ -674,10 +848,24 @@ pub(crate) fn eval_expr_with_window<'a>(
                 right,
                 negated,
             } => {
-                let left_value =
-                    eval_expr_with_window(left, scope, row_idx, all_rows, window_definitions, params).await?;
-                let right_value =
-                    eval_expr_with_window(right, scope, row_idx, all_rows, window_definitions, params).await?;
+                let left_value = eval_expr_with_window(
+                    left,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
+                let right_value = eval_expr_with_window(
+                    right,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 eval_is_distinct_from(left_value, right_value, *negated)
             }
             Expr::CaseSimple {
@@ -685,11 +873,25 @@ pub(crate) fn eval_expr_with_window<'a>(
                 when_then,
                 else_expr,
             } => {
-                let operand_value =
-                    eval_expr_with_window(operand, scope, row_idx, all_rows, window_definitions, params).await?;
+                let operand_value = eval_expr_with_window(
+                    operand,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 for (when_expr, then_expr) in when_then {
-                    let when_value =
-                        eval_expr_with_window(when_expr, scope, row_idx, all_rows, window_definitions, params).await?;
+                    let when_value = eval_expr_with_window(
+                        when_expr,
+                        scope,
+                        row_idx,
+                        all_rows,
+                        window_definitions,
+                        params,
+                    )
+                    .await?;
                     if matches!(operand_value, ScalarValue::Null)
                         || matches!(when_value, ScalarValue::Null)
                     {
@@ -697,12 +899,27 @@ pub(crate) fn eval_expr_with_window<'a>(
                     }
                     if compare_values_for_predicate(&operand_value, &when_value)? == Ordering::Equal
                     {
-                        return eval_expr_with_window(then_expr, scope, row_idx, all_rows, window_definitions, params)
-                            .await;
+                        return eval_expr_with_window(
+                            then_expr,
+                            scope,
+                            row_idx,
+                            all_rows,
+                            window_definitions,
+                            params,
+                        )
+                        .await;
                     }
                 }
                 if let Some(else_expr) = else_expr {
-                    eval_expr_with_window(else_expr, scope, row_idx, all_rows, window_definitions, params).await
+                    eval_expr_with_window(
+                        else_expr,
+                        scope,
+                        row_idx,
+                        all_rows,
+                        window_definitions,
+                        params,
+                    )
+                    .await
                 } else {
                     Ok(ScalarValue::Null)
                 }
@@ -712,21 +929,51 @@ pub(crate) fn eval_expr_with_window<'a>(
                 else_expr,
             } => {
                 for (when_expr, then_expr) in when_then {
-                    let condition =
-                        eval_expr_with_window(when_expr, scope, row_idx, all_rows, window_definitions, params).await?;
+                    let condition = eval_expr_with_window(
+                        when_expr,
+                        scope,
+                        row_idx,
+                        all_rows,
+                        window_definitions,
+                        params,
+                    )
+                    .await?;
                     if truthy(&condition) {
-                        return eval_expr_with_window(then_expr, scope, row_idx, all_rows, window_definitions, params)
-                            .await;
+                        return eval_expr_with_window(
+                            then_expr,
+                            scope,
+                            row_idx,
+                            all_rows,
+                            window_definitions,
+                            params,
+                        )
+                        .await;
                     }
                 }
                 if let Some(else_expr) = else_expr {
-                    eval_expr_with_window(else_expr, scope, row_idx, all_rows, window_definitions, params).await
+                    eval_expr_with_window(
+                        else_expr,
+                        scope,
+                        row_idx,
+                        all_rows,
+                        window_definitions,
+                        params,
+                    )
+                    .await
                 } else {
                     Ok(ScalarValue::Null)
                 }
             }
             Expr::Cast { expr, type_name } => {
-                let value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
+                let value = eval_expr_with_window(
+                    expr,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 eval_cast_scalar(value, type_name)
             }
             Expr::FunctionCall {
@@ -784,7 +1031,15 @@ pub(crate) fn eval_expr_with_window<'a>(
                     let mut values = Vec::with_capacity(args.len());
                     for arg in args {
                         values.push(
-                            eval_expr_with_window(arg, scope, row_idx, all_rows, window_definitions, params).await?,
+                            eval_expr_with_window(
+                                arg,
+                                scope,
+                                row_idx,
+                                all_rows,
+                                window_definitions,
+                                params,
+                            )
+                            .await?,
                         );
                     }
                     eval_scalar_function(&fn_name, &values).await
@@ -797,19 +1052,63 @@ pub(crate) fn eval_expr_with_window<'a>(
                 message: "qualified wildcard expression requires FROM support".to_string(),
             }),
             Expr::ArraySubscript { expr, index } => {
-                let array_value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
-                let index_value = eval_expr_with_window(index, scope, row_idx, all_rows, window_definitions, params).await?;
+                let array_value = eval_expr_with_window(
+                    expr,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
+                let index_value = eval_expr_with_window(
+                    index,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 eval_array_subscript(array_value, index_value)
             }
             Expr::ArraySlice { expr, start, end } => {
-                let array_value = eval_expr_with_window(expr, scope, row_idx, all_rows, window_definitions, params).await?;
+                let array_value = eval_expr_with_window(
+                    expr,
+                    scope,
+                    row_idx,
+                    all_rows,
+                    window_definitions,
+                    params,
+                )
+                .await?;
                 let start_value = if let Some(start_expr) = start {
-                    Some(eval_expr_with_window(start_expr, scope, row_idx, all_rows, window_definitions, params).await?)
+                    Some(
+                        eval_expr_with_window(
+                            start_expr,
+                            scope,
+                            row_idx,
+                            all_rows,
+                            window_definitions,
+                            params,
+                        )
+                        .await?,
+                    )
                 } else {
                     None
                 };
                 let end_value = if let Some(end_expr) = end {
-                    Some(eval_expr_with_window(end_expr, scope, row_idx, all_rows, window_definitions, params).await?)
+                    Some(
+                        eval_expr_with_window(
+                            end_expr,
+                            scope,
+                            row_idx,
+                            all_rows,
+                            window_definitions,
+                            params,
+                        )
+                        .await?,
+                    )
                 } else {
                     None
                 };
@@ -831,7 +1130,7 @@ fn resolve_window_spec(
     let Some(ref_name) = &spec.name else {
         return Ok(spec.clone());
     };
-    
+
     // Find the named window definition
     let def = definitions
         .iter()
@@ -839,33 +1138,31 @@ fn resolve_window_spec(
         .ok_or_else(|| EngineError {
             message: format!("window \"{ref_name}\" does not exist"),
         })?;
-    
+
     // Merge: start with base definition, then apply refinements from spec
     // PG rules: cannot override PARTITION BY, can add ORDER BY, can add frame
     if !spec.partition_by.is_empty() {
         return Err(EngineError {
-            message: format!(
-                "cannot override PARTITION BY clause of window \"{ref_name}\""
-            ),
+            message: format!("cannot override PARTITION BY clause of window \"{ref_name}\""),
         });
     }
-    
+
     let mut resolved = def.spec.clone();
-    
+
     // If spec adds ORDER BY, append to (or replace) the definition's ORDER BY
     if !spec.order_by.is_empty() {
         // PostgreSQL actually replaces, not appends
         resolved.order_by = spec.order_by.clone();
     }
-    
+
     // If spec adds frame, use it (overrides definition's frame)
     if spec.frame.is_some() {
         resolved.frame = spec.frame.clone();
     }
-    
+
     // Clear the name reference since it's now resolved
     resolved.name = None;
-    
+
     Ok(resolved)
 }
 
@@ -884,7 +1181,7 @@ async fn eval_window_function(
 ) -> Result<ScalarValue, EngineError> {
     // Resolve any named window reference
     let resolved_window = resolve_window_spec(window, window_definitions)?;
-    
+
     let fn_name = name
         .last()
         .map(|n| n.to_ascii_lowercase())
@@ -918,8 +1215,11 @@ async fn eval_window_function(
             }
             let mut rank = 1usize;
             for idx in 1..=current_pos {
-                if compare_order_keys(&order_keys[idx - 1], &order_keys[idx], &resolved_window.order_by)
-                    != Ordering::Equal
+                if compare_order_keys(
+                    &order_keys[idx - 1],
+                    &order_keys[idx],
+                    &resolved_window.order_by,
+                ) != Ordering::Equal
                 {
                     rank = idx + 1;
                 }
@@ -1014,8 +1314,11 @@ async fn eval_window_function(
             let mut rank = 1usize;
             if !order_keys.is_empty() {
                 for idx in 1..=current_pos {
-                    if compare_order_keys(&order_keys[idx - 1], &order_keys[idx], &resolved_window.order_by)
-                        != Ordering::Equal
+                    if compare_order_keys(
+                        &order_keys[idx - 1],
+                        &order_keys[idx],
+                        &resolved_window.order_by,
+                    ) != Ordering::Equal
                     {
                         rank = idx + 1;
                     }
@@ -1039,7 +1342,8 @@ async fn eval_window_function(
             let count_le = order_keys
                 .iter()
                 .filter(|k| {
-                    compare_order_keys(k, current_key, &resolved_window.order_by) != Ordering::Greater
+                    compare_order_keys(k, current_key, &resolved_window.order_by)
+                        != Ordering::Greater
                 })
                 .count();
             Ok(ScalarValue::Float(count_le as f64 / partition.len() as f64))
@@ -1233,7 +1537,7 @@ async fn window_frame_rows(
             if start > end {
                 return Ok(Vec::new());
             }
-            
+
             // Apply EXCLUDE clause
             let mut out = Vec::new();
             for (idx, &row_idx) in partition.iter().enumerate().take(end + 1).skip(start) {
@@ -1247,7 +1551,7 @@ async fn window_frame_rows(
                         WindowFrameExclusion::Group => {
                             // For ROWS mode, exclude peer group containing current row
                             // Peers are rows with same ORDER BY values
-                            if let (Some(current_key), Some(row_key)) = 
+                            if let (Some(current_key), Some(row_key)) =
                                 (order_keys.get(current_pos), order_keys.get(idx))
                                 && compare_order_keys(current_key, row_key, &window.order_by)
                                     == Ordering::Equal
@@ -1258,13 +1562,10 @@ async fn window_frame_rows(
                         WindowFrameExclusion::Ties => {
                             // Exclude peers of current row (but not current row itself)
                             if idx != current_pos
-                                && let (Some(current_key), Some(row_key)) = 
+                                && let (Some(current_key), Some(row_key)) =
                                     (order_keys.get(current_pos), order_keys.get(idx))
-                                && compare_order_keys(
-                                    current_key,
-                                    row_key,
-                                    &window.order_by,
-                                ) == Ordering::Equal
+                                && compare_order_keys(current_key, row_key, &window.order_by)
+                                    == Ordering::Equal
                             {
                                 continue;
                             }
@@ -1335,7 +1636,7 @@ async fn window_frame_rows(
                 {
                     continue;
                 }
-                
+
                 // Apply EXCLUDE clause
                 if let Some(exclusion) = frame.exclusion {
                     match exclusion {
@@ -1346,7 +1647,7 @@ async fn window_frame_rows(
                         }
                         WindowFrameExclusion::Group => {
                             // Exclude peer group containing current row
-                            if let (Some(current_key), Some(row_key)) = 
+                            if let (Some(current_key), Some(row_key)) =
                                 (order_keys.get(current_pos), order_keys.get(pos))
                                 && compare_order_keys(current_key, row_key, &window.order_by)
                                     == Ordering::Equal
@@ -1357,13 +1658,10 @@ async fn window_frame_rows(
                         WindowFrameExclusion::Ties => {
                             // Exclude peers of current row (but not current row itself)
                             if pos != current_pos
-                                && let (Some(current_key), Some(row_key)) = 
+                                && let (Some(current_key), Some(row_key)) =
                                     (order_keys.get(current_pos), order_keys.get(pos))
-                                && compare_order_keys(
-                                    current_key,
-                                    row_key,
-                                    &window.order_by,
-                                ) == Ordering::Equal
+                                && compare_order_keys(current_key, row_key, &window.order_by)
+                                    == Ordering::Equal
                             {
                                 continue;
                             }
@@ -1373,7 +1671,7 @@ async fn window_frame_rows(
                         }
                     }
                 }
-                
+
                 out.push(*row_idx);
             }
             Ok(out)
@@ -1384,7 +1682,7 @@ async fn window_frame_rows(
             let mut peer_groups: Vec<Vec<usize>> = Vec::new();
             let mut current_group = Vec::new();
             let mut last_key: Option<&Vec<ScalarValue>> = None;
-            
+
             for (idx, key) in order_keys.iter().enumerate() {
                 if let Some(prev_key) = last_key
                     && compare_order_keys(key, prev_key, &window.order_by) != Ordering::Equal
@@ -1400,13 +1698,13 @@ async fn window_frame_rows(
             if !current_group.is_empty() {
                 peer_groups.push(current_group);
             }
-            
+
             // Find which peer group contains current_pos
             let current_group_idx = peer_groups
                 .iter()
                 .position(|group| group.contains(&current_pos))
                 .unwrap_or(0);
-            
+
             // Compute frame bounds in units of peer groups
             let start_group = groups_frame_boundary(
                 &frame.start,
@@ -1416,7 +1714,7 @@ async fn window_frame_rows(
                 params,
             )
             .await?;
-            
+
             let end_group = groups_frame_boundary(
                 &frame.end,
                 current_group_idx,
@@ -1425,10 +1723,12 @@ async fn window_frame_rows(
                 params,
             )
             .await?;
-            
+
             // Collect all rows from the peer groups in frame
             let mut out = Vec::new();
-            for (group_idx, group) in peer_groups.iter().enumerate()
+            for (group_idx, group) in peer_groups
+                .iter()
+                .enumerate()
                 .skip(start_group)
                 .take(end_group.saturating_sub(start_group) + 1)
             {
@@ -1648,7 +1948,7 @@ pub(crate) fn eval_like_predicate(
     if matches!(value, ScalarValue::Null) || matches!(pattern, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
-    
+
     // Handle escape character
     let escape_char = if let Some(escape_val) = escape {
         if matches!(escape_val, ScalarValue::Null) {
@@ -1664,7 +1964,7 @@ pub(crate) fn eval_like_predicate(
     } else {
         None
     };
-    
+
     let mut text = value.render();
     let mut pattern_text = pattern.render();
     if case_insensitive {
@@ -1711,110 +2011,102 @@ pub(crate) fn eval_cast_scalar(
                 &format!("invalid input syntax for type boolean: \"{input_text}\""),
             )?))
         }
-        "int2" | "smallint" => {
-            match &value {
-                ScalarValue::Float(v) => {
-                    let result = crate::utils::adt::float::float8_to_int2(*v)?;
-                    Ok(ScalarValue::Int(result))
-                }
-                ScalarValue::Numeric(v) => {
-                    let int_val: i64 = (*v).try_into().map_err(|_| EngineError {
-                        message: "numeric value out of range for int2".to_string(),
-                    })?;
-                    crate::utils::adt::int_arithmetic::validate_int2(int_val)?;
-                    Ok(ScalarValue::Int(int_val))
-                }
-                _ => {
-                    let val = parse_i64_scalar(&value, "cannot cast value to smallint")?;
-                    crate::utils::adt::int_arithmetic::validate_int2(val)?;
-                    Ok(ScalarValue::Int(val))
-                }
+        "int2" | "smallint" => match &value {
+            ScalarValue::Float(v) => {
+                let result = crate::utils::adt::float::float8_to_int2(*v)?;
+                Ok(ScalarValue::Int(result))
             }
-        }
-        "int4" | "integer" | "int" => {
-            match &value {
-                ScalarValue::Float(v) => {
-                    let result = crate::utils::adt::float::float8_to_int4(*v)?;
-                    Ok(ScalarValue::Int(result))
-                }
-                ScalarValue::Numeric(v) => {
-                    let int_val: i64 = (*v).try_into().map_err(|_| EngineError {
-                        message: "numeric value out of range for int4".to_string(),
-                    })?;
-                    crate::utils::adt::int_arithmetic::validate_int4(int_val)?;
-                    Ok(ScalarValue::Int(int_val))
-                }
-                _ => {
-                    let val = parse_i64_scalar(&value, "cannot cast value to integer")?;
-                    crate::utils::adt::int_arithmetic::validate_int4(val)?;
-                    Ok(ScalarValue::Int(val))
-                }
+            ScalarValue::Numeric(v) => {
+                let int_val: i64 = (*v).try_into().map_err(|_| EngineError {
+                    message: "numeric value out of range for int2".to_string(),
+                })?;
+                crate::utils::adt::int_arithmetic::validate_int2(int_val)?;
+                Ok(ScalarValue::Int(int_val))
             }
-        }
-        "int8" | "bigint" => {
-            match &value {
-                ScalarValue::Float(v) => {
-                    let result = crate::utils::adt::float::float8_to_int8(*v)?;
-                    Ok(ScalarValue::Int(result))
-                }
-                ScalarValue::Numeric(v) => {
-                    let int_val: i64 = (*v).try_into().map_err(|_| EngineError {
-                        message: "numeric value out of range for int8".to_string(),
-                    })?;
-                    Ok(ScalarValue::Int(int_val))
-                }
-                _ => Ok(ScalarValue::Int(parse_i64_scalar(
-                    &value,
-                    "cannot cast value to bigint",
-                )?)),
+            _ => {
+                let val = parse_i64_scalar(&value, "cannot cast value to smallint")?;
+                crate::utils::adt::int_arithmetic::validate_int2(val)?;
+                Ok(ScalarValue::Int(val))
             }
-        }
-        "float4" | "real" => {
-            match &value {
-                ScalarValue::Float(v) => {
-                    let result = crate::utils::adt::float::float8_to_float4(*v)?;
-                    Ok(ScalarValue::Float(result))
-                }
-                ScalarValue::Int(v) => Ok(ScalarValue::Float(*v as f64)),
-                ScalarValue::Numeric(v) => {
-                    let float_val = v.to_string().parse::<f64>().map_err(|_| EngineError {
-                        message: "cannot convert numeric to real".to_string(),
-                    })?;
-                    let result = crate::utils::adt::float::float8_to_float4(float_val)?;
-                    Ok(ScalarValue::Float(result))
-                }
-                ScalarValue::Text(s) => {
-                    let result = crate::utils::adt::float::float4in(s)?;
-                    Ok(ScalarValue::Float(result))
-                }
-                _ => Err(EngineError {
-                    message: "cannot cast value to real".to_string(),
-                }),
+        },
+        "int4" | "integer" | "int" => match &value {
+            ScalarValue::Float(v) => {
+                let result = crate::utils::adt::float::float8_to_int4(*v)?;
+                Ok(ScalarValue::Int(result))
             }
-        }
-        "float8" | "double precision" => {
-            match &value {
-                ScalarValue::Float(v) => Ok(ScalarValue::Float(*v)),
-                ScalarValue::Int(v) => Ok(ScalarValue::Float(*v as f64)),
-                ScalarValue::Numeric(v) => {
-                    let float_val = v.to_string().parse::<f64>().map_err(|_| EngineError {
-                        message: "cannot convert numeric to double precision".to_string(),
-                    })?;
-                    Ok(ScalarValue::Float(float_val))
-                }
-                ScalarValue::Text(s) => {
-                    let result = crate::utils::adt::float::float8in(s)?;
-                    Ok(ScalarValue::Float(result))
-                }
-                _ => Err(EngineError {
-                    message: "cannot cast value to double precision".to_string(),
-                }),
+            ScalarValue::Numeric(v) => {
+                let int_val: i64 = (*v).try_into().map_err(|_| EngineError {
+                    message: "numeric value out of range for int4".to_string(),
+                })?;
+                crate::utils::adt::int_arithmetic::validate_int4(int_val)?;
+                Ok(ScalarValue::Int(int_val))
             }
+            _ => {
+                let val = parse_i64_scalar(&value, "cannot cast value to integer")?;
+                crate::utils::adt::int_arithmetic::validate_int4(val)?;
+                Ok(ScalarValue::Int(val))
+            }
+        },
+        "int8" | "bigint" => match &value {
+            ScalarValue::Float(v) => {
+                let result = crate::utils::adt::float::float8_to_int8(*v)?;
+                Ok(ScalarValue::Int(result))
+            }
+            ScalarValue::Numeric(v) => {
+                let int_val: i64 = (*v).try_into().map_err(|_| EngineError {
+                    message: "numeric value out of range for int8".to_string(),
+                })?;
+                Ok(ScalarValue::Int(int_val))
+            }
+            _ => Ok(ScalarValue::Int(parse_i64_scalar(
+                &value,
+                "cannot cast value to bigint",
+            )?)),
+        },
+        "float4" | "real" => match &value {
+            ScalarValue::Float(v) => {
+                let result = crate::utils::adt::float::float8_to_float4(*v)?;
+                Ok(ScalarValue::Float(result))
+            }
+            ScalarValue::Int(v) => Ok(ScalarValue::Float(*v as f64)),
+            ScalarValue::Numeric(v) => {
+                let float_val = v.to_string().parse::<f64>().map_err(|_| EngineError {
+                    message: "cannot convert numeric to real".to_string(),
+                })?;
+                let result = crate::utils::adt::float::float8_to_float4(float_val)?;
+                Ok(ScalarValue::Float(result))
+            }
+            ScalarValue::Text(s) => {
+                let result = crate::utils::adt::float::float4in(s)?;
+                Ok(ScalarValue::Float(result))
+            }
+            _ => Err(EngineError {
+                message: "cannot cast value to real".to_string(),
+            }),
+        },
+        "float8" | "double precision" => match &value {
+            ScalarValue::Float(v) => Ok(ScalarValue::Float(*v)),
+            ScalarValue::Int(v) => Ok(ScalarValue::Float(*v as f64)),
+            ScalarValue::Numeric(v) => {
+                let float_val = v.to_string().parse::<f64>().map_err(|_| EngineError {
+                    message: "cannot convert numeric to double precision".to_string(),
+                })?;
+                Ok(ScalarValue::Float(float_val))
+            }
+            ScalarValue::Text(s) => {
+                let result = crate::utils::adt::float::float8in(s)?;
+                Ok(ScalarValue::Float(result))
+            }
+            _ => Err(EngineError {
+                message: "cannot cast value to double precision".to_string(),
+            }),
         },
         "text" => {
             // PostgreSQL's boolout outputs "true"/"false" when casting to text
             match &value {
-                ScalarValue::Bool(v) => Ok(ScalarValue::Text(if *v { "true" } else { "false" }.to_string())),
+                ScalarValue::Bool(v) => Ok(ScalarValue::Text(
+                    if *v { "true" } else { "false" }.to_string(),
+                )),
                 ScalarValue::Numeric(v) => Ok(ScalarValue::Text(v.to_string())),
                 _ => Ok(ScalarValue::Text(value.render())),
             }
@@ -1825,9 +2117,14 @@ pub(crate) fn eval_cast_scalar(
         }
         "time" => {
             // Parse and format time properly
-            use crate::utils::adt::datetime::{parse_datetime_scalar, format_time};
+            use crate::utils::adt::datetime::{format_time, parse_datetime_scalar};
             let dt = parse_datetime_scalar(&value)?;
-            Ok(ScalarValue::Text(format_time(dt.hour, dt.minute, dt.second, dt.microsecond)))
+            Ok(ScalarValue::Text(format_time(
+                dt.hour,
+                dt.minute,
+                dt.second,
+                dt.microsecond,
+            )))
         }
         "timestamp" => {
             let dt = parse_datetime_scalar(&value)?;
@@ -1844,27 +2141,28 @@ pub(crate) fn eval_cast_scalar(
             parse_json_document_arg(&ScalarValue::Text(text.clone()), type_name, 1)?;
             Ok(ScalarValue::Text(text))
         }
-        "numeric" | "decimal" => {
-            match &value {
-                ScalarValue::Int(v) => Ok(ScalarValue::Numeric(rust_decimal::Decimal::from(*v))),
-                ScalarValue::Float(v) => {
-                    let decimal = rust_decimal::Decimal::try_from(*v).map_err(|_| EngineError {
-                        message: "cannot convert float to numeric: value out of range or NaN/infinity".to_string(),
-                    })?;
-                    Ok(ScalarValue::Numeric(decimal))
-                }
-                ScalarValue::Numeric(v) => Ok(ScalarValue::Numeric(*v)),
-                ScalarValue::Text(s) => {
-                    let decimal = s.parse::<rust_decimal::Decimal>().map_err(|_| EngineError {
+        "numeric" | "decimal" => match &value {
+            ScalarValue::Int(v) => Ok(ScalarValue::Numeric(rust_decimal::Decimal::from(*v))),
+            ScalarValue::Float(v) => {
+                let decimal = rust_decimal::Decimal::try_from(*v).map_err(|_| EngineError {
+                    message: "cannot convert float to numeric: value out of range or NaN/infinity"
+                        .to_string(),
+                })?;
+                Ok(ScalarValue::Numeric(decimal))
+            }
+            ScalarValue::Numeric(v) => Ok(ScalarValue::Numeric(*v)),
+            ScalarValue::Text(s) => {
+                let decimal = s
+                    .parse::<rust_decimal::Decimal>()
+                    .map_err(|_| EngineError {
                         message: format!("invalid input syntax for type numeric: \"{s}\""),
                     })?;
-                    Ok(ScalarValue::Numeric(decimal))
-                }
-                _ => Err(EngineError {
-                    message: "cannot cast value to numeric".to_string(),
-                }),
+                Ok(ScalarValue::Numeric(decimal))
             }
-        }
+            _ => Err(EngineError {
+                message: "cannot cast value to numeric".to_string(),
+            }),
+        },
         other => Err(EngineError {
             message: format!("unsupported cast type {other}"),
         }),
@@ -1907,7 +2205,10 @@ fn like_match_recursive(
                 }
                 matched
             }
-            '_' => vi < value.len() && like_match_recursive(value, pattern, vi + 1, pi + 1, escape, memo),
+            '_' => {
+                vi < value.len()
+                    && like_match_recursive(value, pattern, vi + 1, pi + 1, escape, memo)
+            }
             c if c == escape => {
                 if pi + 1 >= pattern.len() {
                     vi < value.len()
@@ -1981,7 +2282,12 @@ pub(crate) fn eval_binary(
     left: ScalarValue,
     right: ScalarValue,
 ) -> Result<ScalarValue, EngineError> {
-    use BinaryOp::{Or, And, Eq, NotEq, Lt, Lte, Gt, Gte, Add, Sub, Mul, Div, Mod, JsonGet, JsonGetText, JsonPath, JsonPathText, JsonPathExists, JsonPathMatch, JsonConcat, JsonContains, ArrayContains, JsonContainedBy, ArrayContainedBy, ArrayOverlap, ArrayConcat, JsonHasKey, JsonHasAny, JsonHasAll, JsonDelete, JsonDeletePath};
+    use BinaryOp::{
+        Add, And, ArrayConcat, ArrayContainedBy, ArrayContains, ArrayOverlap, Div, Eq, Gt, Gte,
+        JsonConcat, JsonContainedBy, JsonContains, JsonDelete, JsonDeletePath, JsonGet,
+        JsonGetText, JsonHasAll, JsonHasAny, JsonHasKey, JsonPath, JsonPathExists, JsonPathMatch,
+        JsonPathText, Lt, Lte, Mod, Mul, NotEq, Or, Sub,
+    };
     match op {
         Or => eval_logical_or(left, right),
         And => eval_logical_and(left, right),
@@ -2014,7 +2320,10 @@ pub(crate) fn eval_binary(
         JsonPathMatch => eval_json_path_predicate_operator(left, right, true),
         JsonConcat => {
             // || operator: array concat if both arrays, else JSON/string concat
-            if matches!((&left, &right), (ScalarValue::Array(_), _) | (_, ScalarValue::Array(_))) {
+            if matches!(
+                (&left, &right),
+                (ScalarValue::Array(_), _) | (_, ScalarValue::Array(_))
+            ) {
                 eval_array_concat(left, right)
             } else {
                 eval_json_concat_operator(left, right)
@@ -2022,7 +2331,10 @@ pub(crate) fn eval_binary(
         }
         JsonContains | ArrayContains => {
             // @> operator: array contains if both arrays, else JSON contains
-            if matches!((&left, &right), (ScalarValue::Array(_), ScalarValue::Array(_))) {
+            if matches!(
+                (&left, &right),
+                (ScalarValue::Array(_), ScalarValue::Array(_))
+            ) {
                 eval_array_contains(left, right)
             } else {
                 eval_json_contains_operator(left, right)
@@ -2030,7 +2342,10 @@ pub(crate) fn eval_binary(
         }
         JsonContainedBy | ArrayContainedBy => {
             // <@ operator
-            if matches!((&left, &right), (ScalarValue::Array(_), ScalarValue::Array(_))) {
+            if matches!(
+                (&left, &right),
+                (ScalarValue::Array(_), ScalarValue::Array(_))
+            ) {
                 eval_array_contains(right, left)
             } else {
                 eval_json_contained_by_operator(left, right)
@@ -2246,7 +2561,10 @@ fn numeric_bin(
     right: ScalarValue,
     int_op: impl Fn(i64, i64) -> Result<i64, EngineError>,
     float_op: impl Fn(f64, f64) -> f64,
-    decimal_op: impl Fn(rust_decimal::Decimal, rust_decimal::Decimal) -> Result<rust_decimal::Decimal, EngineError>,
+    decimal_op: impl Fn(
+        rust_decimal::Decimal,
+        rust_decimal::Decimal,
+    ) -> Result<rust_decimal::Decimal, EngineError>,
 ) -> Result<ScalarValue, EngineError> {
     if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
@@ -2280,7 +2598,7 @@ fn numeric_bin(
             Ok(ScalarValue::Float(float_op(a, b_float)))
         }
         (NumericOperand::Numeric(a), NumericOperand::Float(b)) => {
-            // Convert numeric to float for mixed operation  
+            // Convert numeric to float for mixed operation
             let a_float = a.to_string().parse::<f64>().map_err(|_| EngineError {
                 message: "Cannot convert numeric to float".to_string(),
             })?;
@@ -2318,9 +2636,9 @@ fn numeric_div(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Eng
     }
 
     match (left_num, right_num) {
-        (NumericOperand::Int(a), NumericOperand::Int(b)) => {
-            Ok(ScalarValue::Int(crate::utils::adt::int_arithmetic::int4_div(a, b)?))
-        }
+        (NumericOperand::Int(a), NumericOperand::Int(b)) => Ok(ScalarValue::Int(
+            crate::utils::adt::int_arithmetic::int4_div(a, b)?,
+        )),
         (NumericOperand::Int(a), NumericOperand::Float(b)) => {
             Ok(ScalarValue::Float((a as f64) / b))
         }
@@ -2348,9 +2666,7 @@ fn numeric_div(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Eng
             })?;
             Ok(ScalarValue::Float(a_float / b))
         }
-        (NumericOperand::Numeric(a), NumericOperand::Numeric(b)) => {
-            Ok(ScalarValue::Numeric(a / b))
-        }
+        (NumericOperand::Numeric(a), NumericOperand::Numeric(b)) => Ok(ScalarValue::Numeric(a / b)),
     }
 }
 
@@ -2384,9 +2700,7 @@ async fn eval_function(
     }
     if is_aggregate_function(&fn_name) {
         return Err(EngineError {
-            message: format!(
-                "aggregate function {fn_name}() must be used with grouped evaluation"
-            ),
+            message: format!("aggregate function {fn_name}() must be used with grouped evaluation"),
         });
     }
 
@@ -2395,7 +2709,7 @@ async fn eval_function(
         values.push(eval_expr(arg, scope, params).await?);
     }
 
-    // Handle schema-qualified extension functions (ws.connect, ws.send, ws.close)
+    // Handle schema-qualified extension functions.
     if name.len() == 2 {
         let schema = name[0].to_ascii_lowercase();
         if schema == "ws" {
@@ -2411,9 +2725,136 @@ async fn eval_function(
                 }
             }
         }
+        if schema == "openferric" {
+            return eval_openferric_function(&fn_name, &values);
+        }
+    }
+
+    if let Some(user_function) = lookup_user_function(name) {
+        return execute_user_function(&user_function, &values).await;
     }
 
     eval_scalar_function(&fn_name, &values).await
+}
+
+fn lookup_user_function(name: &[String]) -> Option<UserFunction> {
+    let lower_name = name
+        .iter()
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
+    with_ext_read(|ext| {
+        ext.user_functions
+            .iter()
+            .find(|func| {
+                if func.name == lower_name {
+                    return true;
+                }
+                if lower_name.len() == 1 {
+                    return func.name.last() == lower_name.last()
+                        && func.name.first().map(String::as_str) != Some("openferric");
+                }
+                false
+            })
+            .cloned()
+    })
+}
+
+async fn execute_user_function(
+    function: &UserFunction,
+    args: &[ScalarValue],
+) -> Result<ScalarValue, EngineError> {
+    if function.language.eq_ignore_ascii_case("plpgsql") {
+        return execute_plpgsql_user_function(function, args);
+    }
+    if function.language.eq_ignore_ascii_case("sql") {
+        return execute_sql_user_function(function, args).await;
+    }
+
+    Err(EngineError {
+        message: format!("unsupported function language {}", function.language),
+    })
+}
+
+fn execute_plpgsql_user_function(
+    function: &UserFunction,
+    args: &[ScalarValue],
+) -> Result<ScalarValue, EngineError> {
+    let create_stmt = CreateFunctionStatement {
+        name: function.name.clone(),
+        params: function.params.clone(),
+        return_type: function.return_type.clone(),
+        body: function.body.clone(),
+        language: function.language.clone(),
+        or_replace: true,
+    };
+    let compiled =
+        crate::plpgsql::compile_create_function_statement(&create_stmt).map_err(|e| {
+            EngineError {
+                message: format!("plpgsql compile error: {e}"),
+            }
+        })?;
+    let result =
+        crate::plpgsql::plpgsql_exec_function(&compiled, args).map_err(|message| EngineError {
+            message: format!("plpgsql execution error: {message}"),
+        })?;
+    Ok(result.unwrap_or(ScalarValue::Null))
+}
+
+async fn execute_sql_user_function(
+    function: &UserFunction,
+    args: &[ScalarValue],
+) -> Result<ScalarValue, EngineError> {
+    let sql = substitute_function_body(function, args);
+    let stmt = crate::parser::sql_parser::parse_statement(&sql).map_err(|e| EngineError {
+        message: format!("function parse error: {e}"),
+    })?;
+    let planned = plan_statement(stmt)?;
+    let result = execute_planned_query(&planned, &[]).await?;
+    Ok(result
+        .rows
+        .first()
+        .and_then(|row| row.first())
+        .cloned()
+        .unwrap_or(ScalarValue::Null))
+}
+
+fn substitute_function_body(function: &UserFunction, args: &[ScalarValue]) -> String {
+    let mut sql = function.body.clone();
+
+    for (idx, value) in args.iter().enumerate().rev() {
+        sql = sql.replace(&format!("${}", idx + 1), &scalar_to_sql_literal(value));
+    }
+
+    for (idx, param) in function.params.iter().enumerate() {
+        if let Some(name) = &param.name
+            && let Some(value) = args.get(idx)
+        {
+            sql = sql.replace(name, &scalar_to_sql_literal(value));
+        }
+    }
+
+    sql
+}
+
+fn scalar_to_sql_literal(value: &ScalarValue) -> String {
+    match value {
+        ScalarValue::Null => "NULL".to_string(),
+        ScalarValue::Bool(v) => {
+            if *v {
+                "TRUE".to_string()
+            } else {
+                "FALSE".to_string()
+            }
+        }
+        ScalarValue::Int(v) => v.to_string(),
+        ScalarValue::Float(v) => v.to_string(),
+        ScalarValue::Numeric(v) => v.to_string(),
+        ScalarValue::Text(v) => format!("'{}'", v.replace('\'', "''")),
+        ScalarValue::Array(_) | ScalarValue::Record(_) => {
+            format!("'{}'", value.render().replace('\'', "''"))
+        }
+    }
 }
 
 pub(crate) fn is_ws_extension_loaded() -> bool {
@@ -2752,7 +3193,7 @@ fn eval_array_subscript(
         _ => {
             return Err(EngineError {
                 message: "subscript operation requires array type".to_string(),
-            })
+            });
         }
     };
 
@@ -2763,7 +3204,7 @@ fn eval_array_subscript(
         _ => {
             return Err(EngineError {
                 message: "array subscript must be type integer".to_string(),
-            })
+            });
         }
     };
 
@@ -2800,7 +3241,7 @@ fn eval_array_slice(
         _ => {
             return Err(EngineError {
                 message: "slice operation requires array type".to_string(),
-            })
+            });
         }
     };
 
@@ -2818,7 +3259,7 @@ fn eval_array_slice(
             _ => {
                 return Err(EngineError {
                     message: "array slice bounds must be type integer".to_string(),
-                })
+                });
             }
         }
     } else {
@@ -2839,7 +3280,7 @@ fn eval_array_slice(
             _ => {
                 return Err(EngineError {
                     message: "array slice bounds must be type integer".to_string(),
-                })
+                });
             }
         }
     } else {
@@ -2849,11 +3290,11 @@ fn eval_array_slice(
     // Extract the slice
     let start_idx = start_idx.min(elements.len());
     let end_idx = end_idx.min(elements.len());
-    
+
     if start_idx >= end_idx {
         return Ok(ScalarValue::Array(Vec::new()));
     }
-    
+
     let sliced = elements[start_idx..end_idx].to_vec();
     Ok(ScalarValue::Array(sliced))
 }

@@ -17,10 +17,10 @@ use crate::utils::adt::datetime::{
 };
 use crate::utils::adt::json::{
     eval_array_to_json, eval_http_delete, eval_http_get, eval_http_get_with_params, eval_http_head,
-    eval_http_patch, eval_http_post_content, eval_http_post_form, eval_http_put, eval_json_array_length,
-    eval_json_extract_path, eval_json_object, eval_json_pretty, eval_json_strip_nulls,
-    eval_json_typeof, eval_jsonb_exists, eval_jsonb_exists_any_all, eval_jsonb_insert,
-    eval_jsonb_path_exists, eval_jsonb_path_match, eval_jsonb_path_query_array,
+    eval_http_patch, eval_http_post_content, eval_http_post_form, eval_http_put,
+    eval_json_array_length, eval_json_extract_path, eval_json_object, eval_json_pretty,
+    eval_json_strip_nulls, eval_json_typeof, eval_jsonb_exists, eval_jsonb_exists_any_all,
+    eval_jsonb_insert, eval_jsonb_path_exists, eval_jsonb_path_match, eval_jsonb_path_query_array,
     eval_jsonb_path_query_first, eval_jsonb_set, eval_jsonb_set_lax, eval_row_to_json,
     eval_urlencode, json_build_array_value, json_build_object_value, scalar_to_json_value,
 };
@@ -29,10 +29,10 @@ use crate::utils::adt::math_functions::{
 };
 use crate::utils::adt::misc::{
     array_value_matches, compare_values_for_predicate, count_nonnulls, count_nulls, eval_extremum,
-    eval_regexp_count, eval_regexp_instr, eval_regexp_like, eval_regexp_match,
-    eval_regexp_replace, eval_regexp_split_to_array, eval_regexp_substr, eval_unistr,
-    gen_random_uuid, parse_bool_scalar, parse_i64_scalar, pg_get_viewdef, pg_input_is_valid,
-    quote_ident, quote_literal, quote_nullable, rand_f64,
+    eval_regexp_count, eval_regexp_instr, eval_regexp_like, eval_regexp_match, eval_regexp_replace,
+    eval_regexp_split_to_array, eval_regexp_substr, eval_unistr, gen_random_uuid,
+    parse_bool_scalar, parse_i64_scalar, pg_get_viewdef, pg_input_is_valid, quote_ident,
+    quote_literal, quote_nullable, rand_f64,
 };
 use crate::utils::adt::string_functions::{
     TrimMode, ascii_code, chr_from_code, decode_bytes, encode_bytes, eval_format,
@@ -104,15 +104,17 @@ pub(crate) async fn eval_scalar_function(
         )),
         "row_to_json" if args.len() == 1 || args.len() == 2 => eval_row_to_json(args, fn_name),
         "array_to_json" if args.len() == 1 || args.len() == 2 => eval_array_to_json(args, fn_name),
-        "json_object" | "jsonb_object" if args.len() == 1 || args.len() == 2 => eval_json_object(args, fn_name),
+        "json_object" | "jsonb_object" if args.len() == 1 || args.len() == 2 => {
+            eval_json_object(args, fn_name)
+        }
         "json_build_object" | "jsonb_build_object" if !args.len().is_multiple_of(2) => {
             Err(EngineError {
                 message: "argument list must have even number of elements".to_string(),
             })
         }
-        "json_build_object" | "jsonb_build_object" => Ok(
-            ScalarValue::Text(json_build_object_value(args)?.to_string()),
-        ),
+        "json_build_object" | "jsonb_build_object" => Ok(ScalarValue::Text(
+            json_build_object_value(args)?.to_string(),
+        )),
         "json_build_array" | "jsonb_build_array" => {
             Ok(ScalarValue::Text(json_build_array_value(args)?.to_string()))
         }
@@ -460,9 +462,7 @@ pub(crate) async fn eval_scalar_function(
             ScalarValue::Null => Ok(ScalarValue::Null),
             ScalarValue::Int(i) => Ok(ScalarValue::Int(*i)),
             ScalarValue::Float(f) => Ok(ScalarValue::Float(f.ceil())),
-            ScalarValue::Numeric(d) => {
-                Ok(ScalarValue::Numeric(d.ceil()))
-            }
+            ScalarValue::Numeric(d) => Ok(ScalarValue::Numeric(d.ceil())),
             _ => Err(EngineError {
                 message: "ceil() expects numeric argument".to_string(),
             }),
@@ -471,9 +471,7 @@ pub(crate) async fn eval_scalar_function(
             ScalarValue::Null => Ok(ScalarValue::Null),
             ScalarValue::Int(i) => Ok(ScalarValue::Int(*i)),
             ScalarValue::Float(f) => Ok(ScalarValue::Float(f.floor())),
-            ScalarValue::Numeric(d) => {
-                Ok(ScalarValue::Numeric(d.floor()))
-            }
+            ScalarValue::Numeric(d) => Ok(ScalarValue::Numeric(d.floor())),
             _ => Err(EngineError {
                 message: "floor() expects numeric argument".to_string(),
             }),
@@ -493,9 +491,7 @@ pub(crate) async fn eval_scalar_function(
                     let factor = 10f64.powi(scale as i32);
                     Ok(ScalarValue::Float((f * factor).round() / factor))
                 }
-                ScalarValue::Numeric(d) => {
-                    Ok(ScalarValue::Numeric(d.round_dp(scale as u32)))
-                }
+                ScalarValue::Numeric(d) => Ok(ScalarValue::Numeric(d.round_dp(scale as u32))),
                 _ => Err(EngineError {
                     message: "round() expects numeric argument".to_string(),
                 }),
@@ -660,85 +656,131 @@ pub(crate) async fn eval_scalar_function(
         "factorial" if args.len() == 1 => eval_factorial(&args[0]),
         // Hyperbolic functions
         "sinh" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
-            Ok(ScalarValue::Float(coerce_to_f64(&args[0], "sinh()")?.sinh()))
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Float(
+                coerce_to_f64(&args[0], "sinh()")?.sinh(),
+            ))
         }
         "cosh" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
-            Ok(ScalarValue::Float(coerce_to_f64(&args[0], "cosh()")?.cosh()))
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Float(
+                coerce_to_f64(&args[0], "cosh()")?.cosh(),
+            ))
         }
         "tanh" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
-            Ok(ScalarValue::Float(coerce_to_f64(&args[0], "tanh()")?.tanh()))
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Float(
+                coerce_to_f64(&args[0], "tanh()")?.tanh(),
+            ))
         }
         "asinh" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
-            Ok(ScalarValue::Float(coerce_to_f64(&args[0], "asinh()")?.asinh()))
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Float(
+                coerce_to_f64(&args[0], "asinh()")?.asinh(),
+            ))
         }
         "acosh" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
             let v = coerce_to_f64(&args[0], "acosh()")?;
             if v < 1.0 && !v.is_nan() {
-                return Err(EngineError { message: "input is out of range".to_string() });
+                return Err(EngineError {
+                    message: "input is out of range".to_string(),
+                });
             }
             Ok(ScalarValue::Float(v.acosh()))
         }
         "atanh" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
             let v = coerce_to_f64(&args[0], "atanh()")?;
             if !(-1.0..=1.0).contains(&v) && !v.is_nan() {
-                return Err(EngineError { message: "input is out of range".to_string() });
+                return Err(EngineError {
+                    message: "input is out of range".to_string(),
+                });
             }
             Ok(ScalarValue::Float(v.atanh()))
         }
         // Degree-based trig functions
         "sind" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
             let v = coerce_to_f64(&args[0], "sind()")?;
             Ok(ScalarValue::Float(sind(v)))
         }
         "cosd" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
             let v = coerce_to_f64(&args[0], "cosd()")?;
             Ok(ScalarValue::Float(cosd(v)))
         }
         "tand" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
             let v = coerce_to_f64(&args[0], "tand()")?;
             Ok(ScalarValue::Float(tand(v)))
         }
         "cotd" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
             let v = coerce_to_f64(&args[0], "cotd()")?;
             let t = tand(v);
             if t == 0.0 {
-                return Err(EngineError { message: "division by zero".to_string() });
+                return Err(EngineError {
+                    message: "division by zero".to_string(),
+                });
             }
             Ok(ScalarValue::Float(1.0 / t))
         }
         "asind" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
             let v = coerce_to_f64(&args[0], "asind()")?;
             if !(-1.0..=1.0).contains(&v) {
-                return Err(EngineError { message: "input is out of range".to_string() });
+                return Err(EngineError {
+                    message: "input is out of range".to_string(),
+                });
             }
             Ok(ScalarValue::Float(v.asin().to_degrees()))
         }
         "acosd" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
             let v = coerce_to_f64(&args[0], "acosd()")?;
             if !(-1.0..=1.0).contains(&v) {
-                return Err(EngineError { message: "input is out of range".to_string() });
+                return Err(EngineError {
+                    message: "input is out of range".to_string(),
+                });
             }
             Ok(ScalarValue::Float(v.acos().to_degrees()))
         }
         "atand" if args.len() == 1 => {
-            if matches!(args[0], ScalarValue::Null) { return Ok(ScalarValue::Null); }
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
             let v = coerce_to_f64(&args[0], "atand()")?;
             Ok(ScalarValue::Float(v.atan().to_degrees()))
         }
         "atan2d" if args.len() == 2 => {
-            if args.iter().any(|a| matches!(a, ScalarValue::Null)) { return Ok(ScalarValue::Null); }
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
             let y = coerce_to_f64(&args[0], "atan2d()")?;
             let x = coerce_to_f64(&args[1], "atan2d()")?;
             Ok(ScalarValue::Float(y.atan2(x).to_degrees()))
@@ -943,18 +985,10 @@ pub(crate) async fn eval_scalar_function(
             }
             eval_regexp_split_to_array(&args[0].render(), &args[1].render())
         }
-        "regexp_count" if args.len() >= 2 && args.len() <= 4 => {
-            eval_regexp_count(args)
-        }
-        "regexp_instr" if args.len() >= 2 && args.len() <= 7 => {
-            eval_regexp_instr(args)
-        }
-        "regexp_substr" if args.len() >= 2 && args.len() <= 6 => {
-            eval_regexp_substr(args)
-        }
-        "regexp_like" if args.len() >= 2 && args.len() <= 3 => {
-            eval_regexp_like(args)
-        }
+        "regexp_count" if args.len() >= 2 && args.len() <= 4 => eval_regexp_count(args),
+        "regexp_instr" if args.len() >= 2 && args.len() <= 7 => eval_regexp_instr(args),
+        "regexp_substr" if args.len() >= 2 && args.len() <= 6 => eval_regexp_substr(args),
+        "regexp_like" if args.len() >= 2 && args.len() <= 3 => eval_regexp_like(args),
         "to_hex" if args.len() == 1 => {
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
@@ -1021,7 +1055,9 @@ pub(crate) async fn eval_scalar_function(
                 });
             }
             bytes[offset] = new_val;
-            Ok(ScalarValue::Text(String::from_utf8_lossy(&bytes).to_string()))
+            Ok(ScalarValue::Text(
+                String::from_utf8_lossy(&bytes).to_string(),
+            ))
         }
         "get_byte" if args.len() == 2 => {
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
@@ -1070,7 +1106,9 @@ pub(crate) async fn eval_scalar_function(
             Ok(ScalarValue::Bool(a >= b))
         }
         // --- System info functions ---
-        "version" if args.is_empty() => Ok(ScalarValue::Text("OpenAssay 0.1.0 on Rust".to_string())),
+        "version" if args.is_empty() => {
+            Ok(ScalarValue::Text("OpenAssay 0.1.0 on Rust".to_string()))
+        }
         "current_database" if args.is_empty() => Ok(ScalarValue::Text("openassay".to_string())),
         "current_schema" if args.is_empty() => Ok(ScalarValue::Text("public".to_string())),
         "current_user" | "session_user" | "user" if args.is_empty() => {
@@ -1565,7 +1603,9 @@ fn sind(x: f64) -> f64 {
     }
     // Normalize to [0, 360)
     let mut arg = x % 360.0;
-    if arg < 0.0 { arg += 360.0; }
+    if arg < 0.0 {
+        arg += 360.0;
+    }
     match arg as i64 {
         0 | 180 => 0.0,
         30 | 150 => 0.5,
@@ -1582,7 +1622,9 @@ fn cosd(x: f64) -> f64 {
         return f64::NAN;
     }
     let mut arg = x % 360.0;
-    if arg < 0.0 { arg += 360.0; }
+    if arg < 0.0 {
+        arg += 360.0;
+    }
     match arg as i64 {
         0 | 360 => 1.0,
         60 | 300 => 0.5,
@@ -1599,7 +1641,9 @@ fn tand(x: f64) -> f64 {
         return f64::NAN;
     }
     let mut arg = x % 360.0;
-    if arg < 0.0 { arg += 360.0; }
+    if arg < 0.0 {
+        arg += 360.0;
+    }
     match arg as i64 {
         0 | 180 | 360 => 0.0,
         45 | 225 => 1.0,

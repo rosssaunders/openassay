@@ -6,15 +6,14 @@ use crate::parser::ast::{
     SetQuantifier, TableFunctionRef, TableRef,
 };
 
-use super::cost::{
-    self, JoinStrategy, PlanCost,
-};
+use super::PlannerError;
+use super::cost::{self, JoinStrategy, PlanCost};
 use super::logical::{
     LogicalAggregate, LogicalCte, LogicalCteScan, LogicalDistinct, LogicalFilter, LogicalJoin,
-    LogicalLimit, LogicalPlan, LogicalProject, LogicalScan, LogicalSetOp, LogicalSort, LogicalWindow,
+    LogicalLimit, LogicalPlan, LogicalProject, LogicalScan, LogicalSetOp, LogicalSort,
+    LogicalWindow,
 };
 use super::stats::{self, TableStats};
-use super::PlannerError;
 
 #[derive(Debug, Clone)]
 pub enum ScanType {
@@ -186,11 +185,7 @@ impl PhysicalPlan {
         let prefix = " ".repeat(indent);
         match self {
             Self::Result(plan) => {
-                lines.push(format!(
-                    "{}Result  ({})",
-                    prefix,
-                    format_cost(plan.cost)
-                ));
+                lines.push(format!("{}Result  ({})", prefix, format_cost(plan.cost)));
             }
             Self::Scan(plan) => {
                 let label = match &plan.scan_type {
@@ -236,7 +231,11 @@ impl PhysicalPlan {
                 ));
             }
             Self::Subquery(plan) => {
-                lines.push(format!("{}Subquery Scan  ({})", prefix, format_cost(plan.cost)));
+                lines.push(format!(
+                    "{}Subquery Scan  ({})",
+                    prefix,
+                    format_cost(plan.cost)
+                ));
                 plan.plan.explain(lines, indent + 2);
             }
             Self::Filter(plan) => {
@@ -309,7 +308,11 @@ impl PhysicalPlan {
                 plan.right.explain(lines, indent + 2);
             }
             Self::NestedLoopJoin(plan) => {
-                lines.push(format!("{}Nested Loop  ({})", prefix, format_cost(plan.cost)));
+                lines.push(format!(
+                    "{}Nested Loop  ({})",
+                    prefix,
+                    format_cost(plan.cost)
+                ));
                 if plan.condition.is_some() || plan.natural {
                     lines.push(format!("{prefix}  Join Filter: <condition>"));
                 }
@@ -377,7 +380,10 @@ impl PlannerContext {
     }
 }
 
-fn plan_with_context(logical: &LogicalPlan, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+fn plan_with_context(
+    logical: &LogicalPlan,
+    ctx: &mut PlannerContext,
+) -> Result<PhysicalPlan, PlannerError> {
     match logical {
         LogicalPlan::Result => Ok(PhysicalPlan::Result(ResultPlan {
             cost: PlanCost::new(1.0, 0.0, 1.0),
@@ -411,7 +417,11 @@ fn plan_with_context(logical: &LogicalPlan, ctx: &mut PlannerContext) -> Result<
     }
 }
 
-fn plan_scan(scan: &LogicalScan, filter: Option<&Expr>, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+fn plan_scan(
+    scan: &LogicalScan,
+    filter: Option<&Expr>,
+    ctx: &mut PlannerContext,
+) -> Result<PhysicalPlan, PlannerError> {
     let stats = ctx.stats_for_table(&scan.table)?;
     let row_count = stats.row_count as f64;
     let mut selectivity = filter
@@ -438,7 +448,10 @@ fn plan_scan(scan: &LogicalScan, filter: Option<&Expr>, ctx: &mut PlannerContext
     }))
 }
 
-fn plan_filter(filter: &LogicalFilter, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+fn plan_filter(
+    filter: &LogicalFilter,
+    ctx: &mut PlannerContext,
+) -> Result<PhysicalPlan, PlannerError> {
     if let LogicalPlan::Scan(scan) = &*filter.input {
         return plan_scan(scan, Some(&filter.predicate), ctx);
     }
@@ -453,7 +466,10 @@ fn plan_filter(filter: &LogicalFilter, ctx: &mut PlannerContext) -> Result<Physi
     }))
 }
 
-fn plan_project(project: &LogicalProject, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+fn plan_project(
+    project: &LogicalProject,
+    ctx: &mut PlannerContext,
+) -> Result<PhysicalPlan, PlannerError> {
     let input = plan_with_context(&project.input, ctx)?;
     let cost = cost::project_cost(input.cost());
     Ok(PhysicalPlan::Project(ProjectPlan {
@@ -463,7 +479,10 @@ fn plan_project(project: &LogicalProject, ctx: &mut PlannerContext) -> Result<Ph
     }))
 }
 
-fn plan_aggregate(aggregate: &LogicalAggregate, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+fn plan_aggregate(
+    aggregate: &LogicalAggregate,
+    ctx: &mut PlannerContext,
+) -> Result<PhysicalPlan, PlannerError> {
     let input = plan_with_context(&aggregate.input, ctx)?;
     let groups = if aggregate.group_by.is_empty() {
         1.0
@@ -479,7 +498,10 @@ fn plan_aggregate(aggregate: &LogicalAggregate, ctx: &mut PlannerContext) -> Res
     }))
 }
 
-fn plan_distinct(distinct: &LogicalDistinct, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+fn plan_distinct(
+    distinct: &LogicalDistinct,
+    ctx: &mut PlannerContext,
+) -> Result<PhysicalPlan, PlannerError> {
     let input = plan_with_context(&distinct.input, ctx)?;
     let cost = cost::distinct_cost(input.cost());
     Ok(PhysicalPlan::Distinct(DistinctPlan {
@@ -499,7 +521,10 @@ fn plan_sort(sort: &LogicalSort, ctx: &mut PlannerContext) -> Result<PhysicalPla
     }))
 }
 
-fn plan_limit(limit: &LogicalLimit, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+fn plan_limit(
+    limit: &LogicalLimit,
+    ctx: &mut PlannerContext,
+) -> Result<PhysicalPlan, PlannerError> {
     let input = plan_with_context(&limit.input, ctx)?;
     let limit_value = limit.limit.as_ref().and_then(literal_f64);
     let cost = cost::limit_cost(input.cost(), limit_value);
@@ -511,7 +536,10 @@ fn plan_limit(limit: &LogicalLimit, ctx: &mut PlannerContext) -> Result<Physical
     }))
 }
 
-fn plan_window(window: &LogicalWindow, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+fn plan_window(
+    window: &LogicalWindow,
+    ctx: &mut PlannerContext,
+) -> Result<PhysicalPlan, PlannerError> {
     let input = plan_with_context(&window.input, ctx)?;
     let cost = cost::window_cost(input.cost());
     Ok(PhysicalPlan::Window(WindowPlan {
@@ -521,7 +549,10 @@ fn plan_window(window: &LogicalWindow, ctx: &mut PlannerContext) -> Result<Physi
     }))
 }
 
-fn plan_cte_scan(scan: &LogicalCteScan, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+fn plan_cte_scan(
+    scan: &LogicalCteScan,
+    ctx: &mut PlannerContext,
+) -> Result<PhysicalPlan, PlannerError> {
     let base_cost = ctx
         .cte_cost(&scan.name)
         .unwrap_or_else(|| PlanCost::new(1.0, 0.0, 1.0));
@@ -558,7 +589,10 @@ fn plan_cte(cte: &LogicalCte, ctx: &mut PlannerContext) -> Result<PhysicalPlan, 
     result
 }
 
-fn plan_set_op(set_op: &LogicalSetOp, ctx: &mut PlannerContext) -> Result<PhysicalPlan, PlannerError> {
+fn plan_set_op(
+    set_op: &LogicalSetOp,
+    ctx: &mut PlannerContext,
+) -> Result<PhysicalPlan, PlannerError> {
     let left = plan_with_context(&set_op.left, ctx)?;
     let right = plan_with_context(&set_op.right, ctx)?;
     let cost = cost::set_op_cost(left.cost(), right.cost());
@@ -618,7 +652,11 @@ fn estimate_filter_selectivity(predicate: &Expr, stats: Option<&TableStats>) -> 
                 && let Some(column) = identifier_name(expr)
                 && let Some(null_fraction) = stats.null_fraction(&column)
             {
-                return if *negated { 1.0 - null_fraction } else { null_fraction };
+                return if *negated {
+                    1.0 - null_fraction
+                } else {
+                    null_fraction
+                };
             }
             if *negated { 0.9 } else { 0.1 }
         }

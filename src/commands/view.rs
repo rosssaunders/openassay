@@ -25,7 +25,7 @@ pub(crate) async fn execute_create_view_internal(
     params: &[Option<String>],
 ) -> Result<QueryResult, EngineError> {
     let (schema_name, view_name) = relation_name_for_create(&create.name)?;
-    
+
     // Handle IF NOT EXISTS
     if create.if_not_exists {
         let existing =
@@ -43,7 +43,7 @@ pub(crate) async fn execute_create_view_internal(
             });
         }
     }
-    
+
     if create.or_replace {
         let existing =
             with_catalog_read(|catalog| catalog.table(&schema_name, &view_name).cloned());

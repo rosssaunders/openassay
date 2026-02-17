@@ -80,12 +80,14 @@ pub(crate) fn eval_extract_or_date_part(
         "minute" => ScalarValue::Int(datetime.minute as i64),
         "second" => {
             // Return seconds with fractional part
-            let total_seconds = datetime.second as f64 + (datetime.microsecond as f64 / 1_000_000.0);
+            let total_seconds =
+                datetime.second as f64 + (datetime.microsecond as f64 / 1_000_000.0);
             ScalarValue::Float(total_seconds)
         }
         "millisecond" => {
             // Return milliseconds including seconds part
-            let total_ms = (datetime.second as f64 * 1000.0) + (datetime.microsecond as f64 / 1000.0);
+            let total_ms =
+                (datetime.second as f64 * 1000.0) + (datetime.microsecond as f64 / 1000.0);
             ScalarValue::Float(total_ms)
         }
         "microsecond" => {
@@ -418,7 +420,7 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
         // Check for space followed by time pattern (must contain colon for time)
         let mut date_end = raw.len();
         let mut has_time = false;
-        
+
         // Look for a space followed by something that looks like a time (contains colon)
         for (i, c) in raw.char_indices() {
             if c == ' ' && i + 1 < raw.len() {
@@ -431,7 +433,7 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
                 }
             }
         }
-        
+
         if has_time {
             (&raw[..date_end], Some(&raw[date_end + 1..]))
         } else {
@@ -455,7 +457,7 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
 
 fn parse_date_text(text: &str) -> Result<DateValue, EngineError> {
     let trimmed = text.trim();
-    
+
     // Check for BC suffix
     let (date_str, is_bc) = if trimmed.to_ascii_uppercase().ends_with(" BC") {
         let s = &trimmed[..trimmed.len() - 3];
@@ -511,20 +513,20 @@ fn try_parse_iso_date(text: &str) -> Option<DateValue> {
     if parts.len() != 3 {
         return None;
     }
-    
+
     let year = parts[0].parse::<i32>().ok()?;
     let month = parts[1].parse::<u32>().ok()?;
     let day = parts[2].parse::<u32>().ok()?;
-    
+
     if month == 0 || month > 12 || day == 0 {
         return None;
     }
-    
+
     let max_day = days_in_month(year, month);
     if day > max_day {
         return None;
     }
-    
+
     Some(DateValue { year, month, day })
 }
 
@@ -532,11 +534,11 @@ fn try_parse_compact_date(text: &str) -> Option<DateValue> {
     if !text.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
-    
+
     let year: i32;
     let month: u32;
     let day: u32;
-    
+
     if text.len() == 8 {
         // YYYYMMDD
         year = text[0..4].parse().ok()?;
@@ -551,16 +553,16 @@ fn try_parse_compact_date(text: &str) -> Option<DateValue> {
     } else {
         return None;
     }
-    
+
     if month == 0 || month > 12 || day == 0 {
         return None;
     }
-    
+
     let max_day = days_in_month(year, month);
     if day > max_day {
         return None;
     }
-    
+
     Some(DateValue { year, month, day })
 }
 
@@ -568,7 +570,7 @@ fn try_parse_julian_date(text: &str) -> Option<DateValue> {
     if !text.starts_with('J') && !text.starts_with('j') {
         return None;
     }
-    
+
     let julian_day: i64 = text[1..].parse().ok()?;
     Some(civil_from_days(julian_day - 2440588)) // PostgreSQL Julian day epoch
 }
@@ -577,28 +579,28 @@ fn try_parse_year_day_format(text: &str) -> Option<DateValue> {
     if !text.contains('.') {
         return None;
     }
-    
+
     let parts: Vec<&str> = text.split('.').collect();
     if parts.len() != 2 {
         return None;
     }
-    
+
     let year: i32 = parts[0].parse().ok()?;
     let day_of_year: u32 = parts[1].parse().ok()?;
-    
+
     if day_of_year == 0 {
         return None;
     }
-    
+
     let days_in_year = if is_leap_year(year) { 366 } else { 365 };
     if day_of_year > days_in_year {
         return None;
     }
-    
+
     // Convert day of year to month and day
     let mut remaining_days = day_of_year;
     let mut month = 1u32;
-    
+
     while month <= 12 {
         let days_this_month = days_in_month(year, month);
         if remaining_days <= days_this_month {
@@ -611,7 +613,7 @@ fn try_parse_year_day_format(text: &str) -> Option<DateValue> {
         remaining_days -= days_this_month;
         month += 1;
     }
-    
+
     None
 }
 
@@ -638,7 +640,7 @@ fn try_parse_with_month_name(text: &str) -> Option<DateValue> {
     // Try to find month name
     let mut month_idx = None;
     let mut month_val = None;
-    
+
     for (idx, part) in parts.iter().enumerate() {
         if let Some(m) = parse_month_name(part) {
             month_idx = Some(idx);
@@ -646,10 +648,10 @@ fn try_parse_with_month_name(text: &str) -> Option<DateValue> {
             break;
         }
     }
-    
+
     let month = month_val?;
     let month_pos = month_idx?;
-    
+
     // Collect numeric parts
     let numeric_parts: Vec<i32> = parts
         .iter()
@@ -657,11 +659,11 @@ fn try_parse_with_month_name(text: &str) -> Option<DateValue> {
         .filter(|(idx, _)| *idx != month_pos)
         .filter_map(|(_, s)| s.parse::<i32>().ok())
         .collect();
-    
+
     if numeric_parts.len() < 2 {
         return None;
     }
-    
+
     // Determine year and day
     // Values > 99 are definitely years (e.g., 1999)
     // Values in 32-99 range could be years (YY format) or impossible as days, so treat as years
@@ -682,11 +684,11 @@ fn try_parse_with_month_name(text: &str) -> Option<DateValue> {
         // Month in middle, so likely: DD Month YY
         (normalize_year(numeric_parts[1]), numeric_parts[0] as u32)
     };
-    
+
     if day == 0 || day > days_in_month(year, month) {
         return None;
     }
-    
+
     Some(DateValue { year, month, day })
 }
 
@@ -701,15 +703,15 @@ fn try_parse_numeric_date(text: &str) -> Option<DateValue> {
     } else {
         return None;
     };
-    
+
     if parts.len() != 3 {
         return None;
     }
-    
+
     let n1: i32 = parts[0].parse().ok()?;
     let n2: u32 = parts[1].parse().ok()?;
     let n3: i32 = parts[2].parse().ok()?;
-    
+
     // Determine format based on values
     // If first or last > 31, it's likely year
     let (year, month, day) = if n1 > 31 || (n1 > 12 && n3 <= 12) {
@@ -730,16 +732,16 @@ fn try_parse_numeric_date(text: &str) -> Option<DateValue> {
         let y = normalize_year(n1);
         (y, n2, n3 as u32)
     };
-    
+
     if month == 0 || month > 12 || day == 0 {
         return None;
     }
-    
+
     let max_day = days_in_month(year, month);
     if day > max_day {
         return None;
     }
-    
+
     Some(DateValue { year, month, day })
 }
 
@@ -774,20 +776,20 @@ fn parse_month_name(text: &str) -> Option<u32> {
 
 fn parse_time_text(text: &str) -> Result<(u32, u32, u32, u32), EngineError> {
     let mut cleaned = text.trim().to_string();
-    
+
     // Check for AM/PM
     let is_pm = cleaned.to_ascii_uppercase().ends_with(" PM");
     let is_am = cleaned.to_ascii_uppercase().ends_with(" AM");
-    
+
     if is_pm || is_am {
         cleaned = cleaned[..cleaned.len() - 3].trim().to_string();
     }
-    
+
     // Remove trailing 'Z' (UTC indicator)
     if cleaned.ends_with('Z') {
         cleaned = cleaned[..cleaned.len() - 1].to_string();
     }
-    
+
     // Look for timezone offset (+/-HH:MM) or timezone name
     if let Some(sign_pos) = cleaned
         .char_indices()
@@ -805,8 +807,7 @@ fn parse_time_text(text: &str) -> Result<(u32, u32, u32, u32), EngineError> {
                 let tz_upper = last.to_ascii_uppercase();
                 if matches!(
                     tz_upper.as_str(),
-                    "PST" | "PDT" | "MST" | "MDT" | "CST" | "CDT" | "EST" | "EDT"
-                        | "UTC" | "GMT"
+                    "PST" | "PDT" | "MST" | "MDT" | "CST" | "CDT" | "EST" | "EDT" | "UTC" | "GMT"
                 ) {
                     // Join all parts except the last one
                     cleaned = parts[..parts.len() - 1].join(" ");
@@ -814,81 +815,81 @@ fn parse_time_text(text: &str) -> Result<(u32, u32, u32, u32), EngineError> {
             }
         }
     }
-    
+
     let time_parts = cleaned.split(':').collect::<Vec<_>>();
     if time_parts.len() < 2 || time_parts.len() > 3 {
         return Err(EngineError {
             message: format!("invalid time format: \"{text}\""),
         });
     }
-    
+
     let mut hour = time_parts[0].parse::<u32>().map_err(|_| EngineError {
         message: "invalid time hour".to_string(),
     })?;
-    
+
     let minute = time_parts[1].parse::<u32>().map_err(|_| EngineError {
         message: "invalid time minute".to_string(),
     })?;
-    
+
     let (second, microsecond) = if time_parts.len() == 3 {
         parse_seconds_with_fraction(time_parts[2])?
     } else {
         (0, 0)
     };
-    
+
     // Apply AM/PM adjustment
     if is_pm && hour < 12 {
         hour += 12;
     } else if is_am && hour == 12 {
         hour = 0;
     }
-    
+
     // Handle special cases for rounding
     let (second, microsecond) = if microsecond >= 1_000_000 {
         (second + 1, 0)
     } else {
         (second, microsecond)
     };
-    
+
     // If seconds = 60 (leap second), round to next minute
     let (minute, second) = if second >= 60 {
         (minute + 1, 0)
     } else {
         (minute, second)
     };
-    
+
     // If minutes overflow
     let (hour, minute) = if minute >= 60 {
         (hour + 1, 0)
     } else {
         (hour, minute)
     };
-    
+
     // Validate bounds
     // Special case: 24:00:00 is allowed (represents midnight)
     if hour == 24 && minute == 0 && second == 0 && microsecond == 0 {
         return Ok((24, 0, 0, 0));
     }
-    
+
     if hour > 23 {
         return Err(EngineError {
             message: format!("date/time field value out of range: \"{text}\""),
         });
     }
-    
+
     if minute > 59 {
         return Err(EngineError {
             message: format!("date/time field value out of range: \"{text}\""),
         });
     }
-    
+
     // PostgreSQL allows second values slightly over 60 that round down
     if second > 59 {
         return Err(EngineError {
             message: format!("date/time field value out of range: \"{text}\""),
         });
     }
-    
+
     Ok((hour, minute, second, microsecond))
 }
 
@@ -896,39 +897,43 @@ fn parse_seconds_with_fraction(text: &str) -> Result<(u32, u32), EngineError> {
     if let Some(dot_pos) = text.find('.') {
         let sec_part = &text[..dot_pos];
         let frac_part = &text[dot_pos + 1..];
-        
+
         let second = sec_part.parse::<u32>().map_err(|_| EngineError {
             message: "invalid time second".to_string(),
         })?;
-        
+
         // Parse fractional seconds and convert to microseconds
         // Pad or truncate to 6 digits
         let mut frac_str = frac_part.to_string();
-        
+
         // Handle rounding if more than 6 decimal places
         if frac_str.len() > 6 {
             // Round to 6 decimal places
-            let extra_digit = frac_str.chars().nth(6).and_then(|c| c.to_digit(10)).unwrap_or(0);
+            let extra_digit = frac_str
+                .chars()
+                .nth(6)
+                .and_then(|c| c.to_digit(10))
+                .unwrap_or(0);
             frac_str.truncate(6);
-            
+
             let mut microsecond = frac_str.parse::<u32>().unwrap_or(0);
-            
+
             // Round up if the 7th digit is >= 5
             if extra_digit >= 5 {
                 microsecond += 1;
             }
-            
+
             Ok((second, microsecond))
         } else {
             // Pad with zeros to make it 6 digits
             while frac_str.len() < 6 {
                 frac_str.push('0');
             }
-            
+
             let microsecond = frac_str.parse::<u32>().map_err(|_| EngineError {
                 message: "invalid time fractional seconds".to_string(),
             })?;
-            
+
             Ok((second, microsecond))
         }
     } else {
@@ -951,7 +956,8 @@ fn parse_datetime_with_format(text: &str, format: &str) -> Result<DateTimeValue,
 }
 
 fn parse_date_with_format(text: &str, format: &str) -> Result<DateValue, EngineError> {
-    let (date, _hour, _minute, _second, _microsecond) = parse_datetime_parts_with_format(text, format)?;
+    let (date, _hour, _minute, _second, _microsecond) =
+        parse_datetime_parts_with_format(text, format)?;
     Ok(date)
 }
 
@@ -1127,9 +1133,7 @@ pub(crate) fn format_time(hour: u32, minute: u32, second: u32, microsecond: u32)
             frac /= 10;
             precision -= 1;
         }
-        format!(
-            "{hour:02}:{minute:02}:{second:02}.{frac:0precision$}"
-        )
+        format!("{hour:02}:{minute:02}:{second:02}.{frac:0precision$}")
     }
 }
 
@@ -1302,9 +1306,7 @@ pub(crate) fn eval_make_time(
     let frac = ((second - second.trunc()) * 1_000_000.0).round() as u32;
 
     if frac == 0 {
-        Ok(ScalarValue::Text(format!(
-            "{hour:02}:{minute:02}:{sec:02}"
-        )))
+        Ok(ScalarValue::Text(format!("{hour:02}:{minute:02}:{sec:02}")))
     } else {
         Ok(ScalarValue::Text(format!(
             "{hour:02}:{minute:02}:{sec:02}.{frac:06}"
@@ -1469,7 +1471,7 @@ mod tests {
             second: 25,
             microsecond: 575401,
         };
-        
+
         // Verify the timestamp formats correctly with microseconds
         let ts = format_timestamp(dt);
         assert!(ts.contains(".575401"));

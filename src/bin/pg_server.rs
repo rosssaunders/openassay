@@ -109,7 +109,6 @@ fn run_startup_handshake(
                 stream.write_all(b"S")?;
                 stream.flush()?;
                 stream.upgrade_tls(tls_config.clone())?;
-                continue;
             }
             Ok(StartupAction::CancelRequest { .. }) => return Ok(false),
             Ok(StartupAction::Startup(startup)) => {
@@ -269,8 +268,8 @@ impl ClientStream {
                 return Ok(());
             }
         };
-        let conn = ServerConnection::new(config)
-            .map_err(|err| io::Error::other(format!("tls: {err}")))?;
+        let conn =
+            ServerConnection::new(config).map_err(|err| io::Error::other(format!("tls: {err}")))?;
         *self = Self::Tls(StreamOwned::new(conn, plain));
         Ok(())
     }

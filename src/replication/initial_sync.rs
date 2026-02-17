@@ -1,9 +1,9 @@
 use futures::StreamExt;
 
 use crate::protocol::copy::{CopyOptions, decode_text_row};
+use crate::replication::ReplicationError;
 use crate::replication::schema_sync::TableSchema;
 use crate::replication::tuple_decoder::decode_text_value;
-use crate::replication::ReplicationError;
 use crate::storage::heap::with_storage_write;
 use crate::storage::tuple::ScalarValue;
 

@@ -9,6 +9,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 base64 = "0.22.1"
 hmac = "0.12.1"
+openferric = { path = "../openferric" }
 pbkdf2 = "0.12.2"
 regex = "1.11.2"
 rust_decimal = { version = "1.36", features = ["serde", "maths"] }

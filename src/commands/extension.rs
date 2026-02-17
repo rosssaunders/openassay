@@ -1,10 +1,16 @@
 use crate::parser::ast::{CreateExtensionStatement, DropExtensionStatement};
-use crate::tcop::engine::{EngineError, ExtensionRecord, QueryResult, with_ext_write};
+use crate::tcop::engine::{
+    EngineError, ExtensionRecord, QueryResult, ensure_openferric_extension_bootstrap,
+    with_ext_write,
+};
 
 pub async fn execute_create_extension(
     create: &CreateExtensionStatement,
 ) -> Result<QueryResult, EngineError> {
     let name = create.name.to_ascii_lowercase();
+    if name == "openferric" {
+        ensure_openferric_extension_bootstrap()?;
+    }
     with_ext_write(|ext| {
         if ext.extensions.iter().any(|e| e.name == name) {
             if create.if_not_exists {
@@ -17,6 +23,7 @@ pub async fn execute_create_extension(
         let (version, description) = match name.as_str() {
             "ws" => ("1.0".to_string(), "WebSocket client extension".to_string()),
             "http" => ("1.0".to_string(), "HTTP client extension".to_string()),
+            "openferric" => ("1.0".to_string(), "OpenFerric pricing wrappers".to_string()),
             _ => {
                 return Err(EngineError {
                     message: format!("extension \"{name}\" is not available"),

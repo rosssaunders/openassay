@@ -246,11 +246,11 @@ pub enum TypeName {
     Timestamp,
     TimestampTz,
     Interval,
-    Serial,    // auto-incrementing INT4
-    BigSerial, // auto-incrementing INT8
-    Numeric,   // DECIMAL/NUMERIC
+    Serial,           // auto-incrementing INT4
+    BigSerial,        // auto-incrementing INT8
+    Numeric,          // DECIMAL/NUMERIC
     Array(Box<Self>), // e.g. int4[], text[][]
-    Name,      // PostgreSQL name type (63-byte identifier)
+    Name,             // PostgreSQL name type (63-byte identifier)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -625,7 +625,7 @@ pub struct CycleClause {
     pub columns: Vec<String>,
     pub set_column: String,
     pub using_column: String,
-    pub mark_value: Option<String>,   // TO value (default '1')
+    pub mark_value: Option<String>,    // TO value (default '1')
     pub default_value: Option<String>, // DEFAULT value (default '0')
 }
 
@@ -763,7 +763,7 @@ pub struct WindowDefinition {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowSpec {
-    pub name: Option<String>,           // Reference to a named window
+    pub name: Option<String>, // Reference to a named window
     pub partition_by: Vec<Expr>,
     pub order_by: Vec<OrderByExpr>,
     pub frame: Option<WindowFrame>,
@@ -966,10 +966,10 @@ pub enum BinaryOp {
     JsonHasAll,
     JsonDelete,
     JsonDeletePath,
-    ArrayContains,     // @>
-    ArrayContainedBy,  // <@
-    ArrayOverlap,      // &&
-    ArrayConcat,       // ||
+    ArrayContains,    // @>
+    ArrayContainedBy, // <@
+    ArrayOverlap,     // &&
+    ArrayConcat,      // ||
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1005,9 +1005,17 @@ pub struct DropSubscriptionStatement {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum FunctionParamMode {
+    In,
+    Out,
+    InOut,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct FunctionParam {
     pub name: Option<String>,
     pub data_type: TypeName,
+    pub mode: FunctionParamMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]

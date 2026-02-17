@@ -1,8 +1,8 @@
 use byteorder::{BigEndian, ByteOrder};
 
 use crate::catalog::{ColumnSpec, TypeSignature};
-use crate::replication::pgoutput::{RelationColumn, TupleColumn, TupleData};
 use crate::replication::ReplicationError;
+use crate::replication::pgoutput::{RelationColumn, TupleColumn, TupleData};
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::coerce_value_for_column_spec;
 use crate::utils::adt::datetime::{datetime_from_epoch_seconds, format_date, format_timestamp};
@@ -88,8 +88,12 @@ pub fn decode_binary_value(
             }),
         },
         TypeSignature::Float8 => match bytes.len() {
-            8 => Ok(ScalarValue::Float(f64::from_bits(BigEndian::read_u64(bytes)))),
-            4 => Ok(ScalarValue::Float(f32::from_bits(BigEndian::read_u32(bytes)) as f64)),
+            8 => Ok(ScalarValue::Float(f64::from_bits(BigEndian::read_u64(
+                bytes,
+            )))),
+            4 => Ok(ScalarValue::Float(
+                f32::from_bits(BigEndian::read_u32(bytes)) as f64,
+            )),
             _ => Err(ReplicationError {
                 message: "invalid float binary length".to_string(),
             }),
@@ -119,11 +123,12 @@ pub fn decode_binary_value(
         TypeSignature::Numeric => {
             // PostgreSQL numeric binary format is complex. For now, decode as text then parse.
             let text_value = String::from_utf8_lossy(bytes);
-            let decimal = text_value.parse::<rust_decimal::Decimal>().map_err(|_| {
-                ReplicationError {
-                    message: format!("invalid numeric binary data: {text_value}"),
-                }
-            })?;
+            let decimal =
+                text_value
+                    .parse::<rust_decimal::Decimal>()
+                    .map_err(|_| ReplicationError {
+                        message: format!("invalid numeric binary data: {text_value}"),
+                    })?;
             Ok(ScalarValue::Numeric(decimal))
         }
         TypeSignature::Text => Ok(ScalarValue::Text(

@@ -28,8 +28,7 @@ use crate::security::{
 use crate::tcop::engine::{
     EngineError, PlannedQuery, QueryResult, ScalarValue, copy_insert_rows,
     copy_table_binary_snapshot, copy_table_column_names, copy_table_column_oids,
-    execute_planned_query, plan_statement,
-    restore_state, snapshot_state, type_oid_size,
+    execute_planned_query, plan_statement, restore_state, snapshot_state, type_oid_size,
 };
 
 pub type PgType = u32;
@@ -1550,11 +1549,8 @@ impl PostgresSession {
                                 encode_copy_binary_stream(&snapshot.columns, &snapshot.rows)?,
                             ),
                             CopyFormat::Text | CopyFormat::Csv => {
-                                let column_names: Vec<String> = snapshot
-                                    .columns
-                                    .iter()
-                                    .map(|c| c.name.clone())
-                                    .collect();
+                                let column_names: Vec<String> =
+                                    snapshot.columns.iter().map(|c| c.name.clone()).collect();
                                 (
                                     0,
                                     vec![0i16; snapshot.columns.len()],
@@ -1815,10 +1811,9 @@ impl PostgresSession {
         columns: &[String],
     ) -> Result<Vec<PgType>, SessionError> {
         let all_oids = self.copy_column_type_oids(table_name)?;
-        let all_columns = security::with_current_role(&self.current_role, || {
-            copy_table_column_names(table_name)
-        })
-        .map_err(SessionError::from)?;
+        let all_columns =
+            security::with_current_role(&self.current_role, || copy_table_column_names(table_name))
+                .map_err(SessionError::from)?;
         let mut result = Vec::with_capacity(columns.len());
         for col in columns {
             let col_lower = col.to_ascii_lowercase();
@@ -2070,7 +2065,7 @@ impl PostgresSession {
 
         self.xact_started = false;
         self.copy_in_state = None;
-        
+
         // Auto-rollback for implicit transactions to prevent cascade failures
         if !self.tx_state.in_explicit_block() {
             // If we're not in an explicit BEGIN/COMMIT block, rollback and restore state
@@ -2716,7 +2711,9 @@ fn first_keyword_uppercase(query: &str) -> Option<String> {
 fn split_simple_query_statements(query: &str) -> Vec<String> {
     use crate::parser::lexer::{TokenKind, lex_sql};
 
-    let tokens = if let Ok(tokens) = lex_sql(query) { tokens } else {
+    let tokens = if let Ok(tokens) = lex_sql(query) {
+        tokens
+    } else {
         // If lexing fails, return the whole query as a single statement
         // and let the parser produce a proper error message.
         let trimmed = query.trim();
@@ -3262,13 +3259,9 @@ fn format_pg_timestamp_from_micros(micros: i64) -> String {
     let second = (micros_of_day % 60_000_000) / 1_000_000;
     let fractional = micros_of_day % 1_000_000;
     if fractional == 0 {
-        format!(
-            "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}"
-        )
+        format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
     } else {
-        format!(
-            "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}.{fractional:06}"
-        )
+        format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}.{fractional:06}")
     }
 }
 
@@ -4903,12 +4896,10 @@ mod tests {
         });
 
         // Should have an error for the invalid INSERT
-        assert!(out.iter().any(|msg| {
-            matches!(
-                msg,
-                BackendMessage::ErrorResponse { .. }
-            )
-        }));
+        assert!(
+            out.iter()
+                .any(|msg| { matches!(msg, BackendMessage::ErrorResponse { .. }) })
+        );
 
         // Should have a successful SELECT result after the error
         assert!(out.iter().any(|msg| {

@@ -127,7 +127,9 @@ pub fn decode_message(bytes: &[u8]) -> Result<PgOutputMessage, ReplicationError>
         b'T' => Ok(PgOutputMessage::Truncate(decode_truncate(&mut cursor)?)),
         b'O' => Ok(PgOutputMessage::Origin(decode_origin(&mut cursor)?)),
         b'Y' => Ok(PgOutputMessage::Type(decode_type(&mut cursor)?)),
-        b'M' => Ok(PgOutputMessage::Message(decode_logical_message(&mut cursor)?)),
+        b'M' => Ok(PgOutputMessage::Message(decode_logical_message(
+            &mut cursor,
+        )?)),
         _ => Err(ReplicationError {
             message: format!("unknown pgoutput tag {}", tag as char),
         }),
@@ -154,7 +156,7 @@ pub fn decode_stream(bytes: &[u8]) -> Result<Vec<PgOutputMessage>, ReplicationEr
             _ => {
                 return Err(ReplicationError {
                     message: format!("unknown pgoutput tag {}", tag as char),
-                })
+                });
             }
         };
         if cursor.offset() == start + 1 {
@@ -258,7 +260,7 @@ fn decode_delete(cursor: &mut Cursor<'_>) -> Result<DeleteMessage, ReplicationEr
         _ => {
             return Err(ReplicationError {
                 message: "DELETE message missing old tuple".to_string(),
-            })
+            });
         }
     };
     let tuple = decode_tuple(cursor)?;
@@ -334,7 +336,7 @@ fn decode_tuple(cursor: &mut Cursor<'_>) -> Result<TupleData, ReplicationError> 
             _ => {
                 return Err(ReplicationError {
                     message: "tuple data has unknown column kind".to_string(),
-                })
+                });
             }
         };
         columns.push(column);
@@ -361,9 +363,12 @@ impl<'a> Cursor<'a> {
     }
 
     fn peek_u8(&self) -> Result<u8, ReplicationError> {
-        self.bytes.get(self.offset).copied().ok_or_else(|| ReplicationError {
-            message: "unexpected end of pgoutput message".to_string(),
-        })
+        self.bytes
+            .get(self.offset)
+            .copied()
+            .ok_or_else(|| ReplicationError {
+                message: "unexpected end of pgoutput message".to_string(),
+            })
     }
 
     fn read_u8(&mut self) -> Result<u8, ReplicationError> {
@@ -402,10 +407,11 @@ impl<'a> Cursor<'a> {
         let mut idx = start;
         while idx < self.bytes.len() {
             if self.bytes[idx] == 0 {
-                let out = String::from_utf8(self.bytes[start..idx].to_vec())
-                    .map_err(|err| ReplicationError {
+                let out = String::from_utf8(self.bytes[start..idx].to_vec()).map_err(|err| {
+                    ReplicationError {
                         message: err.to_string(),
-                    })?;
+                    }
+                })?;
                 self.offset = idx + 1;
                 return Ok(out);
             }
@@ -544,8 +550,14 @@ mod tests {
         truncate.extend_from_slice(&7u32.to_be_bytes());
         truncate.extend_from_slice(&9u32.to_be_bytes());
 
-        assert!(matches!(decode_message(&update).unwrap(), PgOutputMessage::Update(_)));
-        assert!(matches!(decode_message(&delete).unwrap(), PgOutputMessage::Delete(_)));
+        assert!(matches!(
+            decode_message(&update).unwrap(),
+            PgOutputMessage::Update(_)
+        ));
+        assert!(matches!(
+            decode_message(&delete).unwrap(),
+            PgOutputMessage::Delete(_)
+        ));
         match decode_message(&truncate).unwrap() {
             PgOutputMessage::Truncate(msg) => {
                 assert_eq!(msg.relation_ids, vec![7, 9]);
@@ -574,8 +586,17 @@ mod tests {
         logical.extend_from_slice(&3i32.to_be_bytes());
         logical.extend_from_slice(b"abc");
 
-        assert!(matches!(decode_message(&origin).unwrap(), PgOutputMessage::Origin(_)));
-        assert!(matches!(decode_message(&type_msg).unwrap(), PgOutputMessage::Type(_)));
-        assert!(matches!(decode_message(&logical).unwrap(), PgOutputMessage::Message(_)));
+        assert!(matches!(
+            decode_message(&origin).unwrap(),
+            PgOutputMessage::Origin(_)
+        ));
+        assert!(matches!(
+            decode_message(&type_msg).unwrap(),
+            PgOutputMessage::Type(_)
+        ));
+        assert!(matches!(
+            decode_message(&logical).unwrap(),
+            PgOutputMessage::Message(_)
+        ));
     }
 }

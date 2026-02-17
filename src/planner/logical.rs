@@ -278,10 +278,12 @@ fn build_table_expression(table: &TableExpression, ctx: &mut BuildContext) -> Lo
     match table {
         TableExpression::Relation(rel) => ctx
             .cte_name_for_table(rel)
-            .map(|name| LogicalPlan::CteScan(LogicalCteScan {
-                name,
-                alias: rel.alias.clone(),
-            }))
+            .map(|name| {
+                LogicalPlan::CteScan(LogicalCteScan {
+                    name,
+                    alias: rel.alias.clone(),
+                })
+            })
             .unwrap_or_else(|| LogicalPlan::Scan(LogicalScan { table: rel.clone() })),
         TableExpression::Function(function) => LogicalPlan::FunctionScan(LogicalFunctionScan {
             function: function.clone(),
@@ -400,7 +402,9 @@ fn collect_window_exprs(expr: &Expr, out: &mut Vec<Expr>) {
             collect_window_exprs(expr, out);
             collect_window_exprs_from_query(subquery, out);
         }
-        Expr::Between { expr, low, high, .. } => {
+        Expr::Between {
+            expr, low, high, ..
+        } => {
             collect_window_exprs(expr, out);
             collect_window_exprs(low, out);
             collect_window_exprs(high, out);

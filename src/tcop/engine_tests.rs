@@ -71,9 +71,7 @@ fn read_http_request(stream: &mut std::net::TcpStream) -> HttpRequest {
         }
         buffer.extend_from_slice(&tmp[..n]);
         if header_end.is_none() {
-            header_end = buffer
-                .windows(4)
-                .position(|window| window == b"\r\n\r\n");
+            header_end = buffer.windows(4).position(|window| window == b"\r\n\r\n");
         }
         if header_end.is_some() {
             break;
@@ -92,10 +90,7 @@ fn read_http_request(stream: &mut std::net::TcpStream) -> HttpRequest {
     let mut headers = HashMap::new();
     for line in lines {
         if let Some((key, value)) = line.split_once(':') {
-            headers.insert(
-                key.trim().to_ascii_lowercase(),
-                value.trim().to_string(),
-            );
+            headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
         }
     }
     let content_length = headers
@@ -1222,8 +1217,14 @@ fn evaluates_http_get_builtin_function() {
         let result = run_statement(&sql, &[]);
         let response = parse_http_response(&result.rows[0][0]);
         assert_eq!(response["status"], JsonValue::Number(JsonNumber::from(200)));
-        assert_eq!(response["content"], JsonValue::String("hello-from-http-get".to_string()));
-        assert_eq!(response["content_type"], JsonValue::String("text/plain".to_string()));
+        assert_eq!(
+            response["content"],
+            JsonValue::String("hello-from-http-get".to_string())
+        );
+        assert_eq!(
+            response["content_type"],
+            JsonValue::String("text/plain".to_string())
+        );
         let headers = response["headers"]
             .as_array()
             .expect("headers should be array");
@@ -1321,7 +1322,10 @@ fn executes_http_extension_functions() {
                 &[],
             ),
             run_statement(
-                &format!("SELECT http_patch('{}/patch', 'patch-body', 'text/plain')", base_url),
+                &format!(
+                    "SELECT http_patch('{}/patch', 'patch-body', 'text/plain')",
+                    base_url
+                ),
                 &[],
             ),
             run_statement(&format!("SELECT http_delete('{}/delete')", base_url), &[]),
@@ -1341,11 +1345,15 @@ fn executes_http_extension_functions() {
         for (response, expected_content) in responses.iter().zip(expected_contents) {
             let body = parse_http_response(&response.rows[0][0]);
             assert_eq!(body["status"], JsonValue::Number(JsonNumber::from(200)));
-            assert_eq!(body["content_type"], JsonValue::String("text/plain".to_string()));
-            assert_eq!(body["content"], JsonValue::String(expected_content.to_string()));
-            let headers = body["headers"]
-                .as_array()
-                .expect("headers should be array");
+            assert_eq!(
+                body["content_type"],
+                JsonValue::String("text/plain".to_string())
+            );
+            assert_eq!(
+                body["content"],
+                JsonValue::String(expected_content.to_string())
+            );
+            let headers = body["headers"].as_array().expect("headers should be array");
             assert!(headers.iter().any(|header| {
                 header
                     .get("field")
@@ -3944,9 +3952,18 @@ fn supports_mixed_wildcard_and_expression_targets() {
 #[test]
 fn math_functions_ceil_floor_round() {
     let r = run("SELECT ceil(4.3), floor(4.7), round(4.567, 2)");
-    assert_eq!(r.rows[0][0], ScalarValue::Numeric(rust_decimal::Decimal::new(5, 0)));
-    assert_eq!(r.rows[0][1], ScalarValue::Numeric(rust_decimal::Decimal::new(4, 0)));
-    assert_eq!(r.rows[0][2], ScalarValue::Numeric(rust_decimal::Decimal::new(457, 2)));
+    assert_eq!(
+        r.rows[0][0],
+        ScalarValue::Numeric(rust_decimal::Decimal::new(5, 0))
+    );
+    assert_eq!(
+        r.rows[0][1],
+        ScalarValue::Numeric(rust_decimal::Decimal::new(4, 0))
+    );
+    assert_eq!(
+        r.rows[0][2],
+        ScalarValue::Numeric(rust_decimal::Decimal::new(457, 2))
+    );
 }
 
 #[test]
@@ -4371,6 +4388,50 @@ fn do_block_parses_and_executes() {
     assert_eq!(r.command_tag, "DO");
 }
 
+#[test]
+fn do_block_perform_executes() {
+    let r = run("DO 'BEGIN PERFORM 1; END'");
+    assert_eq!(r.command_tag, "DO");
+}
+
+#[test]
+fn do_block_select_into_assigns_variables() {
+    let r = run(
+        "DO 'DECLARE a integer; b integer; BEGIN SELECT 10, 20 INTO a, b; IF NOT found OR a <> 10 OR b <> 20 THEN RAISE; END IF; END'",
+    );
+    assert_eq!(r.command_tag, "DO");
+}
+
+#[test]
+fn do_block_for_integer_range_loop_executes() {
+    let r = run(
+        "DO 'DECLARE total integer := 0; BEGIN FOR i IN 1..10 LOOP total := total + i; END LOOP; IF total <> 55 OR NOT found THEN RAISE; END IF; END'",
+    );
+    assert_eq!(r.command_tag, "DO");
+}
+
+#[test]
+fn do_block_for_query_loop_executes() {
+    let r = run(
+        "DO 'DECLARE rec integer; total integer := 0; BEGIN FOR rec IN SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 LOOP total := total + rec; END LOOP; IF total <> 6 OR NOT found THEN RAISE; END IF; END'",
+    );
+    assert_eq!(r.command_tag, "DO");
+}
+
+#[test]
+fn do_block_execute_dynamic_sql_executes() {
+    let r = run("DO 'BEGIN EXECUTE ''SELECT 1''; IF NOT found THEN RAISE; END IF; END'");
+    assert_eq!(r.command_tag, "DO");
+}
+
+#[test]
+fn do_block_execute_dynamic_sql_into_assigns_variable() {
+    let r = run(
+        "DO 'DECLARE v integer; BEGIN EXECUTE ''SELECT 42'' INTO v; IF NOT found OR v <> 42 THEN RAISE; END IF; END'",
+    );
+    assert_eq!(r.command_tag, "DO");
+}
+
 // 1.11 System catalogs
 #[test]
 fn pg_settings_returns_guc_variables() {
@@ -4522,6 +4583,19 @@ fn create_extension_unknown_errors() {
         let result = block_on(execute_planned_query(&planned, &[]));
         assert!(result.is_err());
     });
+}
+
+#[test]
+fn create_extension_openferric_is_available() {
+    let results = run_batch(&[
+        "CREATE EXTENSION openferric",
+        "SELECT extname FROM pg_extension WHERE extname = 'openferric'",
+    ]);
+    assert_eq!(results[0].command_tag, "CREATE EXTENSION");
+    assert_eq!(
+        results[1].rows,
+        vec![vec![ScalarValue::Text("openferric".to_string())]]
+    );
 }
 
 // === CREATE FUNCTION tests ===
@@ -4712,6 +4786,95 @@ fn evaluates_sha256_function() {
 }
 
 #[test]
+fn evaluates_openferric_european_call_function() {
+    let result = run("SELECT openferric.european_call(100, 105, 0.25, 0.20, 0.05)");
+    match &result.rows[0][0] {
+        ScalarValue::Float(v) => assert!(v.is_finite() && *v > 0.0),
+        other => panic!("expected Float, got {:?}", other),
+    }
+}
+
+#[test]
+fn evaluates_openferric_european_put_function() {
+    let result = run("SELECT openferric.european_put(100, 105, 0.25, 0.20, 0.05)");
+    match &result.rows[0][0] {
+        ScalarValue::Float(v) => assert!(v.is_finite() && *v > 0.0),
+        other => panic!("expected Float, got {:?}", other),
+    }
+}
+
+#[test]
+fn evaluates_openferric_european_greeks_function() {
+    let result = run("SELECT openferric.european_greeks(100, 105, 0.25, 0.20, 0.05, 'call')");
+    let ScalarValue::Text(payload) = &result.rows[0][0] else {
+        panic!("expected Text JSON payload");
+    };
+    let value = serde_json::from_str::<JsonValue>(payload).expect("greeks payload should be JSON");
+    let JsonValue::Object(map) = value else {
+        panic!("greeks payload should be JSON object");
+    };
+    for key in ["delta", "gamma", "vega", "theta", "rho"] {
+        let number = map
+            .get(key)
+            .and_then(JsonValue::as_f64)
+            .unwrap_or_else(|| panic!("missing numeric {key}"));
+        assert!(number.is_finite());
+    }
+}
+
+#[test]
+fn evaluates_openferric_american_call_function() {
+    let result = run("SELECT openferric.american_call(100, 105, 0.25, 0.20, 0.05)");
+    match &result.rows[0][0] {
+        ScalarValue::Float(v) => assert!(v.is_finite() && *v > 0.0),
+        other => panic!("expected Float, got {:?}", other),
+    }
+}
+
+#[test]
+fn evaluates_openferric_american_put_function() {
+    let result = run("SELECT openferric.american_put(100, 105, 0.25, 0.20, 0.05, 250)");
+    match &result.rows[0][0] {
+        ScalarValue::Float(v) => assert!(v.is_finite() && *v > 0.0),
+        other => panic!("expected Float, got {:?}", other),
+    }
+}
+
+#[test]
+fn evaluates_openferric_barrier_function() {
+    let result =
+        run("SELECT openferric.barrier(100, 105, 0.25, 0.20, 0.05, 90, 'call', 'out', 'down')");
+    match &result.rows[0][0] {
+        ScalarValue::Float(v) => assert!(v.is_finite() && *v >= 0.0),
+        other => panic!("expected Float, got {:?}", other),
+    }
+}
+
+#[test]
+fn evaluates_openferric_heston_function() {
+    let result =
+        run("SELECT openferric.heston(100, 105, 0.25, 0.05, 0.04, 1.5, 0.04, 0.3, 0.5, 'call')");
+    match &result.rows[0][0] {
+        ScalarValue::Float(v) => assert!(v.is_finite() && *v > 0.0),
+        other => panic!("expected Float, got {:?}", other),
+    }
+}
+
+#[test]
+fn rejects_unqualified_openferric_function_names() {
+    with_isolated_state(|| {
+        let stmt = parse_statement("SELECT european_call(100, 105, 0.25, 0.20, 0.05)").unwrap();
+        let planned = plan_statement(stmt).unwrap();
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("unqualified openferric function should fail");
+        assert!(
+            err.message
+                .contains("unsupported function call european_call")
+        );
+    });
+}
+
+#[test]
 fn evaluates_pg_typeof_function() {
     let result = run(
         "SELECT pg_typeof(42), pg_typeof(3.14), pg_typeof('hello'), pg_typeof(true), pg_typeof(NULL)",
@@ -4792,9 +4955,7 @@ fn creates_temp_table_if_not_exists() {
 
 #[test]
 fn creates_type_as_enum() {
-    let results = run_batch(&[
-        "CREATE TYPE mood AS ENUM ('happy', 'sad', 'neutral')",
-    ]);
+    let results = run_batch(&["CREATE TYPE mood AS ENUM ('happy', 'sad', 'neutral')"]);
     assert_eq!(results[0].command_tag, "CREATE TYPE");
 }
 
@@ -4810,43 +4971,32 @@ fn creates_and_drops_type() {
 
 #[test]
 fn creates_domain() {
-    let results = run_batch(&[
-        "CREATE DOMAIN posint AS INT",
-    ]);
+    let results = run_batch(&["CREATE DOMAIN posint AS INT"]);
     assert_eq!(results[0].command_tag, "CREATE DOMAIN");
 }
 
 #[test]
 fn creates_domain_with_check() {
-    let results = run_batch(&[
-        "CREATE DOMAIN posint AS INT CHECK (VALUE > 0)",
-    ]);
+    let results = run_batch(&["CREATE DOMAIN posint AS INT CHECK (VALUE > 0)"]);
     assert_eq!(results[0].command_tag, "CREATE DOMAIN");
 }
 
 #[test]
 fn creates_and_drops_domain() {
-    let results = run_batch(&[
-        "CREATE DOMAIN posint AS INT",
-        "DROP DOMAIN posint",
-    ]);
+    let results = run_batch(&["CREATE DOMAIN posint AS INT", "DROP DOMAIN posint"]);
     assert_eq!(results[0].command_tag, "CREATE DOMAIN");
     assert_eq!(results[1].command_tag, "DROP DOMAIN");
 }
 
 #[test]
 fn drops_type_if_exists() {
-    let results = run_batch(&[
-        "DROP TYPE IF EXISTS nonexistent_type",
-    ]);
+    let results = run_batch(&["DROP TYPE IF EXISTS nonexistent_type"]);
     assert_eq!(results[0].command_tag, "DROP TYPE");
 }
 
 #[test]
 fn drops_domain_if_exists() {
-    let results = run_batch(&[
-        "DROP DOMAIN IF EXISTS nonexistent_domain",
-    ]);
+    let results = run_batch(&["DROP DOMAIN IF EXISTS nonexistent_domain"]);
     assert_eq!(results[0].command_tag, "DROP DOMAIN");
 }
 
@@ -4861,7 +5011,10 @@ fn selects_qualified_wildcard() {
     assert_eq!(results[3].rows.len(), 2);
     assert_eq!(results[3].rows[0].len(), 2);
     assert_eq!(results[3].rows[0][0], ScalarValue::Int(1));
-    assert_eq!(results[3].rows[0][1], ScalarValue::Text("Alice".to_string()));
+    assert_eq!(
+        results[3].rows[0][1],
+        ScalarValue::Text("Alice".to_string())
+    );
 }
 
 #[test]
@@ -4887,7 +5040,10 @@ fn casts_to_json_and_jsonb() {
     assert_eq!(result.rows.len(), 1);
     assert_eq!(result.rows[0][0], ScalarValue::Text("{}".to_string()));
     assert_eq!(result.rows[0][1], ScalarValue::Text("[]".to_string()));
-    assert_eq!(result.rows[0][2], ScalarValue::Text("{\"a\":1}".to_string()));
+    assert_eq!(
+        result.rows[0][2],
+        ScalarValue::Text("{\"a\":1}".to_string())
+    );
 }
 
 #[test]
@@ -4912,10 +5068,13 @@ fn create_table_as_select_simple() {
     ]);
     assert_eq!(results[0].command_tag, "CREATE TABLE");
     assert_eq!(results[1].rows_affected, 2);
-    assert!(results[2].command_tag.starts_with("SELECT"));  // "SELECT 2"
+    assert!(results[2].command_tag.starts_with("SELECT")); // "SELECT 2"
     assert_eq!(results[3].rows.len(), 2);
     assert_eq!(results[3].rows[0][0], ScalarValue::Int(1));
-    assert_eq!(results[3].rows[0][1], ScalarValue::Text("Alice".to_string()));
+    assert_eq!(
+        results[3].rows[0][1],
+        ScalarValue::Text("Alice".to_string())
+    );
     assert_eq!(results[3].rows[1][0], ScalarValue::Int(2));
     assert_eq!(results[3].rows[1][1], ScalarValue::Text("Bob".to_string()));
 }
@@ -4943,7 +5102,10 @@ fn create_temp_table_as_select() {
     assert!(results[0].command_tag.starts_with("SELECT"));
     assert_eq!(results[1].rows.len(), 1);
     assert_eq!(results[1].rows[0][0], ScalarValue::Int(1));
-    assert_eq!(results[1].rows[0][1], ScalarValue::Text("hello".to_string()));
+    assert_eq!(
+        results[1].rows[0][1],
+        ScalarValue::Text("hello".to_string())
+    );
 }
 
 #[test]
@@ -5004,7 +5166,7 @@ fn drop_table_if_exists() {
         "DROP TABLE IF EXISTS nonexistent",
         "CREATE TABLE t1 (id int)",
         "DROP TABLE IF EXISTS t1",
-        "DROP TABLE IF EXISTS t1",  // Should succeed silently
+        "DROP TABLE IF EXISTS t1", // Should succeed silently
     ]);
     assert_eq!(results[0].command_tag, "DROP TABLE");
     assert_eq!(results[1].command_tag, "CREATE TABLE");
@@ -5019,7 +5181,7 @@ fn drop_view_if_exists() {
         "CREATE TABLE t (x int)",
         "CREATE VIEW v AS SELECT * FROM t",
         "DROP VIEW IF EXISTS v",
-        "DROP VIEW IF EXISTS v",  // Should succeed silently
+        "DROP VIEW IF EXISTS v", // Should succeed silently
     ]);
     assert_eq!(results[0].command_tag, "DROP VIEW");
     assert_eq!(results[2].command_tag, "CREATE VIEW");
@@ -5034,7 +5196,7 @@ fn drop_index_if_exists() {
         "CREATE TABLE t (id int)",
         "CREATE INDEX idx ON t(id)",
         "DROP INDEX IF EXISTS idx",
-        "DROP INDEX IF EXISTS idx",  // Should succeed silently
+        "DROP INDEX IF EXISTS idx", // Should succeed silently
     ]);
     assert_eq!(results[0].command_tag, "DROP INDEX");
     assert_eq!(results[2].command_tag, "CREATE INDEX");
@@ -5048,7 +5210,7 @@ fn drop_sequence_if_exists() {
         "DROP SEQUENCE IF EXISTS nonexistent",
         "CREATE SEQUENCE seq",
         "DROP SEQUENCE IF EXISTS seq",
-        "DROP SEQUENCE IF EXISTS seq",  // Should succeed silently
+        "DROP SEQUENCE IF EXISTS seq", // Should succeed silently
     ]);
     assert_eq!(results[0].command_tag, "DROP SEQUENCE");
     assert_eq!(results[1].command_tag, "CREATE SEQUENCE");
@@ -5062,26 +5224,26 @@ fn evaluates_typed_literals_and_array_operations() {
     let result = run("SELECT DATE '2024-01-15' AS d");
     assert_eq!(result.columns, vec!["d"]);
     assert_eq!(result.rows.len(), 1);
-    
-    // Test TIME literal  
+
+    // Test TIME literal
     let result = run("SELECT TIME '12:30:45' AS t");
     assert_eq!(result.columns, vec!["t"]);
     assert_eq!(result.rows.len(), 1);
-    
+
     // Test TIMESTAMP literal
     let result = run("SELECT TIMESTAMP '2024-01-15 12:30:45' AS ts");
     assert_eq!(result.columns, vec!["ts"]);
     assert_eq!(result.rows.len(), 1);
-    
+
     // Test array subscript (1-indexed)
     let result = run("SELECT ARRAY[10, 20, 30][2] AS elem");
     assert_eq!(result.columns, vec!["elem"]);
     assert_eq!(result.rows, vec![vec![ScalarValue::Int(20)]]);
-    
+
     // Test array subscript - first element
     let result = run("SELECT ARRAY[10, 20, 30][1] AS elem");
     assert_eq!(result.rows, vec![vec![ScalarValue::Int(10)]]);
-    
+
     // Test array slice
     let result = run("SELECT ARRAY[1, 2, 3, 4, 5][2:4] AS slice");
     assert_eq!(result.columns, vec!["slice"]);
@@ -5095,7 +5257,7 @@ fn evaluates_typed_literals_and_array_operations() {
             ScalarValue::Int(4),
         ])
     );
-    
+
     // Test CREATE TABLE with date/time types still works
     run("CREATE TABLE test_types (d date, t time, ts timestamp)");
     let result = run("SELECT 1");
@@ -5106,7 +5268,10 @@ fn evaluates_typed_literals_and_array_operations() {
 fn test_string_concatenation() {
     let result = run("SELECT 'hello' || ' ' || 'world' AS greeting");
     assert_eq!(result.columns, vec!["greeting"]);
-    assert_eq!(result.rows, vec![vec![ScalarValue::Text("hello world".to_string())]]);
+    assert_eq!(
+        result.rows,
+        vec![vec![ScalarValue::Text("hello world".to_string())]]
+    );
 }
 
 #[test]
@@ -5141,7 +5306,7 @@ fn test_jsonb_has_key() {
     let result = run("SELECT '{\"a\":1}'::jsonb ? 'a' AS has_key");
     assert_eq!(result.columns, vec!["has_key"]);
     assert_eq!(result.rows, vec![vec![ScalarValue::Bool(true)]]);
-    
+
     let result = run("SELECT '{\"a\":1}'::jsonb ? 'b' AS has_key");
     assert_eq!(result.rows, vec![vec![ScalarValue::Bool(false)]]);
 }
@@ -5151,7 +5316,7 @@ fn test_jsonb_contains() {
     let result = run("SELECT '{\"a\":1,\"b\":2}'::jsonb @> '{\"a\":1}'::jsonb AS contains");
     assert_eq!(result.columns, vec!["contains"]);
     assert_eq!(result.rows, vec![vec![ScalarValue::Bool(true)]]);
-    
+
     let result = run("SELECT '{\"a\":1}'::jsonb @> '{\"a\":1,\"b\":2}'::jsonb AS contains");
     assert_eq!(result.rows, vec![vec![ScalarValue::Bool(false)]]);
 }
@@ -5161,7 +5326,10 @@ fn test_standalone_values_single_row() {
     let result = run("VALUES (1, 'a')");
     assert_eq!(result.columns, vec!["column1", "column2"]);
     assert_eq!(result.rows.len(), 1);
-    assert_eq!(result.rows[0], vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())]);
+    assert_eq!(
+        result.rows[0],
+        vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())]
+    );
 }
 
 #[test]
@@ -5169,9 +5337,18 @@ fn test_standalone_values_multi_row() {
     let result = run("VALUES (1, 'a'), (2, 'b'), (3, 'c')");
     assert_eq!(result.columns, vec!["column1", "column2"]);
     assert_eq!(result.rows.len(), 3);
-    assert_eq!(result.rows[0], vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())]);
-    assert_eq!(result.rows[1], vec![ScalarValue::Int(2), ScalarValue::Text("b".to_string())]);
-    assert_eq!(result.rows[2], vec![ScalarValue::Int(3), ScalarValue::Text("c".to_string())]);
+    assert_eq!(
+        result.rows[0],
+        vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())]
+    );
+    assert_eq!(
+        result.rows[1],
+        vec![ScalarValue::Int(2), ScalarValue::Text("b".to_string())]
+    );
+    assert_eq!(
+        result.rows[2],
+        vec![ScalarValue::Int(3), ScalarValue::Text("c".to_string())]
+    );
 }
 
 #[test]
@@ -5198,13 +5375,16 @@ fn test_values_with_limit() {
 fn test_insert_returning() {
     with_isolated_state(|| {
         run_statement("CREATE TABLE test_returning (id int, name text)", &[]);
-        let result = run_statement("INSERT INTO test_returning (id, name) VALUES (1, 'Alice') RETURNING *", &[]);
-        
+        let result = run_statement(
+            "INSERT INTO test_returning (id, name) VALUES (1, 'Alice') RETURNING *",
+            &[],
+        );
+
         // RETURNING should give us the inserted row
         assert_eq!(result.rows.len(), 1);
         assert_eq!(result.rows[0][0], ScalarValue::Int(1));
         assert_eq!(result.rows[0][1], ScalarValue::Text("Alice".to_string()));
-        
+
         // And the row should be in the table
         let result = run_statement("SELECT * FROM test_returning", &[]);
         assert_eq!(result.rows.len(), 1);
@@ -5218,9 +5398,12 @@ fn test_lateral_subquery() {
         run_statement("CREATE TABLE t2 (t1_id int, name text)", &[]);
         run_statement("INSERT INTO t1 VALUES (1, 10), (2, 20)", &[]);
         run_statement("INSERT INTO t2 VALUES (1, 'a'), (1, 'b'), (2, 'c')", &[]);
-        
+
         // LATERAL allows the subquery to reference t1
-        let result = run_statement("SELECT t1.id, sub.name FROM t1, LATERAL (SELECT name FROM t2 WHERE t2.t1_id = t1.id) sub", &[]);
+        let result = run_statement(
+            "SELECT t1.id, sub.name FROM t1, LATERAL (SELECT name FROM t2 WHERE t2.t1_id = t1.id) sub",
+            &[],
+        );
         assert_eq!(result.rows.len(), 3);
     });
 }
@@ -5284,7 +5467,10 @@ fn test_format_with_literal_quoting() {
     let result = run("SELECT format('INSERT INTO t VALUES (%L)', 'value''s')");
     assert_eq!(result.rows.len(), 1);
     // The input 'value''s' is parsed as the string "value's", then re-quoted with doubled quotes
-    assert_eq!(result.rows[0][0].render(), "INSERT INTO t VALUES ('value''s')");
+    assert_eq!(
+        result.rows[0][0].render(),
+        "INSERT INTO t VALUES ('value''s')"
+    );
 }
 
 #[test]
@@ -5393,7 +5579,8 @@ fn test_int2_cast_overflow_positive() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT CAST(32768 AS int2)").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[])).expect_err("int2 overflow should fail");
+        let err =
+            block_on(execute_planned_query(&planned, &[])).expect_err("int2 overflow should fail");
         assert!(err.message.contains("smallint out of range"));
     });
 }
@@ -5403,7 +5590,8 @@ fn test_int2_cast_overflow_negative() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT CAST(-32769 AS int2)").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[])).expect_err("int2 overflow should fail");
+        let err =
+            block_on(execute_planned_query(&planned, &[])).expect_err("int2 overflow should fail");
         assert!(err.message.contains("smallint out of range"));
     });
 }
@@ -5427,7 +5615,8 @@ fn test_int4_cast_overflow() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT CAST(2147483648 AS int4)").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[])).expect_err("int4 overflow should fail");
+        let err =
+            block_on(execute_planned_query(&planned, &[])).expect_err("int4 overflow should fail");
         assert!(err.message.contains("integer out of range"));
     });
 }
@@ -5437,7 +5626,8 @@ fn test_int4_addition_overflow() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT 2147483647 + 1").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[])).expect_err("int4 addition overflow should fail");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("int4 addition overflow should fail");
         assert!(err.message.contains("integer out of range"));
     });
 }
@@ -5447,7 +5637,8 @@ fn test_int4_subtraction_overflow() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT -2147483648 - 1").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[])).expect_err("int4 subtraction overflow should fail");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("int4 subtraction overflow should fail");
         assert!(err.message.contains("integer out of range"));
     });
 }
@@ -5457,7 +5648,8 @@ fn test_int4_multiplication_overflow() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT 50000 * 50000").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[])).expect_err("int4 multiplication overflow should fail");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("int4 multiplication overflow should fail");
         assert!(err.message.contains("integer out of range"));
     });
 }
@@ -5467,7 +5659,8 @@ fn test_int4_division_by_zero() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT 100 / 0").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[])).expect_err("division by zero should fail");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("division by zero should fail");
         assert!(err.message.contains("division by zero"));
     });
 }
@@ -5477,7 +5670,8 @@ fn test_int4_modulo_by_zero() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT 100 % 0").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[])).expect_err("modulo by zero should fail");
+        let err =
+            block_on(execute_planned_query(&planned, &[])).expect_err("modulo by zero should fail");
         assert!(err.message.contains("division by zero"));
     });
 }
@@ -5488,7 +5682,8 @@ fn test_int4_division_overflow() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT -2147483648 / -1").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[])).expect_err("int4 division overflow should fail");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("int4 division overflow should fail");
         assert!(err.message.contains("integer out of range"));
     });
 }
@@ -5516,7 +5711,8 @@ fn test_typed_literal_int2_overflow() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT '40000'::int2").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[])).expect_err("int2 overflow should fail");
+        let err =
+            block_on(execute_planned_query(&planned, &[])).expect_err("int2 overflow should fail");
         assert!(err.message.contains("smallint out of range"));
     });
 }
@@ -5556,9 +5752,9 @@ fn test_named_window_definition() {
         run_statement("INSERT INTO t VALUES (1), (2), (3)", &[]);
         let result = run("SELECT x, sum(x) OVER w FROM t WINDOW w AS (ORDER BY x)");
         assert_eq!(result.rows.len(), 3);
-        assert_eq!(result.rows[0][1], ScalarValue::Int(1)); 
-        assert_eq!(result.rows[1][1], ScalarValue::Int(3)); 
-        assert_eq!(result.rows[2][1], ScalarValue::Int(6)); 
+        assert_eq!(result.rows[0][1], ScalarValue::Int(1));
+        assert_eq!(result.rows[1][1], ScalarValue::Int(3));
+        assert_eq!(result.rows[2][1], ScalarValue::Int(6));
     });
 }
 
@@ -5567,7 +5763,9 @@ fn test_groups_frame_mode() {
     with_isolated_state(|| {
         run_statement("CREATE TEMP TABLE t (x int)", &[]);
         run_statement("INSERT INTO t VALUES (1), (2), (2), (3)", &[]);
-        let result = run("SELECT x, sum(x) OVER (ORDER BY x GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t");
+        let result = run(
+            "SELECT x, sum(x) OVER (ORDER BY x GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t",
+        );
         assert_eq!(result.rows.len(), 4);
     });
 }
@@ -5577,7 +5775,9 @@ fn test_exclude_current_row() {
     with_isolated_state(|| {
         run_statement("CREATE TEMP TABLE t (x int)", &[]);
         run_statement("INSERT INTO t VALUES (1), (2), (3)", &[]);
-        let result = run("SELECT x, sum(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW) FROM t");
+        let result = run(
+            "SELECT x, sum(x) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW) FROM t",
+        );
         assert_eq!(result.rows.len(), 3);
         assert_eq!(result.rows[0][1], ScalarValue::Int(5)); // 2+3
         assert_eq!(result.rows[1][1], ScalarValue::Int(4)); // 1+3
@@ -5589,20 +5789,20 @@ fn test_exclude_current_row() {
 fn test_like_escape() {
     let result = run("SELECT 'abc%def' LIKE 'abc!%def' ESCAPE '!'");
     assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
-    
+
     let result = run("SELECT 'abc_def' LIKE 'abc!_def' ESCAPE '!'");
     assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
-    
+
     let result = run("SELECT 'abc%def' LIKE 'abc%def' ESCAPE '!'");
     assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
-    
+
     let result = run("SELECT 'abcXdef' LIKE 'abc!%def' ESCAPE '!'");
     assert_eq!(result.rows[0][0], ScalarValue::Bool(false));
-    
+
     // Test with backslash escape
     let result = run("SELECT 'abc\\def' LIKE 'abc\\\\def' ESCAPE '\\'");
     assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
-    
+
     // Test with custom escape character
     let result = run("SELECT 'test#%data' LIKE 'test##%data' ESCAPE '#'");
     assert_eq!(result.rows[0][0], ScalarValue::Bool(true));
@@ -5619,19 +5819,19 @@ fn test_chr_unicode() {
     // Test ASCII
     let result = run("SELECT chr(65)");
     assert_eq!(result.rows[0][0], ScalarValue::Text("A".to_string()));
-    
+
     // Test newline
     let result = run("SELECT chr(10)");
     assert_eq!(result.rows[0][0], ScalarValue::Text("\n".to_string()));
-    
+
     // Test Unicode beyond ASCII (Euro sign)
     let result = run("SELECT chr(8364)");
     assert_eq!(result.rows[0][0], ScalarValue::Text("€".to_string()));
-    
+
     // Test emoji (smiley face)
     let result = run("SELECT chr(128512)");
     assert_eq!(result.rows[0][0], ScalarValue::Text("😀".to_string()));
-    
+
     // Test null character
     let result = run("SELECT chr(0)");
     assert_eq!(result.rows[0][0], ScalarValue::Text("\0".to_string()));
@@ -5646,7 +5846,7 @@ fn test_chr_invalid() {
         let result = block_on(execute_planned_query(&planned, &[]));
         assert!(result.is_err());
         assert!(result.unwrap_err().message.contains("out of range"));
-        
+
         // Invalid Unicode code point (above valid range)
         let statement = parse_statement("SELECT chr(1114112)").unwrap(); // 0x110000, first invalid code point
         let planned = plan_statement(statement).unwrap();
@@ -5662,48 +5862,75 @@ fn test_chr_invalid() {
 fn test_date_parsing_formats() {
     // Test ISO format
     let result = run("SELECT date '1999-01-08'");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
-    
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("1999-01-08".to_string())
+    );
+
     // Test month name format
     let result = run("SELECT date 'January 8, 1999'");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
-    
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("1999-01-08".to_string())
+    );
+
     // Test compact format YYYYMMDD
     let result = run("SELECT date '19990108'");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
-    
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("1999-01-08".to_string())
+    );
+
     // Test compact format YYMMDD
     let result = run("SELECT date '990108'");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
-    
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("1999-01-08".to_string())
+    );
+
     // Test year.day format
     let result = run("SELECT date '1999.008'");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
-    
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("1999-01-08".to_string())
+    );
+
     // Test Julian date
     let result = run("SELECT date 'J2451187'");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("1999-01-08".to_string()));
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("1999-01-08".to_string())
+    );
 }
 
 #[test]
 fn test_date_bc_format() {
     let result = run("SELECT date '2040-04-10 BC'");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("-2039-04-10".to_string()));
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("-2039-04-10".to_string())
+    );
 }
 
 #[test]
 fn test_time_with_microseconds() {
     // Test time with full microsecond precision
     let result = run("SELECT '23:59:59.999999'::time");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("23:59:59.999999".to_string()));
-    
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("23:59:59.999999".to_string())
+    );
+
     // Test time with rounding to next second
     let result = run("SELECT '23:59:59.9999999'::time");
     assert_eq!(result.rows[0][0], ScalarValue::Text("24:00:00".to_string()));
-    
+
     // Test time with microseconds that get truncated to fewer digits
     let result = run("SELECT '12:30:45.12'::time");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("12:30:45.12".to_string()));
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("12:30:45.12".to_string())
+    );
 }
 
 #[test]
@@ -5711,7 +5938,7 @@ fn test_time_edge_cases() {
     // Test midnight as 24:00:00
     let result = run("SELECT '24:00:00'::time");
     assert_eq!(result.rows[0][0], ScalarValue::Text("24:00:00".to_string()));
-    
+
     // Test leap second rounding
     let result = run("SELECT '23:59:60'::time");
     assert_eq!(result.rows[0][0], ScalarValue::Text("24:00:00".to_string()));
@@ -5720,11 +5947,14 @@ fn test_time_edge_cases() {
 #[test]
 fn test_time_am_pm() {
     let result = run("SELECT '11:59:59.99 PM'::time");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("23:59:59.99".to_string()));
-    
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("23:59:59.99".to_string())
+    );
+
     let result = run("SELECT '12:00:00 AM'::time");
     assert_eq!(result.rows[0][0], ScalarValue::Text("00:00:00".to_string()));
-    
+
     let result = run("SELECT '12:00:00 PM'::time");
     assert_eq!(result.rows[0][0], ScalarValue::Text("12:00:00".to_string()));
 }
@@ -5751,9 +5981,15 @@ fn test_extract_second_fractional() {
 fn test_special_datetime_values() {
     // Test epoch
     let result = run("SELECT date 'epoch'");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("1970-01-01".to_string()));
-    
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("1970-01-01".to_string())
+    );
+
     // Test timestamp epoch
     let result = run("SELECT timestamp 'epoch'");
-    assert_eq!(result.rows[0][0], ScalarValue::Text("1970-01-01 00:00:00".to_string()));
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("1970-01-01 00:00:00".to_string())
+    );
 }

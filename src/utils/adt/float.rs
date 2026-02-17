@@ -13,9 +13,7 @@ pub fn float8in(input: &str) -> Result<f64, EngineError> {
 
     if trimmed.is_empty() {
         return Err(EngineError {
-            message: format!(
-                "invalid input syntax for type double precision: \"{input}\""
-            ),
+            message: format!("invalid input syntax for type double precision: \"{input}\""),
         });
     }
 
@@ -37,25 +35,19 @@ pub fn float8in(input: &str) -> Result<f64, EngineError> {
             // Check for overflow (infinity from parsing means input was out of range)
             if val.is_infinite() {
                 return Err(EngineError {
-                    message: format!(
-                        "\"{trimmed}\" is out of range for type double precision"
-                    ),
+                    message: format!("\"{trimmed}\" is out of range for type double precision"),
                 });
             }
             // Check for underflow (value parsed to 0 but input wasn't zero)
             if val == 0.0 && !is_zero_input(trimmed) {
                 return Err(EngineError {
-                    message: format!(
-                        "\"{trimmed}\" is out of range for type double precision"
-                    ),
+                    message: format!("\"{trimmed}\" is out of range for type double precision"),
                 });
             }
             Ok(val)
         }
         Err(_) => Err(EngineError {
-            message: format!(
-                "invalid input syntax for type double precision: \"{input}\""
-            ),
+            message: format!("invalid input syntax for type double precision: \"{input}\""),
         }),
     }
 }

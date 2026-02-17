@@ -100,6 +100,11 @@ const KNOWN_FUNCTIONS: &[(&str, usize, usize)] = &[
     ("greatest", 1, 255),
     ("least", 1, 255),
     ("div", 2, 2),
+    ("bs_price", 6, 6),
+    ("bs_greeks", 6, 6),
+    ("barrier_price", 9, 9),
+    ("american_price", 6, 7),
+    ("heston_price", 10, 10),
     // Type/cast functions
     ("coalesce", 1, 255),
     ("nullif", 2, 2),
