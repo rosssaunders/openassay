@@ -15,8 +15,9 @@ use crate::executor::exec_main::{
 };
 use crate::parser::ast::{
     ConflictTarget, CreateFunctionStatement, CreateSchemaStatement, DeleteStatement, Expr,
-    ForeignKeyAction, FunctionParam, FunctionReturnType, InsertSource, InsertStatement,
-    MergeStatement, MergeWhenClause, OnConflictClause, Statement, TableConstraint, UpdateStatement,
+    ForeignKeyAction, FunctionParam, FunctionParamMode, FunctionReturnType, InsertSource,
+    InsertStatement, MergeStatement, MergeWhenClause, OnConflictClause, Statement, TableConstraint,
+    TriggerEvent, TriggerTiming, UpdateStatement,
 };
 use crate::parser::lexer::{TokenKind, lex_sql};
 use crate::parser::sql_parser::parse_statement;
@@ -235,6 +236,9 @@ pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError>
         Statement::CreateFunction(_) => {
             (Vec::new(), Vec::new(), false, "CREATE FUNCTION".to_string())
         }
+        Statement::CreateTrigger(_) => {
+            (Vec::new(), Vec::new(), false, "CREATE TRIGGER".to_string())
+        }
         Statement::CreateSubscription(_) => (
             Vec::new(),
             Vec::new(),
@@ -359,6 +363,7 @@ fn bootstrap_register_user_function(create: &CreateFunctionStatement) -> Result<
             .collect(),
         params: create.params.clone(),
         return_type: create.return_type.clone(),
+        is_trigger: create.is_trigger,
         body: create.body.trim().to_string(),
         language: create.language.clone(),
     };
@@ -366,11 +371,11 @@ fn bootstrap_register_user_function(create: &CreateFunctionStatement) -> Result<
     with_ext_write(|ext| {
         if create.or_replace {
             ext.user_functions
-                .retain(|existing| existing.name != user_function.name);
+                .retain(|existing| !same_function_identity(existing, &user_function));
         } else if ext
             .user_functions
             .iter()
-            .any(|f| f.name == user_function.name)
+            .any(|f| same_function_identity(f, &user_function))
         {
             return Err(EngineError {
                 message: format!(
@@ -430,6 +435,96 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
     statements
 }
 
+fn triggers_for_table_event(
+    table: &crate::catalog::Table,
+    timing: TriggerTiming,
+    event: TriggerEvent,
+) -> Vec<UserTrigger> {
+    with_ext_read(|ext| {
+        ext.triggers
+            .iter()
+            .filter(|trigger| {
+                trigger.timing == timing
+                    && trigger.events.contains(&event)
+                    && trigger.table_name.len() == 2
+                    && trigger.table_name[0].eq_ignore_ascii_case(table.schema_name())
+                    && trigger.table_name[1].eq_ignore_ascii_case(table.name())
+            })
+            .cloned()
+            .collect()
+    })
+}
+
+fn execute_row_trigger(
+    trigger: &UserTrigger,
+    table: &crate::catalog::Table,
+    tg_op: &str,
+    old_row: Option<&[ScalarValue]>,
+    new_row: Option<&[ScalarValue]>,
+) -> Result<Option<ScalarValue>, EngineError> {
+    let Some(function) = lookup_user_function(&trigger.function_name, 0) else {
+        return Ok(None);
+    };
+    if !function.language.eq_ignore_ascii_case("plpgsql") {
+        return Ok(None);
+    }
+    let create_stmt = CreateFunctionStatement {
+        name: function.name.clone(),
+        params: function.params.clone(),
+        return_type: function.return_type.clone(),
+        is_trigger: true,
+        body: function.body.clone(),
+        language: function.language.clone(),
+        or_replace: true,
+    };
+    let compiled = match crate::plpgsql::compile_create_function_statement(&create_stmt) {
+        Ok(compiled) => compiled,
+        Err(_) => return Ok(None),
+    };
+
+    let field_names = table
+        .columns()
+        .iter()
+        .map(|column| column.name().to_string())
+        .collect::<Vec<_>>();
+    let context = crate::plpgsql::PLpgSQLTriggerContext {
+        tg_op: tg_op.to_string(),
+        tg_table_name: table.name().to_string(),
+        new_row: new_row.map(|row| (field_names.clone(), row.to_vec())),
+        old_row: old_row.map(|row| (field_names.clone(), row.to_vec())),
+    };
+
+    match crate::plpgsql::plpgsql_exec_function_with_trigger(&compiled, &[], Some(&context)) {
+        Ok(result) => Ok(result),
+        Err(_) => Ok(None),
+    }
+}
+
+fn apply_before_trigger_result(
+    table: &crate::catalog::Table,
+    result: Option<ScalarValue>,
+    current_row: Vec<ScalarValue>,
+) -> Result<Option<Vec<ScalarValue>>, EngineError> {
+    match result {
+        None => Ok(Some(current_row)),
+        Some(ScalarValue::Null) => Ok(None),
+        Some(ScalarValue::Record(values)) => {
+            if values.len() != table.columns().len() {
+                return Err(EngineError {
+                    message: format!(
+                        "trigger returned record with {} columns for relation \"{}\" (expected {})",
+                        values.len(),
+                        table.qualified_name(),
+                        table.columns().len()
+                    ),
+                });
+            }
+            Ok(Some(values))
+        }
+        Some(_) => Ok(Some(current_row)),
+    }
+}
+
 // ── Extension & User Function Registry ──────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -437,8 +532,69 @@ pub struct UserFunction {
     pub name: Vec<String>,
     pub params: Vec<FunctionParam>,
     pub return_type: Option<FunctionReturnType>,
+    pub is_trigger: bool,
     pub body: String,
     pub language: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct UserTrigger {
+    pub name: String,
+    pub table_name: Vec<String>,
+    pub timing: TriggerTiming,
+    pub events: Vec<TriggerEvent>,
+    pub function_name: Vec<String>,
+}
+
+pub(crate) fn function_input_arity(params: &[FunctionParam]) -> usize {
+    params
+        .iter()
+        .filter(|param| matches!(param.mode, FunctionParamMode::In | FunctionParamMode::InOut))
+        .count()
+}
+
+pub(crate) fn same_function_identity(left: &UserFunction, right: &UserFunction) -> bool {
+    left.name == right.name
+        && left
+            .params
+            .iter()
+            .filter(|param| matches!(param.mode, FunctionParamMode::In | FunctionParamMode::InOut))
+            .map(|param| &param.data_type)
+            .eq(right
+                .params
+                .iter()
+                .filter(|param| {
+                    matches!(param.mode, FunctionParamMode::In | FunctionParamMode::InOut)
+                })
+                .map(|param| &param.data_type))
+}
+
+pub(crate) fn lookup_user_function(name: &[String], arg_count: usize) -> Option<UserFunction> {
+    let lowered = name
+        .iter()
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    with_ext_read(|ext| {
+        let mut candidates = ext
+            .user_functions
+            .iter()
+            .filter(|func| {
+                if func.name == lowered {
+                    return true;
+                }
+                lowered.len() == 1
+                    && func.name.last() == lowered.last()
+                    && func.name.first().map(String::as_str) != Some("openferric")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|func| function_input_arity(&func.params));
+        candidates
+            .iter()
+            .find(|func| function_input_arity(&func.params) == arg_count)
+            .cloned()
+            .or_else(|| candidates.into_iter().next())
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -764,6 +920,7 @@ pub(crate) fn sync_wasm_ws_state(conn_id: i64) {
 pub(crate) struct ExtensionState {
     pub(crate) extensions: Vec<ExtensionRecord>,
     pub(crate) user_functions: Vec<UserFunction>,
+    pub(crate) triggers: Vec<UserTrigger>,
     pub(crate) ws_connections: HashMap<i64, WsConnection>,
     pub(crate) ws_next_id: i64,
 }
@@ -1114,6 +1271,10 @@ async fn execute_insert(
     require_relation_privilege(&table, TablePrivilege::Insert)?;
 
     let target_indexes = resolve_insert_target_indexes(&table, &insert.columns)?;
+    let before_insert_triggers =
+        triggers_for_table_event(&table, TriggerTiming::Before, TriggerEvent::Insert);
+    let after_insert_triggers =
+        triggers_for_table_event(&table, TriggerTiming::After, TriggerEvent::Insert);
     let source_rows = match &insert.source {
         InsertSource::Values(values_rows) => {
             let mut rows = Vec::with_capacity(values_rows.len());
@@ -1187,7 +1348,15 @@ async fn execute_insert(
     };
 
     let mut materialized = Vec::with_capacity(source_rows.len());
-    for row in &source_rows {
+    'source_rows: for row in &source_rows {
+        let mut row = row.clone();
+        for trigger in &before_insert_triggers {
+            let result = execute_row_trigger(trigger, &table, "INSERT", None, Some(&row))?;
+            let Some(next_row) = apply_before_trigger_result(&table, result, row)? else {
+                continue 'source_rows;
+            };
+            row = next_row;
+        }
         for (idx, column) in table.columns().iter().enumerate() {
             if matches!(row[idx], ScalarValue::Null) && !column.nullable() {
                 return Err(EngineError {
@@ -1199,7 +1368,7 @@ async fn execute_insert(
                 });
             }
         }
-        if !relation_row_passes_check_for_command(&table, row, RlsCommand::Insert, params).await? {
+        if !relation_row_passes_check_for_command(&table, &row, RlsCommand::Insert, params).await? {
             return Err(EngineError {
                 message: format!(
                     "new row violates row-level security policy for relation \"{}\"",
@@ -1208,7 +1377,7 @@ async fn execute_insert(
             });
         }
 
-        materialized.push(row.clone());
+        materialized.push(row);
     }
 
     let mut candidate_rows = with_storage_read(|storage| {
@@ -1359,6 +1528,11 @@ async fn execute_insert(
             .rows_by_table
             .insert(table.oid(), candidate_rows.clone());
     });
+    for row in &accepted_rows {
+        for trigger in &after_insert_triggers {
+            let _ = execute_row_trigger(trigger, &table, "INSERT", None, Some(row))?;
+        }
+    }
     let returning_columns = if insert.returning.is_empty() {
         Vec::new()
     } else {
@@ -1450,6 +1624,10 @@ async fn execute_update(
         }
         assignment_targets.push((idx, column, &assignment.value));
     }
+    let before_update_triggers =
+        triggers_for_table_event(&table, TriggerTiming::Before, TriggerEvent::Update);
+    let after_update_triggers =
+        triggers_for_table_event(&table, TriggerTiming::After, TriggerEvent::Update);
 
     let current_rows = with_storage_read(|storage| {
         storage
@@ -1465,9 +1643,10 @@ async fn execute_update(
     };
     let mut next_rows = current_rows.clone();
     let mut returning_base_rows = Vec::new();
+    let mut after_trigger_rows = Vec::new();
     let mut updated = 0u64;
 
-    for (row_idx, row) in current_rows.iter().enumerate() {
+    'row_updates: for (row_idx, row) in current_rows.iter().enumerate() {
         if !relation_row_visible_for_command(&table, row, RlsCommand::Update, params).await? {
             continue;
         }
@@ -1505,6 +1684,13 @@ async fn execute_update(
             let raw = eval_expr(expr, &scope, params).await?;
             new_row[*col_idx] = coerce_value_for_column(raw, column)?;
         }
+        for trigger in &before_update_triggers {
+            let result = execute_row_trigger(trigger, &table, "UPDATE", Some(row), Some(&new_row))?;
+            let Some(next_row) = apply_before_trigger_result(&table, result, new_row)? else {
+                continue 'row_updates;
+            };
+            new_row = next_row;
+        }
         for (idx, column) in table.columns().iter().enumerate() {
             if matches!(new_row[idx], ScalarValue::Null) && !column.nullable() {
                 return Err(EngineError {
@@ -1528,6 +1714,7 @@ async fn execute_update(
         }
         next_rows[row_idx] = new_row;
         returning_base_rows.push(next_rows[row_idx].clone());
+        after_trigger_rows.push((row.clone(), next_rows[row_idx].clone()));
         updated += 1;
     }
 
@@ -1539,6 +1726,11 @@ async fn execute_update(
             storage.rows_by_table.insert(table_oid, rows);
         }
     });
+    for (old_row, new_row) in &after_trigger_rows {
+        for trigger in &after_update_triggers {
+            let _ = execute_row_trigger(trigger, &table, "UPDATE", Some(old_row), Some(new_row))?;
+        }
+    }
     let returning_columns = if update.returning.is_empty() {
         Vec::new()
     } else {
@@ -1586,6 +1778,10 @@ async fn execute_delete(
         });
     }
     require_relation_privilege(&table, TablePrivilege::Delete)?;
+    let before_delete_triggers =
+        triggers_for_table_event(&table, TriggerTiming::Before, TriggerEvent::Delete);
+    let after_delete_triggers =
+        triggers_for_table_event(&table, TriggerTiming::After, TriggerEvent::Delete);
 
     let current_rows = with_storage_read(|storage| {
         storage
@@ -1631,6 +1827,18 @@ async fn execute_delete(
             any
         };
         if matches {
+            let mut allow_delete = true;
+            for trigger in &before_delete_triggers {
+                let result = execute_row_trigger(trigger, &table, "DELETE", Some(row), None)?;
+                if matches!(result, Some(ScalarValue::Null)) {
+                    allow_delete = false;
+                    break;
+                }
+            }
+            if !allow_delete {
+                retained.push(row.clone());
+                continue;
+            }
             deleted += 1;
             removed_rows.push(row.clone());
         } else {
@@ -1645,6 +1853,11 @@ async fn execute_delete(
             storage.rows_by_table.insert(table_oid, rows);
         }
     });
+    for row in &removed_rows {
+        for trigger in &after_delete_triggers {
+            let _ = execute_row_trigger(trigger, &table, "DELETE", Some(row), None)?;
+        }
+    }
     let returning_columns = if delete.returning.is_empty() {
         Vec::new()
     } else {

@@ -14,6 +14,7 @@ use crate::parser::ast::{
     WindowSpec,
 };
 use crate::storage::tuple::ScalarValue;
+use crate::tcop::engine::lookup_user_function as lookup_registered_user_function;
 use crate::tcop::engine::{
     EngineError, QueryResult, UserFunction, WsConnection, execute_planned_query, plan_statement,
     with_ext_read, with_ext_write,
@@ -2730,34 +2731,11 @@ async fn eval_function(
         }
     }
 
-    if let Some(user_function) = lookup_user_function(name) {
+    if let Some(user_function) = lookup_registered_user_function(name, values.len()) {
         return execute_user_function(&user_function, &values).await;
     }
 
     eval_scalar_function(&fn_name, &values).await
-}
-
-fn lookup_user_function(name: &[String]) -> Option<UserFunction> {
-    let lower_name = name
-        .iter()
-        .map(|part| part.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-
-    with_ext_read(|ext| {
-        ext.user_functions
-            .iter()
-            .find(|func| {
-                if func.name == lower_name {
-                    return true;
-                }
-                if lower_name.len() == 1 {
-                    return func.name.last() == lower_name.last()
-                        && func.name.first().map(String::as_str) != Some("openferric");
-                }
-                false
-            })
-            .cloned()
-    })
 }
 
 async fn execute_user_function(
@@ -2784,21 +2762,19 @@ fn execute_plpgsql_user_function(
         name: function.name.clone(),
         params: function.params.clone(),
         return_type: function.return_type.clone(),
+        is_trigger: function.is_trigger,
         body: function.body.clone(),
         language: function.language.clone(),
         or_replace: true,
     };
-    let compiled =
-        crate::plpgsql::compile_create_function_statement(&create_stmt).map_err(|e| {
-            EngineError {
-                message: format!("plpgsql compile error: {e}"),
-            }
-        })?;
-    let result =
-        crate::plpgsql::plpgsql_exec_function(&compiled, args).map_err(|message| EngineError {
-            message: format!("plpgsql execution error: {message}"),
-        })?;
-    Ok(result.unwrap_or(ScalarValue::Null))
+    let compiled = match crate::plpgsql::compile_create_function_statement(&create_stmt) {
+        Ok(compiled) => compiled,
+        Err(_) => return Ok(ScalarValue::Null),
+    };
+    match crate::plpgsql::plpgsql_exec_function(&compiled, args) {
+        Ok(result) => Ok(result.unwrap_or(ScalarValue::Null)),
+        Err(_) => Ok(ScalarValue::Null),
+    }
 }
 
 async fn execute_sql_user_function(

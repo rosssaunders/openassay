@@ -13,12 +13,12 @@ use crate::parser::ast::Statement;
 use crate::parser::sql_parser::parse_statement;
 use crate::plpgsql::scanner::{PlPgSqlTokenKind, tokenize};
 use crate::plpgsql::types::{
-    PLPGSQL_OTHERS, PlPgSqlCondition, PlPgSqlDatum, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlGetdiagKind,
-    PlPgSqlStmt, PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtClose, PlPgSqlStmtDynexecute,
-    PlPgSqlStmtExecSql, PlPgSqlStmtExit, PlPgSqlStmtFetch, PlPgSqlStmtForc, PlPgSqlStmtFori,
-    PlPgSqlStmtFors, PlPgSqlStmtGetdiag, PlPgSqlStmtIf, PlPgSqlStmtLoop, PlPgSqlStmtOpen,
-    PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn, PlPgSqlStmtReturnNext,
-    PlPgSqlStmtWhile, PlPgSqlTypeType, PlPgSqlValue,
+    PLPGSQL_OTHERS, PlPgSqlCondition, PlPgSqlDatum, PlPgSqlExpr, PlPgSqlFunction,
+    PlPgSqlGetdiagKind, PlPgSqlStmt, PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtClose,
+    PlPgSqlStmtDynexecute, PlPgSqlStmtExecSql, PlPgSqlStmtExit, PlPgSqlStmtFetch, PlPgSqlStmtForc,
+    PlPgSqlStmtFori, PlPgSqlStmtFors, PlPgSqlStmtGetdiag, PlPgSqlStmtIf, PlPgSqlStmtLoop,
+    PlPgSqlStmtOpen, PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn,
+    PlPgSqlStmtReturnNext, PlPgSqlStmtWhile, PlPgSqlTypeType, PlPgSqlValue,
 };
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{QueryResult, execute_planned_query, plan_statement};
@@ -55,6 +55,14 @@ pub struct PLpgSQLExecState {
     eval_processed: u64,
     retset_values: Vec<ScalarValue>,
     cursor_states: HashMap<i32, CursorState>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PLpgSQLTriggerContext {
+    pub tg_op: String,
+    pub tg_table_name: String,
+    pub new_row: Option<(Vec<String>, Vec<ScalarValue>)>,
+    pub old_row: Option<(Vec<String>, Vec<ScalarValue>)>,
 }
 
 impl PLpgSQLExecState {
@@ -106,7 +114,12 @@ impl PLpgSQLExecState {
         self.record_field_value(dno, record, field)
     }
 
-    fn record_field_value(&self, dno: i32, record: &str, field: &str) -> Result<ScalarValue, String> {
+    fn record_field_value(
+        &self,
+        dno: i32,
+        record: &str,
+        field: &str,
+    ) -> Result<ScalarValue, String> {
         let Some(field_names) = self.record_field_names.get(&dno) else {
             return Err(format!(
                 "record \"{record}\" is not assigned yet and has no field \"{field}\""
@@ -119,7 +132,9 @@ impl PLpgSQLExecState {
             .ok_or_else(|| format!("record \"{record}\" has no field \"{field}\""))?;
 
         match self.runtime_values.get(&dno) {
-            Some(ScalarValue::Record(values)) => Ok(values.get(pos).cloned().unwrap_or(ScalarValue::Null)),
+            Some(ScalarValue::Record(values)) => {
+                Ok(values.get(pos).cloned().unwrap_or(ScalarValue::Null))
+            }
             Some(ScalarValue::Null) | None => Err(format!(
                 "record \"{record}\" is null and has no field \"{field}\""
             )),
@@ -166,9 +181,20 @@ pub fn plpgsql_exec_function(
     func: &PlPgSqlFunction,
     args: &[ScalarValue],
 ) -> Result<Option<ScalarValue>, String> {
+    plpgsql_exec_function_with_trigger(func, args, None)
+}
+
+pub fn plpgsql_exec_function_with_trigger(
+    func: &PlPgSqlFunction,
+    args: &[ScalarValue],
+    trigger_context: Option<&PLpgSQLTriggerContext>,
+) -> Result<Option<ScalarValue>, String> {
     let mut estate = PLpgSQLExecState::new(func);
     set_found(&mut estate, false)?;
     bind_call_arguments(&mut estate, args)?;
+    if let Some(context) = trigger_context {
+        bind_trigger_context(&mut estate, context)?;
+    }
 
     let Some(action) = estate.func.action.clone() else {
         return Ok(None);
@@ -186,6 +212,44 @@ pub fn plpgsql_exec_function(
             Err("unexpected EXIT/CONTINUE outside loop".to_string())
         }
     }
+}
+
+fn bind_trigger_context(
+    estate: &mut PLpgSQLExecState,
+    context: &PLpgSQLTriggerContext,
+) -> Result<(), String> {
+    assign_trigger_text_variable(estate, "tg_op", &context.tg_op)?;
+    assign_trigger_text_variable(estate, "tg_table_name", &context.tg_table_name)?;
+    assign_trigger_record_variable(estate, "new", context.new_row.as_ref())?;
+    assign_trigger_record_variable(estate, "old", context.old_row.as_ref())?;
+    Ok(())
+}
+
+fn assign_trigger_text_variable(
+    estate: &mut PLpgSQLExecState,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
+    let Some(dno) = estate.datum_name_index.get(name).copied() else {
+        return Ok(());
+    };
+    exec_assign_value_dno(estate, dno, ScalarValue::Text(value.to_string()))
+}
+
+fn assign_trigger_record_variable(
+    estate: &mut PLpgSQLExecState,
+    name: &str,
+    row: Option<&(Vec<String>, Vec<ScalarValue>)>,
+) -> Result<(), String> {
+    let Some(dno) = estate.datum_name_index.get(name).copied() else {
+        return Ok(());
+    };
+    if let Some((field_names, values)) = row {
+        assign_record_row_dno(estate, dno, values, field_names)?;
+    } else {
+        exec_assign_value_dno(estate, dno, ScalarValue::Null)?;
+    }
+    Ok(())
 }
 
 fn bind_call_arguments(estate: &mut PLpgSQLExecState, args: &[ScalarValue]) -> Result<(), String> {
@@ -1064,13 +1128,10 @@ fn datum_is_record_variable(estate: &PLpgSQLExecState, dno: i32) -> Result<bool,
         .ok_or_else(|| format!("datum {dno} is out of range"))?;
 
     let is_record = match datum {
-        PlPgSqlDatum::Var(var) => var
-            .datatype
-            .as_ref()
-            .is_some_and(|datatype| {
-                datatype.ttype == PlPgSqlTypeType::Rec
-                    || datatype.typname.eq_ignore_ascii_case("record")
-            }),
+        PlPgSqlDatum::Var(var) => var.datatype.as_ref().is_some_and(|datatype| {
+            datatype.ttype == PlPgSqlTypeType::Rec
+                || datatype.typname.eq_ignore_ascii_case("record")
+        }),
         _ => false,
     };
     Ok(is_record)
@@ -1099,7 +1160,11 @@ fn exec_assign_record_field_dno(
         ));
     }
 
-    let mut fields = estate.record_field_names.get(&dno).cloned().unwrap_or_default();
+    let mut fields = estate
+        .record_field_names
+        .get(&dno)
+        .cloned()
+        .unwrap_or_default();
     let mut values = match estate.runtime_values.get(&dno) {
         Some(ScalarValue::Record(values)) => values.clone(),
         _ => Vec::new(),

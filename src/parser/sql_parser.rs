@@ -7,22 +7,22 @@ use crate::parser::ast::{
     ConflictTarget, CopyDirection, CopyFormat, CopyOptions, CopyStatement, CreateDomainStatement,
     CreateExtensionStatement, CreateFunctionStatement, CreateIndexStatement, CreateRoleStatement,
     CreateSchemaStatement, CreateSequenceStatement, CreateSubscriptionStatement,
-    CreateTableStatement, CreateTypeStatement, CreateViewStatement, CycleClause, DeleteStatement,
-    DiscardStatement, DoStatement, DropBehavior, DropDomainStatement, DropExtensionStatement,
-    DropIndexStatement, DropRoleStatement, DropSchemaStatement, DropSequenceStatement,
-    DropSubscriptionStatement, DropTableStatement, DropTypeStatement, DropViewStatement,
-    ExplainStatement, Expr, ForeignKeyAction, ForeignKeyReference, FunctionParam,
-    FunctionParamMode,
-    FunctionReturnType, GrantRoleStatement, GrantStatement, GrantTablePrivilegesStatement,
-    GroupByExpr, InsertSource, InsertStatement, JoinCondition, JoinExpr, JoinType, ListenStatement,
-    MergeStatement, MergeWhenClause, NotifyStatement, OnConflictClause, OrderByExpr, Query,
-    QueryExpr, RefreshMaterializedViewStatement, RevokeRoleStatement, RevokeStatement,
-    RevokeTablePrivilegesStatement, RoleOption, SearchClause, SelectItem, SelectQuantifier,
-    SelectStatement, SetOperator, SetQuantifier, SetStatement, ShowStatement, Statement,
-    SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression, TableFunctionRef,
-    TablePrivilegeKind, TableRef, TransactionStatement, TruncateStatement, TypeName, UnaryOp,
-    UnlistenStatement, UpdateStatement, WindowDefinition, WindowFrame, WindowFrameBound,
-    WindowFrameExclusion, WindowFrameUnits, WindowSpec, WithClause,
+    CreateTableStatement, CreateTriggerStatement, CreateTypeStatement, CreateViewStatement,
+    CycleClause, DeleteStatement, DiscardStatement, DoStatement, DropBehavior, DropDomainStatement,
+    DropExtensionStatement, DropIndexStatement, DropRoleStatement, DropSchemaStatement,
+    DropSequenceStatement, DropSubscriptionStatement, DropTableStatement, DropTypeStatement,
+    DropViewStatement, ExplainStatement, Expr, ForeignKeyAction, ForeignKeyReference,
+    FunctionParam, FunctionParamMode, FunctionReturnType, GrantRoleStatement, GrantStatement,
+    GrantTablePrivilegesStatement, GroupByExpr, InsertSource, InsertStatement, JoinCondition,
+    JoinExpr, JoinType, ListenStatement, MergeStatement, MergeWhenClause, NotifyStatement,
+    OnConflictClause, OrderByExpr, Query, QueryExpr, RefreshMaterializedViewStatement,
+    RevokeRoleStatement, RevokeStatement, RevokeTablePrivilegesStatement, RoleOption, SearchClause,
+    SelectItem, SelectQuantifier, SelectStatement, SetOperator, SetQuantifier, SetStatement,
+    ShowStatement, Statement, SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression,
+    TableFunctionRef, TablePrivilegeKind, TableRef, TransactionStatement, TriggerEvent,
+    TriggerTiming, TruncateStatement, TypeName, UnaryOp, UnlistenStatement, UpdateStatement,
+    WindowDefinition, WindowFrame, WindowFrameBound, WindowFrameExclusion, WindowFrameUnits,
+    WindowSpec, WithClause,
 };
 use crate::parser::lexer::{Keyword, LexError, Token, TokenKind, lex_sql};
 
@@ -227,6 +227,12 @@ impl Parser {
                 return Err(self.error_at_current("unexpected modifier before CREATE FUNCTION"));
             }
             return self.parse_create_function(or_replace);
+        }
+        if self.consume_ident("trigger") {
+            if or_replace || unique || materialized {
+                return Err(self.error_at_current("unexpected modifier before CREATE TRIGGER"));
+            }
+            return self.parse_create_trigger();
         }
         if self.consume_ident("subscription") {
             if or_replace || unique || materialized {
@@ -526,7 +532,7 @@ impl Parser {
         }
         self.expect_keyword(
             Keyword::Table,
-            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, TYPE, DOMAIN, or SUBSCRIPTION after CREATE",
+            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, FUNCTION, TRIGGER, TYPE, DOMAIN, or SUBSCRIPTION after CREATE",
         )?;
 
         // Parse optional IF NOT EXISTS clause
@@ -5073,61 +5079,42 @@ impl Parser {
 
     fn parse_create_function(&mut self, or_replace: bool) -> Result<Statement, ParseError> {
         let name = self.parse_qualified_name()?;
-        // Parse parameter list
         self.expect_token(
             |k| matches!(k, TokenKind::LParen),
             "expected '(' after function name",
         )?;
+
         let mut params = Vec::new();
         if !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
             loop {
-                let mode = if self.consume_keyword(Keyword::In) {
-                    FunctionParamMode::In
-                } else if let TokenKind::Identifier(word) = self.current_kind() {
-                    if word.eq_ignore_ascii_case("in") {
-                        self.advance();
-                        FunctionParamMode::In
-                    } else if word.eq_ignore_ascii_case("out") {
-                        self.advance();
-                        FunctionParamMode::Out
-                    } else if word.eq_ignore_ascii_case("inout") {
-                        self.advance();
-                        FunctionParamMode::InOut
-                    } else {
-                        FunctionParamMode::In
-                    }
-                } else {
-                    FunctionParamMode::In
-                };
-
-                // Try name TYPE or just TYPE
-                let first_ident = self.parse_identifier()?;
-                let (param_name, data_type) = if let Ok(dt) = self.try_parse_type_name(&first_ident)
-                {
-                    (None, dt)
-                } else {
-                    // first_ident is param name, next is type
-                    let type_ident = self.parse_identifier()?;
-                    let dt = self.try_parse_type_name(&type_ident).map_err(|()| {
-                        self.error_at_current(&format!("unknown type: {type_ident}"))
-                    })?;
-                    (Some(first_ident), dt)
-                };
-                // Check for DEFAULT
-                if self.consume_keyword(Keyword::Default) {
-                    // Skip the default expression (simple: just consume until , or ))
-                    while !matches!(
-                        self.current_kind(),
-                        TokenKind::Comma | TokenKind::RParen | TokenKind::Eof
-                    ) {
-                        self.advance();
+                let mut param_tokens = Vec::new();
+                let mut paren_depth = 0usize;
+                loop {
+                    match self.current_kind() {
+                        TokenKind::Eof => {
+                            return Err(self.error_at_current(
+                                "unterminated parameter list in CREATE FUNCTION",
+                            ));
+                        }
+                        TokenKind::Comma if paren_depth == 0 => break,
+                        TokenKind::RParen if paren_depth == 0 => break,
+                        TokenKind::LParen => {
+                            paren_depth += 1;
+                            param_tokens.push(self.current_kind().clone());
+                            self.advance();
+                        }
+                        TokenKind::RParen => {
+                            paren_depth = paren_depth.saturating_sub(1);
+                            param_tokens.push(self.current_kind().clone());
+                            self.advance();
+                        }
+                        _ => {
+                            param_tokens.push(self.current_kind().clone());
+                            self.advance();
+                        }
                     }
                 }
-                params.push(FunctionParam {
-                    name: param_name,
-                    data_type,
-                    mode,
-                });
+                params.push(self.parse_function_param_tokens(&param_tokens));
                 if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                     self.expect_token(
                         |k| matches!(k, TokenKind::RParen),
@@ -5137,24 +5124,263 @@ impl Parser {
                 }
             }
         }
-        // Parse RETURNS
-        let return_type = if self.consume_keyword(Keyword::Returns) {
-            if self.consume_keyword(Keyword::Table) {
-                // RETURNS TABLE(col type, ...)
-                self.expect_token(
-                    |k| matches!(k, TokenKind::LParen),
-                    "expected '(' after TABLE",
-                )?;
-                let mut cols = Vec::new();
+
+        let mut return_type = None;
+        let mut is_trigger = false;
+        let mut body = None;
+        let mut language = "sql".to_string();
+
+        while !matches!(self.current_kind(), TokenKind::Eof | TokenKind::Semicolon) {
+            if self.consume_keyword(Keyword::Returns) {
+                let (parsed, trigger_return) = self.parse_function_return_clause()?;
+                return_type = parsed;
+                if trigger_return {
+                    is_trigger = true;
+                }
+                continue;
+            }
+            if self.consume_keyword(Keyword::As) {
+                let text = match self.current_kind() {
+                    TokenKind::String(s) => {
+                        let out = s.clone();
+                        self.advance();
+                        out
+                    }
+                    _ => {
+                        return Err(
+                            self.error_at_current("expected dollar-quoted or string function body")
+                        );
+                    }
+                };
+                body = Some(text);
+                if self.consume_if(|k| matches!(k, TokenKind::Comma))
+                    && matches!(self.current_kind(), TokenKind::String(_))
+                {
+                    self.advance();
+                }
+                continue;
+            }
+            if self.consume_keyword(Keyword::Language) || self.consume_ident("language") {
+                language = self.parse_identifier_or_string()?;
+                continue;
+            }
+            self.advance();
+        }
+
+        let Some(body) = body else {
+            return Err(self.error_at_current("expected AS before function body"));
+        };
+
+        Ok(Statement::CreateFunction(CreateFunctionStatement {
+            name,
+            params,
+            return_type,
+            is_trigger,
+            body,
+            language,
+            or_replace,
+        }))
+    }
+
+    fn parse_create_trigger(&mut self) -> Result<Statement, ParseError> {
+        let name = self.parse_identifier()?;
+        let timing = if self.consume_ident("before") {
+            TriggerTiming::Before
+        } else if self.consume_ident("after") {
+            TriggerTiming::After
+        } else {
+            return Err(self.error_at_current("expected BEFORE or AFTER in CREATE TRIGGER"));
+        };
+
+        let mut events = Vec::new();
+        loop {
+            if self.consume_keyword(Keyword::Insert) {
+                events.push(TriggerEvent::Insert);
+            } else if self.consume_keyword(Keyword::Update) {
+                events.push(TriggerEvent::Update);
+            } else if self.consume_keyword(Keyword::Delete) {
+                events.push(TriggerEvent::Delete);
+            } else {
+                return Err(self.error_at_current(
+                    "expected INSERT, UPDATE, or DELETE in CREATE TRIGGER event list",
+                ));
+            }
+
+            if self.consume_keyword(Keyword::Or) || self.consume_ident("or") {
+                continue;
+            }
+            break;
+        }
+
+        if !(self.consume_keyword(Keyword::On) || self.consume_ident("on")) {
+            return Err(self.error_at_current("expected ON in CREATE TRIGGER"));
+        }
+        let table_name = self.parse_qualified_name()?;
+
+        while !matches!(self.current_kind(), TokenKind::Eof | TokenKind::Semicolon) {
+            if self.consume_ident("execute") {
+                break;
+            }
+            self.advance();
+        }
+        if !self.consume_ident("function") {
+            self.consume_ident("procedure");
+        }
+        let function_name = self.parse_qualified_name()?;
+        if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+            let mut depth = 1usize;
+            while depth > 0 {
+                match self.current_kind() {
+                    TokenKind::LParen => {
+                        depth += 1;
+                        self.advance();
+                    }
+                    TokenKind::RParen => {
+                        depth -= 1;
+                        self.advance();
+                    }
+                    TokenKind::Eof => {
+                        return Err(self.error_at_current(
+                            "unterminated trigger argument list in CREATE TRIGGER",
+                        ));
+                    }
+                    _ => self.advance(),
+                }
+            }
+        }
+
+        Ok(Statement::CreateTrigger(CreateTriggerStatement {
+            name,
+            table_name,
+            timing,
+            events,
+            function_name,
+        }))
+    }
+
+    fn parse_function_param_tokens(&self, tokens: &[TokenKind]) -> FunctionParam {
+        let mut trimmed = Vec::with_capacity(tokens.len());
+        let mut depth = 0usize;
+        for token in tokens {
+            match token {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            if depth == 0
+                && (matches!(token, TokenKind::Keyword(Keyword::Default))
+                    || matches!(token, TokenKind::Equal | TokenKind::ColonEquals))
+            {
+                break;
+            }
+            trimmed.push(token.clone());
+        }
+
+        let mut idx = 0usize;
+        let mut mode = FunctionParamMode::In;
+        if trimmed
+            .get(idx)
+            .and_then(|t| self.token_word(t))
+            .is_some_and(|w| w == "variadic")
+        {
+            idx += 1;
+        }
+        if let Some(word) = trimmed.get(idx).and_then(|t| self.token_word(t)) {
+            if word == "in" {
+                mode = FunctionParamMode::In;
+                idx += 1;
+            } else if word == "out" {
+                mode = FunctionParamMode::Out;
+                idx += 1;
+            } else if word == "inout" {
+                mode = FunctionParamMode::InOut;
+                idx += 1;
+            }
+        }
+
+        let remaining = if idx < trimmed.len() {
+            &trimmed[idx..]
+        } else {
+            &[]
+        };
+        if remaining.is_empty() {
+            return FunctionParam {
+                name: None,
+                data_type: TypeName::Text,
+                mode,
+            };
+        }
+
+        let (name, type_tokens): (Option<String>, &[TokenKind]) = if remaining.len() == 1 {
+            (None, remaining)
+        } else if let Some(first_word) = self.token_word(&remaining[0]) {
+            if self.looks_like_function_type_name(&first_word) {
+                (None, remaining)
+            } else {
+                (Some(first_word), &remaining[1..])
+            }
+        } else {
+            (None, remaining)
+        };
+
+        FunctionParam {
+            name,
+            data_type: self.infer_function_type_name(type_tokens),
+            mode,
+        }
+    }
+
+    fn parse_function_return_clause(
+        &mut self,
+    ) -> Result<(Option<FunctionReturnType>, bool), ParseError> {
+        if self.consume_keyword(Keyword::Table) {
+            self.expect_token(
+                |k| matches!(k, TokenKind::LParen),
+                "expected '(' after TABLE",
+            )?;
+            let mut cols = Vec::new();
+            if !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
                 loop {
-                    let col_name = self.parse_identifier()?;
-                    let type_ident = self.parse_identifier()?;
-                    let dt = self.try_parse_type_name(&type_ident).map_err(|()| {
-                        self.error_at_current(&format!("unknown type: {type_ident}"))
-                    })?;
+                    let mut col_tokens = Vec::new();
+                    let mut depth = 0usize;
+                    loop {
+                        match self.current_kind() {
+                            TokenKind::Eof => {
+                                return Err(
+                                    self.error_at_current("unterminated RETURNS TABLE column list")
+                                );
+                            }
+                            TokenKind::Comma if depth == 0 => break,
+                            TokenKind::RParen if depth == 0 => break,
+                            TokenKind::LParen => {
+                                depth += 1;
+                                col_tokens.push(self.current_kind().clone());
+                                self.advance();
+                            }
+                            TokenKind::RParen => {
+                                depth = depth.saturating_sub(1);
+                                col_tokens.push(self.current_kind().clone());
+                                self.advance();
+                            }
+                            _ => {
+                                col_tokens.push(self.current_kind().clone());
+                                self.advance();
+                            }
+                        }
+                    }
+                    let (col_name, col_type_tokens): (String, &[TokenKind]) =
+                        if let Some(first) = col_tokens.first().and_then(|t| self.token_word(t)) {
+                            if col_tokens.len() > 1 {
+                                (first, &col_tokens[1..])
+                            } else {
+                                (format!("column{}", cols.len() + 1), col_tokens.as_slice())
+                            }
+                        } else {
+                            (format!("column{}", cols.len() + 1), col_tokens.as_slice())
+                        };
                     cols.push(ColumnDefinition {
                         name: col_name,
-                        data_type: dt,
+                        data_type: self.infer_function_type_name(col_type_tokens),
                         nullable: true,
                         identity: false,
                         primary_key: false,
@@ -5163,48 +5389,161 @@ impl Parser {
                         check: None,
                         default: None,
                     });
-                    if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
-                        self.expect_token(|k| matches!(k, TokenKind::RParen), "expected ')'")?;
-                        break;
+                    if self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                        continue;
+                    }
+                    self.expect_token(
+                        |k| matches!(k, TokenKind::RParen),
+                        "expected ')' after RETURNS TABLE column list",
+                    )?;
+                    break;
+                }
+            }
+            return Ok((Some(FunctionReturnType::Table(cols)), false));
+        }
+
+        let mut return_tokens = Vec::new();
+        let mut depth = 0usize;
+        while !matches!(self.current_kind(), TokenKind::Eof | TokenKind::Semicolon) {
+            if depth == 0
+                && (matches!(
+                    self.current_kind(),
+                    TokenKind::Keyword(Keyword::As | Keyword::Language)
+                ) || matches!(self.current_kind(), TokenKind::Identifier(id) if id.eq_ignore_ascii_case("as") || id.eq_ignore_ascii_case("language") || id.eq_ignore_ascii_case("immutable") || id.eq_ignore_ascii_case("stable") || id.eq_ignore_ascii_case("volatile") || id.eq_ignore_ascii_case("strict") || id.eq_ignore_ascii_case("parallel") || id.eq_ignore_ascii_case("cost") || id.eq_ignore_ascii_case("rows") || id.eq_ignore_ascii_case("security")))
+            {
+                break;
+            }
+            match self.current_kind() {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            return_tokens.push(self.current_kind().clone());
+            self.advance();
+        }
+
+        let is_trigger = return_tokens.iter().any(|token| {
+            self.token_word(token)
+                .is_some_and(|word| word.eq_ignore_ascii_case("trigger"))
+        });
+
+        if return_tokens.is_empty() {
+            return Ok((None, is_trigger));
+        }
+        Ok((
+            Some(FunctionReturnType::Type(
+                self.infer_function_type_name(&return_tokens),
+            )),
+            is_trigger,
+        ))
+    }
+
+    fn parse_identifier_or_string(&mut self) -> Result<String, ParseError> {
+        match self.current_kind() {
+            TokenKind::String(s) => {
+                let out = s.clone();
+                self.advance();
+                Ok(out)
+            }
+            _ => self.parse_identifier(),
+        }
+    }
+
+    fn token_word(&self, token: &TokenKind) -> Option<String> {
+        match token {
+            TokenKind::Identifier(word) => Some(word.to_ascii_lowercase()),
+            TokenKind::Keyword(keyword) => Some(format!("{keyword:?}").to_ascii_lowercase()),
+            _ => None,
+        }
+    }
+
+    fn looks_like_function_type_name(&self, word: &str) -> bool {
+        self.try_parse_type_name(word).is_ok()
+            || matches!(
+                word,
+                "void"
+                    | "record"
+                    | "trigger"
+                    | "refcursor"
+                    | "any"
+                    | "anyelement"
+                    | "anyarray"
+                    | "anyrange"
+                    | "anycompatible"
+                    | "anycompatiblearray"
+                    | "anycompatiblerange"
+                    | "cstring"
+                    | "internal"
+                    | "bpchar"
+                    | "oid"
+            )
+            || word.starts_with('_')
+    }
+
+    fn infer_function_type_name(&self, tokens: &[TokenKind]) -> TypeName {
+        let mut words = Vec::new();
+        let mut array_depth = 0usize;
+        let mut saw_percent = false;
+        let mut saw_setof = false;
+
+        for token in tokens {
+            match token {
+                TokenKind::LBracket => array_depth += 1,
+                TokenKind::Operator(op) if op == "%" => saw_percent = true,
+                _ => {
+                    if let Some(word) = self.token_word(token) {
+                        if word == "setof" {
+                            saw_setof = true;
+                            continue;
+                        }
+                        words.push(word);
                     }
                 }
-                Some(FunctionReturnType::Table(cols))
-            } else {
-                let type_ident = self.parse_identifier()?;
-                let dt = self.try_parse_type_name(&type_ident).map_err(|()| {
-                    self.error_at_current(&format!("unknown return type: {type_ident}"))
-                })?;
-                Some(FunctionReturnType::Type(dt))
             }
+        }
+
+        if saw_percent {
+            return TypeName::Text;
+        }
+
+        let mut base_word = if words.is_empty() {
+            "text".to_string()
+        } else if words.len() >= 2 && words[0] == "double" && words[1] == "precision" {
+            "float8".to_string()
+        } else if saw_setof {
+            words.last().cloned().unwrap_or_else(|| "text".to_string())
         } else {
-            None
+            words.last().cloned().unwrap_or_else(|| "text".to_string())
         };
-        // Parse AS $$ body $$
-        self.expect_keyword(Keyword::As, "expected AS before function body")?;
-        let body = match &self.tokens[self.idx].kind {
-            TokenKind::String(s) => {
-                let b = s.clone();
-                self.advance();
-                b
-            }
-            _ => {
-                return Err(self.error_at_current("expected dollar-quoted or string function body"));
-            }
-        };
-        // Optional LANGUAGE
-        let language = if self.consume_keyword(Keyword::Language) {
-            self.parse_identifier()?
+
+        let mut explicit_array = 0usize;
+        while let Some(stripped) = base_word.strip_suffix("[]") {
+            explicit_array += 1;
+            base_word = stripped.to_string();
+        }
+        if let Some(inner) = base_word.strip_prefix('_') {
+            explicit_array += 1;
+            base_word = inner.to_string();
+        }
+
+        let mut ty = if let Ok(found) = self.try_parse_type_name(&base_word) {
+            found
         } else {
-            "sql".to_string()
+            match base_word.as_str() {
+                "name" => TypeName::Name,
+                "bpchar" => TypeName::Char,
+                "oid" => TypeName::Int8,
+                "record" | "trigger" | "refcursor" | "void" | "any" | "anyelement" | "anyarray"
+                | "anyrange" | "anycompatible" | "anycompatiblearray" | "anycompatiblerange"
+                | "cstring" | "internal" => TypeName::Text,
+                _ => TypeName::Text,
+            }
         };
-        Ok(Statement::CreateFunction(CreateFunctionStatement {
-            name,
-            params,
-            return_type,
-            body,
-            language,
-            or_replace,
-        }))
+
+        for _ in 0..(array_depth + explicit_array) {
+            ty = TypeName::Array(Box::new(ty));
+        }
+        ty
     }
 
     fn try_parse_type_name(&self, ident: &str) -> Result<TypeName, ()> {
@@ -5229,6 +5568,7 @@ impl Parser {
             "serial" => Ok(TypeName::Serial),
             "bigserial" => Ok(TypeName::BigSerial),
             "numeric" | "decimal" => Ok(TypeName::Numeric),
+            "name" => Ok(TypeName::Name),
             _ => Err(()),
         }
     }

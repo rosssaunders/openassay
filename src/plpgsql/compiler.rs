@@ -17,15 +17,15 @@ use crate::plpgsql::scanner::{
     tokenize,
 };
 use crate::plpgsql::types::{
-    PLPGSQL_OTHERS, PlPgSqlCondition, PlPgSqlDatum, PlPgSqlDiagItem, PlPgSqlDtype, PlPgSqlException,
-    PlPgSqlExceptionBlock, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlGetdiagKind, PlPgSqlIfElsif,
-    PlPgSqlPromiseType, PlPgSqlRaiseOption, PlPgSqlRaiseOptionType, PlPgSqlResolveOption,
-    PlPgSqlStmt, PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtCall, PlPgSqlStmtClose,
-    PlPgSqlStmtCommit, PlPgSqlStmtDynexecute, PlPgSqlStmtExecSql, PlPgSqlStmtFetch, PlPgSqlStmtForc,
-    PlPgSqlStmtFori, PlPgSqlStmtFors, PlPgSqlStmtGetdiag, PlPgSqlStmtIf, PlPgSqlStmtOpen,
-    PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn, PlPgSqlStmtRollback, PlPgSqlStmtType,
-    PlPgSqlTrigtype, PlPgSqlType, PlPgSqlTypeType, PlPgSqlValue, PlPgSqlVar, PlPgSqlVariable,
-    PlPgSqlRow,
+    PLPGSQL_OTHERS, PlPgSqlCondition, PlPgSqlDatum, PlPgSqlDiagItem, PlPgSqlDtype,
+    PlPgSqlException, PlPgSqlExceptionBlock, PlPgSqlExpr, PlPgSqlFunction, PlPgSqlGetdiagKind,
+    PlPgSqlIfElsif, PlPgSqlPromiseType, PlPgSqlRaiseOption, PlPgSqlRaiseOptionType,
+    PlPgSqlResolveOption, PlPgSqlRow, PlPgSqlStmt, PlPgSqlStmtAssign, PlPgSqlStmtBlock,
+    PlPgSqlStmtCall, PlPgSqlStmtClose, PlPgSqlStmtCommit, PlPgSqlStmtDynexecute,
+    PlPgSqlStmtExecSql, PlPgSqlStmtFetch, PlPgSqlStmtForc, PlPgSqlStmtFori, PlPgSqlStmtFors,
+    PlPgSqlStmtGetdiag, PlPgSqlStmtIf, PlPgSqlStmtOpen, PlPgSqlStmtPerform, PlPgSqlStmtRaise,
+    PlPgSqlStmtReturn, PlPgSqlStmtRollback, PlPgSqlStmtType, PlPgSqlTrigtype, PlPgSqlType,
+    PlPgSqlTypeType, PlPgSqlValue, PlPgSqlVar, PlPgSqlVariable,
 };
 
 /// Compiler error for PL/pgSQL parse/compile.
@@ -135,12 +135,20 @@ pub fn compile_create_function_statement(
 
     let tokens = tokenize(&create_stmt.body)?;
     let mut parser = BodyParser::new(&create_stmt.body, tokens);
-    let (argvarnos, out_param_varno) = parser.add_argument_datums(create_stmt);
+    let (argvarnos, out_param_varno, new_varno, old_varno) =
+        parser.add_argument_datums(create_stmt);
     let mut compiled = parser.parse_function_body()?;
     compiled.fn_signature = create_stmt.name.join(".");
     compiled.fn_nargs = i32::try_from(argvarnos.len()).unwrap_or(i32::MAX);
     compiled.fn_argvarnos = argvarnos;
     compiled.out_param_varno = out_param_varno;
+    compiled.fn_is_trigger = if create_stmt.is_trigger {
+        PlPgSqlTrigtype::DmlTrigger
+    } else {
+        PlPgSqlTrigtype::NotTrigger
+    };
+    compiled.new_varno = new_varno;
+    compiled.old_varno = old_varno;
     Ok(compiled)
 }
 
@@ -229,7 +237,10 @@ impl<'a> BodyParser<'a> {
         })
     }
 
-    fn add_argument_datums(&mut self, create_stmt: &CreateFunctionStatement) -> (Vec<i32>, i32) {
+    fn add_argument_datums(
+        &mut self,
+        create_stmt: &CreateFunctionStatement,
+    ) -> (Vec<i32>, i32, i32, i32) {
         let mut argvarnos = Vec::with_capacity(create_stmt.params.len());
         let mut out_varnos = Vec::new();
         let mut out_fieldnames = Vec::new();
@@ -269,7 +280,10 @@ impl<'a> BodyParser<'a> {
             if matches!(param.mode, FunctionParamMode::In | FunctionParamMode::InOut) {
                 argvarnos.push(dno);
             }
-            if matches!(param.mode, FunctionParamMode::Out | FunctionParamMode::InOut) {
+            if matches!(
+                param.mode,
+                FunctionParamMode::Out | FunctionParamMode::InOut
+            ) {
                 out_varnos.push(dno);
                 out_fieldnames.push(refname);
             }
@@ -300,7 +314,48 @@ impl<'a> BodyParser<'a> {
             dno
         };
 
-        (argvarnos, out_param_varno)
+        let (new_varno, old_varno) = if create_stmt.is_trigger {
+            (
+                self.add_internal_var("new", "record", PlPgSqlValue::Null),
+                self.add_internal_var("old", "record", PlPgSqlValue::Null),
+            )
+        } else {
+            (-1, -1)
+        };
+        if create_stmt.is_trigger {
+            self.add_internal_var("tg_op", "text", PlPgSqlValue::Text(String::new()));
+            self.add_internal_var("tg_table_name", "text", PlPgSqlValue::Text(String::new()));
+        }
+
+        (argvarnos, out_param_varno, new_varno, old_varno)
+    }
+
+    fn add_internal_var(&mut self, name: &str, type_name: &str, value: PlPgSqlValue) -> i32 {
+        let dno = self.allocate_dno();
+        let variable = PlPgSqlVariable {
+            dtype: PlPgSqlDtype::Var,
+            dno,
+            refname: name.to_string(),
+            lineno: 1,
+            isconst: false,
+            notnull: false,
+            default_val: None,
+        };
+        let var = PlPgSqlVar {
+            variable,
+            datatype: Some(self.make_type(type_name)),
+            cursor_explicit_expr: None,
+            cursor_explicit_argrow: -1,
+            cursor_options: 0,
+            value: Some(value),
+            isnull: true,
+            freeval: false,
+            promise: PlPgSqlPromiseType::None,
+        };
+        self.variables_by_name
+            .insert(name.to_ascii_lowercase(), dno);
+        self.datums.push(PlPgSqlDatum::Var(var));
+        dno
     }
 
     fn add_found_datum(&mut self) -> i32 {
@@ -1128,7 +1183,8 @@ impl<'a> BodyParser<'a> {
             self.idx = end_idx;
             (None, Some(self.make_expr(dynquery_text)))
         } else {
-            let (query_text, end_idx) = extract_sql_expression(&self.tokens, self.source, self.idx)?;
+            let (query_text, end_idx) =
+                extract_sql_expression(&self.tokens, self.source, self.idx)?;
             self.idx = end_idx;
             (Some(self.make_expr(query_text)), None)
         };
@@ -1263,10 +1319,13 @@ impl<'a> BodyParser<'a> {
             let mut diag_items = Vec::new();
 
             loop {
-                let target_name = self.expect_identifier(
-                    "expected variable name in GET DIAGNOSTICS target list",
-                )?;
-                let Some(target_dno) = self.variables_by_name.get(&target_name.to_ascii_lowercase()).copied() else {
+                let target_name = self
+                    .expect_identifier("expected variable name in GET DIAGNOSTICS target list")?;
+                let Some(target_dno) = self
+                    .variables_by_name
+                    .get(&target_name.to_ascii_lowercase())
+                    .copied()
+                else {
                     return Err(PlPgSqlCompileError {
                         message: format!("unknown variable \"{target_name}\" in GET DIAGNOSTICS"),
                         position: self.previous_token().span.start,
@@ -1284,7 +1343,9 @@ impl<'a> BodyParser<'a> {
                 }
 
                 let kind = match self.current_kind() {
-                    PlPgSqlTokenKind::Identifier(name) if name.eq_ignore_ascii_case("row_count") => {
+                    PlPgSqlTokenKind::Identifier(name)
+                        if name.eq_ignore_ascii_case("row_count") =>
+                    {
                         self.advance();
                         PlPgSqlGetdiagKind::RowCount
                     }
@@ -1507,7 +1568,11 @@ impl<'a> BodyParser<'a> {
     }
 
     fn lookup_cursor_varno(&self, name: &str) -> Result<i32, PlPgSqlCompileError> {
-        let Some(dno) = self.variables_by_name.get(&name.to_ascii_lowercase()).copied() else {
+        let Some(dno) = self
+            .variables_by_name
+            .get(&name.to_ascii_lowercase())
+            .copied()
+        else {
             return Err(PlPgSqlCompileError {
                 message: format!("unknown cursor variable \"{name}\""),
                 position: self.current_token().span.start,
@@ -2433,8 +2498,12 @@ BEGIN
   RETURN;
 END;
 $$ LANGUAGE plpgsql;";
-        let inout_compiled = compile_create_function_sql(inout_sql).expect("compile should succeed");
+        let inout_compiled =
+            compile_create_function_sql(inout_sql).expect("compile should succeed");
         assert_eq!(inout_compiled.fn_argvarnos.len(), 1);
-        assert_eq!(inout_compiled.out_param_varno, inout_compiled.fn_argvarnos[0]);
+        assert_eq!(
+            inout_compiled.out_param_varno,
+            inout_compiled.fn_argvarnos[0]
+        );
     }
 }

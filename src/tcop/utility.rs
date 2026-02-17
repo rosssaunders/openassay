@@ -2,7 +2,7 @@
 use crate::commands::subscription;
 use crate::commands::{
     alter, create_table, do_block, drop, explain, extension, function, index, matview, schema,
-    sequence, variable, view,
+    sequence, trigger, variable, view,
 };
 use crate::parser::ast::Statement;
 use crate::tcop::engine::{EngineError, QueryResult};
@@ -80,6 +80,7 @@ pub async fn execute_utility_statement(
         Statement::CreateExtension(create) => extension::execute_create_extension(create).await,
         Statement::DropExtension(drop_ext) => extension::execute_drop_extension(drop_ext).await,
         Statement::CreateFunction(create) => function::execute_create_function(create).await,
+        Statement::CreateTrigger(create) => trigger::execute_create_trigger(create).await,
         #[cfg(not(target_arch = "wasm32"))]
         Statement::CreateSubscription(create) => {
             subscription::execute_create_subscription(create).await
@@ -155,6 +156,7 @@ pub fn is_utility_statement(statement: &Statement) -> bool {
             | Statement::CreateExtension(_)
             | Statement::DropExtension(_)
             | Statement::CreateFunction(_)
+            | Statement::CreateTrigger(_)
             | Statement::CreateSubscription(_)
             | Statement::DropSubscription(_)
             | Statement::CreateType(_)

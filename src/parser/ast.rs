@@ -32,6 +32,7 @@ pub enum Statement {
     CreateExtension(CreateExtensionStatement),
     DropExtension(DropExtensionStatement),
     CreateFunction(CreateFunctionStatement),
+    CreateTrigger(CreateTriggerStatement),
     CreateSubscription(CreateSubscriptionStatement),
     CreateRole(CreateRoleStatement),
     AlterRole(AlterRoleStatement),
@@ -1029,7 +1030,30 @@ pub struct CreateFunctionStatement {
     pub name: Vec<String>,
     pub params: Vec<FunctionParam>,
     pub return_type: Option<FunctionReturnType>,
+    pub is_trigger: bool,
     pub body: String,
     pub language: String,
     pub or_replace: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerTiming {
+    Before,
+    After,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerEvent {
+    Insert,
+    Update,
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateTriggerStatement {
+    pub name: String,
+    pub table_name: Vec<String>,
+    pub timing: TriggerTiming,
+    pub events: Vec<TriggerEvent>,
+    pub function_name: Vec<String>,
 }

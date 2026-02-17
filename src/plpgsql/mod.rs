@@ -9,7 +9,10 @@ pub use compiler::{
     PlPgSqlCompileError, compile_create_function_sql, compile_create_function_statement,
     compile_do_block_sql, compile_do_statement, compile_function_body,
 };
-pub use executor::{PLpgSQLExecState, plpgsql_exec_function};
+pub use executor::{
+    PLpgSQLExecState, PLpgSQLTriggerContext, plpgsql_exec_function,
+    plpgsql_exec_function_with_trigger,
+};
 pub use scanner::{
     PlPgSqlKeyword, PlPgSqlScanError, PlPgSqlSpan, PlPgSqlToken, PlPgSqlTokenKind,
     extract_sql_expression, tokenize,

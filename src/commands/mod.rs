@@ -11,5 +11,6 @@ pub mod schema;
 pub mod sequence;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod subscription;
+pub mod trigger;
 pub mod variable;
 pub mod view;
