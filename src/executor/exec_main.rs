@@ -347,15 +347,18 @@ async fn execute_select(
         });
     }
 
-    let mut filtered_rows = Vec::new();
-    for scope in source_rows {
-        if let Some(predicate) = &select.where_clause
-            && !truthy(&eval_expr(predicate, &scope, params).await?)
-        {
-            continue;
+    let filtered_rows = if let Some(predicate) = &select.where_clause {
+        let mut rows = Vec::with_capacity(source_rows.len());
+        for scope in source_rows {
+            if !truthy(&eval_expr(predicate, &scope, params).await?) {
+                continue;
+            }
+            rows.push(scope);
         }
-        filtered_rows.push(scope);
-    }
+        rows
+    } else {
+        source_rows
+    };
 
     if !select.group_by.is_empty() || has_aggregate {
         if has_wildcard {
@@ -3477,8 +3480,8 @@ async fn execute_set_operation(
 }
 
 fn dedupe_rows(rows: Vec<Vec<ScalarValue>>) -> Vec<Vec<ScalarValue>> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
+    let mut seen = HashSet::with_capacity(rows.len());
+    let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let key = row_key(&row);
         if seen.insert(key) {
@@ -3562,19 +3565,45 @@ fn count_rows(rows: &[Vec<ScalarValue>]) -> std::collections::HashMap<String, us
 }
 
 pub(crate) fn row_key(row: &[ScalarValue]) -> String {
-    row.iter()
-        .map(|v| match v {
-            ScalarValue::Null => "N".to_string(),
-            ScalarValue::Bool(b) => format!("B:{b}"),
-            ScalarValue::Int(i) => format!("I:{i}"),
-            ScalarValue::Float(f) => format!("F:{f}"),
-            ScalarValue::Numeric(n) => format!("N:{n}"),
-            ScalarValue::Text(t) => format!("T:{t}"),
-            ScalarValue::Array(_) => format!("A:{}", v.render()),
-            ScalarValue::Record(_) => format!("R:{}", v.render()),
-        })
-        .collect::<Vec<_>>()
-        .join("|")
+    let mut key = String::new();
+    for (idx, value) in row.iter().enumerate() {
+        if idx > 0 {
+            key.push('|');
+        }
+
+        match value {
+            ScalarValue::Null => key.push('N'),
+            ScalarValue::Bool(flag) => {
+                key.push_str("B:");
+                key.push_str(if *flag { "true" } else { "false" });
+            }
+            ScalarValue::Int(number) => {
+                key.push_str("I:");
+                key.push_str(&number.to_string());
+            }
+            ScalarValue::Float(number) => {
+                key.push_str("F:");
+                key.push_str(&number.to_string());
+            }
+            ScalarValue::Numeric(number) => {
+                key.push_str("N:");
+                key.push_str(&number.to_string());
+            }
+            ScalarValue::Text(text) => {
+                key.push_str("T:");
+                key.push_str(text);
+            }
+            ScalarValue::Array(_) => {
+                key.push_str("A:");
+                key.push_str(&value.render());
+            }
+            ScalarValue::Record(_) => {
+                key.push_str("R:");
+                key.push_str(&value.render());
+            }
+        }
+    }
+    key
 }
 
 async fn apply_order_by(
