@@ -13,6 +13,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout openferric (sibling dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: rosssaunders/openferric
+          path: ../openferric
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
