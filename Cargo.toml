@@ -8,6 +8,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 base64 = "0.22.1"
+futures = "0.3.31"
 hmac = "0.12.1"
 openferric = { path = "../openferric" }
 pbkdf2 = "0.12.2"
@@ -21,6 +22,7 @@ wasm-bindgen = "0.2.100"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3.82"
 web-sys = { version = "0.3.82", features = ["CloseEvent", "ErrorEvent", "Headers", "MessageEvent", "RequestInit", "Response", "WebSocket", "Window"] }
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }

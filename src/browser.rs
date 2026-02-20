@@ -8,6 +8,9 @@ use crate::tcop::engine::{EngineStateSnapshot, restore_state, snapshot_state};
 use crate::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
 
 #[cfg(target_arch = "wasm32")]
+use crate::executor::exec_expr::process_pending_ws_callbacks;
+
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::wasm_bindgen;
 
 const SNAPSHOT_HEADER: &str = "POSTGRUST_BROWSER_SNAPSHOT_V1";
@@ -149,6 +152,11 @@ async fn execute_sql_results_internal(
 }
 
 async fn execute_simple_query(sql: &str) -> Result<Vec<BrowserQueryResult>, String> {
+    // Process any pending WebSocket on_message callbacks before running user SQL,
+    // so that incoming data is available (e.g. INSERTed into tables) by query time.
+    #[cfg(target_arch = "wasm32")]
+    process_pending_ws_callbacks().await;
+
     let mut session = PostgresSession::new();
     let messages = session
         .run([FrontendMessage::Query {

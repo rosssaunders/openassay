@@ -28,6 +28,8 @@ use crate::tcop::engine::{
 use crate::utils::adt::json::{
     json_value_text_output, jsonb_path_query_values, parse_json_document_arg, scalar_to_json_value,
 };
+#[cfg(target_arch = "wasm32")]
+use crate::tcop::engine::{drain_wasm_ws_messages, sync_wasm_ws_state};
 use crate::utils::adt::misc::{
     compare_values_for_predicate, eval_regexp_matches_set_function,
     eval_regexp_split_to_table_set_function, parse_f64_numeric_scalar, truthy,
@@ -1661,6 +1663,15 @@ fn virtual_relation_rows(
                     message: "extension \"ws\" is not loaded".to_string(),
                 });
             }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let conn_ids: Vec<i64> =
+                    with_ext_read(|ext| ext.ws_connections.keys().copied().collect());
+                for id in conn_ids {
+                    sync_wasm_ws_state(id);
+                    drain_wasm_ws_messages(id);
+                }
+            }
             Ok(with_ext_read(|ext| {
                 let mut conns: Vec<_> = ext.ws_connections.values().collect();
                 conns.sort_by_key(|c| c.id);
@@ -2747,7 +2758,6 @@ pub(crate) async fn eval_aggregate_function(
                     }
                     ScalarValue::Numeric(v) => {
                         decimal_sum += v;
-                        float_sum += v.to_string().parse::<f64>().unwrap_or(0.0);
                         saw_decimal = true;
                         saw_any = true;
                     }

@@ -1,8 +1,12 @@
-# Postrust
+<p align="center">
+  <img src="assets/openassay-logo.png" width="200" alt="OpenAssay">
+</p>
+
+# OpenAssay
 
 **An async-native, PostgreSQL-compatible SQL engine in Rust — where network data sources are first-class SQL primitives.**
 
-Postrust treats HTTP APIs, WebSockets, and remote data feeds as things you query, not things you preprocess. Write SQL that fetches, transforms, and joins live data in a single statement — no Python glue, no ETL pipelines, no waiting.
+OpenAssay treats HTTP APIs, WebSockets, and remote data feeds as things you query, not things you preprocess. Write SQL that fetches, transforms, and joins live data in a single statement — no Python glue, no ETL pipelines, no waiting.
 
 ```sql
 -- Fetch live BTC derivatives data from Deribit and query it with SQL
@@ -21,36 +25,42 @@ FROM (
 WHERE key = 'result';
 ```
 
-Runs natively on Linux/macOS **and in the browser via WASM**. [Try it live →](https://rosssaunders.github.io/postrust)
+Runs natively on Linux/macOS **and in the browser via WASM**. [Try it live →](https://rosssaunders.github.io/openassay)
 
 ## Demo
 
-![Postrust CLI Demo](assets/demo.gif)
+### CLI — connect with psql
+![OpenAssay CLI Demo](assets/demo.gif)
 
-*psql connecting to Postrust — CREATE TABLE, queries with window functions, JSON, CTEs, and live HTTP fetching.*
+*CREATE TABLE, window functions, JSON, CTEs, and live HTTP fetching via psql.*
+
+### Browser — runs entirely in WASM
+![OpenAssay Browser Demo](assets/browser-demo.gif)
+
+*Live cryptocurrency data from Deribit API, queried with SQL — running in the browser with zero backend.*
 
 ## Why async matters
 
 Most embeddable SQL engines block on I/O. That's fine for local files, but useless when your data lives behind an API.
 
-Postrust is **async all the way through** — from expression evaluation to query execution. This means:
+OpenAssay is **async all the way through** — from expression evaluation to query execution. This means:
 
 - **`http_get()`/`http_post()`/`http_head()` (via `CREATE EXTENSION http`)** fetch data without blocking the engine
 - **WebSocket streams** can be queried as virtual tables (`SELECT * FROM ws.messages`)
 - **WASM builds** use native browser `fetch()` and `WebSocket` — no sync XHR hacks, no thread emulation
 - **Multiple concurrent data sources** can be queried in the same statement without serialising requests
 
-This makes Postrust uniquely suited for **data analytics against live APIs** — the kind of work that usually requires Python/Pandas/requests just to get data into a queryable shape.
+This makes OpenAssay uniquely suited for **data analytics against live APIs** — the kind of work that usually requires Python/Pandas/requests just to get data into a queryable shape.
 
 ## PostgreSQL compatibility
 
 **100% pass rate** on 39 PostgreSQL 18 regression test files — **12,329 / 12,329 statements passing**.
 
-**Target: PostgreSQL 18** (current release). Postrust tracks the latest PostgreSQL version only — there is no backwards compatibility with older Postgres versions. When PostgreSQL ships a new major release, we update to match. This keeps the codebase clean and lets us adopt new syntax and semantics without carrying legacy baggage.
+**Target: PostgreSQL 18** (current release). OpenAssay tracks the latest PostgreSQL version only — there is no backwards compatibility with older Postgres versions. When PostgreSQL ships a new major release, we update to match. This keeps the codebase clean and lets us adopt new syntax and semantics without carrying legacy baggage.
 
 ### Regression test results
 
-39 test files from the PostgreSQL 18 regression suite run against Postrust with **100% compatibility**:
+39 test files from the PostgreSQL 18 regression suite run against OpenAssay with **100% compatibility**:
 
 | File | Statements | | File | Statements |
 |------|------------|---|------|------------|
@@ -77,7 +87,7 @@ This makes Postrust uniquely suited for **data analytics against live APIs** —
 
 ### Regression tests not yet included
 
-The full PostgreSQL 18 regression suite contains ~120 test files. The following 84 are **not yet tested** because they exercise functionality Postrust doesn't implement (being a query engine, not a full database server):
+The full PostgreSQL 18 regression suite contains ~120 test files. The following 84 are **not yet tested** because they exercise functionality OpenAssay doesn't implement (being a query engine, not a full database server):
 
 **Storage & indexing** — `btree_index`, `hash_index`, `brin`, `gin`, `gist`, `spgist`, `create_index_spgist`, `index_including`, `index_including_gist`, `hash_part`, `indexing`, `create_am`, `hash_func`, `tuplesort`, `compression`, `memoize`, `reloptions`, `tablespace`, `stats_ext`
 
@@ -97,7 +107,7 @@ The full PostgreSQL 18 regression suite contains ~120 test files. The following 
 
 **Other** — `collate`, `md5`, `regproc`
 
-Many of these are not applicable to Postrust's architecture (e.g., WAL, vacuum, tablespaces, storage-level indexing). Others represent future work as the query engine expands.
+Many of these are not applicable to OpenAssay's architecture (e.g., WAL, vacuum, tablespaces, storage-level indexing). Others represent future work as the query engine expands.
 
 ### ✅ Language features
 
@@ -190,7 +200,7 @@ TEXT, INTEGER, BIGINT, FLOAT, DOUBLE PRECISION, BOOLEAN, NUMERIC, DATE, TIMESTAM
 
 ## Screenshot
 
-![Postrust Browser SQL Harness](assets/postrust-browser-harness.png)
+![OpenAssay Browser SQL Harness](assets/openassay-browser-harness.png)
 
 ## Quick Start
 
@@ -216,9 +226,9 @@ cargo run --bin web_server -- 8080
 
 ## Logical replication
 
-Postrust can act as a **logical replication target** for a real PostgreSQL database. It subscribes to a publication and keeps an in-memory replica of the published tables, streaming INSERTs, UPDATEs, and DELETEs in real time via the pgoutput protocol.
+OpenAssay can act as a **logical replication target** for a real PostgreSQL database. It subscribes to a publication and keeps an in-memory replica of the published tables, streaming INSERTs, UPDATEs, and DELETEs in real time via the pgoutput protocol.
 
-This means you can point Postrust at a production Postgres and query a live, read-only copy of your data — joined with external API data — without touching the source database.
+This means you can point OpenAssay at a production Postgres and query a live, read-only copy of your data — joined with external API data — without touching the source database.
 
 ### Setting up the upstream (PostgreSQL)
 
@@ -247,17 +257,17 @@ CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD 'secret';
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO replicator;
 ```
 
-### Starting Postrust as a replication target
+### Starting OpenAssay as a replication target
 
 ```bash
-# Start the Postrust wire-protocol server
+# Start the OpenAssay wire-protocol server
 cargo run --bin pg_server -- 127.0.0.1:55432
 ```
 
-Connect to Postrust (via `psql`, DBeaver, or any PG client) and create matching target tables:
+Connect to OpenAssay (via `psql`, DBeaver, or any PG client) and create matching target tables:
 
 ```sql
--- On Postrust (psql -h 127.0.0.1 -p 55432)
+-- On OpenAssay (psql -h 127.0.0.1 -p 55432)
 CREATE TABLE users (
   id SERIAL PRIMARY KEY,
   name TEXT NOT NULL,
@@ -284,8 +294,8 @@ CREATE SUBSCRIPTION my_sub
 
 ### What happens next
 
-1. **Initial sync** (`copy_data = true`): Postrust copies all existing rows from the published tables
-2. **Streaming**: Postrust creates a logical replication slot and streams WAL changes — every INSERT, UPDATE, and DELETE on the upstream is applied to the in-memory tables in real time
+1. **Initial sync** (`copy_data = true`): OpenAssay copies all existing rows from the published tables
+2. **Streaming**: OpenAssay creates a logical replication slot and streams WAL changes — every INSERT, UPDATE, and DELETE on the upstream is applied to the in-memory tables in real time
 3. **Query freely**: The replicated tables are now queryable with full SQL, including joins with HTTP data sources
 
 ```sql
@@ -301,13 +311,13 @@ WHERE o.status = 'pending';
 
 ### Limitations
 
-- **In-memory only** — if Postrust restarts, it re-syncs from scratch (initial copy + streaming catch-up)
-- **Read-only replica** — writes to replicated tables in Postrust don't propagate back to upstream
-- **Schema changes** — DDL on the upstream (e.g. `ALTER TABLE`) requires manually updating the Postrust target tables and re-subscribing
+- **In-memory only** — if OpenAssay restarts, it re-syncs from scratch (initial copy + streaming catch-up)
+- **Read-only replica** — writes to replicated tables in OpenAssay don't propagate back to upstream
+- **Schema changes** — DDL on the upstream (e.g. `ALTER TABLE`) requires manually updating the OpenAssay target tables and re-subscribing
 
 ### Running the integration test
 
-The test suite spins up a real PostgreSQL in Docker, creates tables and a publication, starts Postrust, subscribes, and verifies initial sync + streaming INSERT/UPDATE/DELETE:
+The test suite spins up a real PostgreSQL in Docker, creates tables and a publication, starts OpenAssay, subscribes, and verifies initial sync + streaming INSERT/UPDATE/DELETE:
 
 ```bash
 cd tests/integration
@@ -391,23 +401,23 @@ implementation-plan/     # Staged PostgreSQL parity roadmap
 
 ## Architecture: query engine, not database server
 
-Postrust is a **query engine**, not a general-purpose database. It doesn't implement MVCC, WAL, row-level locking, or durable storage — your data lives in APIs, files, and streams. Postrust just lets you query it.
+OpenAssay is a **query engine**, not a general-purpose database. It doesn't implement MVCC, WAL, row-level locking, or durable storage — your data lives in APIs, files, and streams. OpenAssay just lets you query it.
 
 This is a deliberate design choice:
 
-- **No process-per-connection model.** PostgreSQL spawns a heavyweight OS process for each client connection and uses shared memory for IPC. Postrust uses an async runtime — a single thread can serve many concurrent queries, yielding on network I/O instead of blocking.
+- **No process-per-connection model.** PostgreSQL spawns a heavyweight OS process for each client connection and uses shared memory for IPC. OpenAssay uses an async runtime — a single thread can serve many concurrent queries, yielding on network I/O instead of blocking.
 - **No MVCC or locking.** There are no concurrent writers contending for the same rows. Tables are ephemeral scratch space for intermediate results, not the source of truth. This eliminates an entire class of complexity (tuple versioning, vacuum, snapshot isolation, deadlock detection).
-- **No WAL or durability.** If the process exits, the data is gone — and that's fine, because the data came from an API and can be re-fetched. The source of truth is the external system, not Postrust.
+- **No WAL or durability.** If the process exits, the data is gone — and that's fine, because the data came from an API and can be re-fetched. The source of truth is the external system, not OpenAssay.
 
-This matters for the async story: in traditional PostgreSQL, an `http_get()` call (via `pgsql-http`) blocks the entire backend process. Postrust's async execution means a query waiting on a slow API doesn't block anything — other queries continue executing on the same thread. When your "tables" are API endpoints with 200ms latency, this is the difference between usable and unusable.
+This matters for the async story: in traditional PostgreSQL, an `http_get()` call (via `pgsql-http`) blocks the entire backend process. OpenAssay's async execution means a query waiting on a slow API doesn't block anything — other queries continue executing on the same thread. When your "tables" are API endpoints with 200ms latency, this is the difference between usable and unusable.
 
-**In short:** PostgreSQL is a storage engine with a query engine on top. Postrust is a query engine with the network as its storage.
+**In short:** PostgreSQL is a storage engine with a query engine on top. OpenAssay is a query engine with the network as its storage.
 
 ## The vision
 
 SQL is the best language for data analysis. But getting data *into* SQL is the hard part — you end up writing Python scripts to fetch from APIs, parse JSON, clean it up, load it into a database, and *then* query it.
 
-Postrust collapses that pipeline. Your SQL *is* the data pipeline. Fetch, transform, join, and analyse — all in one async query.
+OpenAssay collapses that pipeline. Your SQL *is* the data pipeline. Fetch, transform, join, and analyse — all in one async query.
 
 ## License
 

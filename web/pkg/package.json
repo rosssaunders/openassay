@@ -1,14 +1,14 @@
 {
-  "name": "postgrust",
+  "name": "openassay",
   "type": "module",
   "version": "0.1.0",
   "files": [
-    "postgrust_bg.wasm",
-    "postgrust.js",
-    "postgrust.d.ts"
+    "openassay_bg.wasm",
+    "openassay.js",
+    "openassay.d.ts"
   ],
-  "main": "postgrust.js",
-  "types": "postgrust.d.ts",
+  "main": "openassay.js",
+  "types": "openassay.d.ts",
   "sideEffects": [
     "./snippets/*"
   ]

@@ -2910,6 +2910,19 @@ async fn execute_ws_connect(args: &[ScalarValue]) -> Result<ScalarValue, EngineE
     #[cfg(target_arch = "wasm32")]
     if let Ok(handle) = real_result {
         ws_wasm::store_handle(id, handle);
+
+        // If an on_message callback is registered, start a background loop that
+        // continuously drains incoming messages and dispatches the callback.
+        // This runs on the JS event loop via spawn_local so the exchange never
+        // sees a slow consumer.
+        let has_callback = with_ext_read(|ext| {
+            ext.ws_connections
+                .get(&id)
+                .is_some_and(|c| c.on_message.is_some())
+        });
+        if has_callback {
+            wasm_bindgen_futures::spawn_local(ws_background_dispatch(id));
+        }
     }
 
     Ok(ScalarValue::Int(id))
@@ -2937,6 +2950,10 @@ async fn execute_ws_send(args: &[ScalarValue]) -> Result<ScalarValue, EngineErro
             });
         }
     };
+    // Sync state from WASM handle before checking connection status
+    #[cfg(target_arch = "wasm32")]
+    sync_wasm_ws_state(conn_id);
+
     let (is_real, is_closed) = with_ext_read(|ext| {
         if let Some(conn) = ext.ws_connections.get(&conn_id) {
             Ok((conn.real_io, conn.state == "closed"))
@@ -3156,6 +3173,118 @@ pub async fn ws_simulate_message(
         }
     }
     Ok(results)
+}
+
+/// Process pending WebSocket callbacks for all connections.
+///
+/// Drains buffered messages from WASM handles and dispatches the registered
+/// `on_message` SQL callback for each one. Call this before executing user SQL
+/// so that incoming data is processed into tables before the query runs.
+#[cfg(target_arch = "wasm32")]
+pub async fn process_pending_ws_callbacks() {
+    let conn_ids: Vec<i64> = with_ext_read(|ext| {
+        ext.ws_connections
+            .values()
+            .filter(|c| c.real_io && c.on_message.is_some())
+            .map(|c| c.id)
+            .collect()
+    });
+
+    for conn_id in conn_ids {
+        drain_and_dispatch_ws(conn_id).await;
+    }
+}
+
+/// Background loop for a single WebSocket connection. Runs on the JS event
+/// loop via `spawn_local`, yielding between iterations so that `onmessage`
+/// callbacks can fire and the browser stays responsive. Exits when the
+/// connection is closed or removed.
+#[cfg(target_arch = "wasm32")]
+async fn ws_background_dispatch(conn_id: i64) {
+    loop {
+        // Yield to the JS event loop — lets onmessage fire and buffers messages.
+        yield_to_event_loop().await;
+
+        // Check the connection is still alive
+        let alive = with_ext_read(|ext| {
+            ext.ws_connections
+                .get(&conn_id)
+                .is_some_and(|c| c.state != "closed" && c.on_message.is_some())
+        });
+        if !alive {
+            break;
+        }
+
+        drain_and_dispatch_ws(conn_id).await;
+    }
+}
+
+/// Yield control to the browser event loop (setTimeout 0).
+#[cfg(target_arch = "wasm32")]
+async fn yield_to_event_loop() {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        web_sys::window()
+            .expect("no global window")
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0)
+            .expect("setTimeout failed");
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+/// Drain buffered messages for a connection and dispatch the on_message callback.
+#[cfg(target_arch = "wasm32")]
+async fn drain_and_dispatch_ws(conn_id: i64) {
+    sync_wasm_ws_state(conn_id);
+    drain_wasm_ws_messages(conn_id);
+
+    let pending: Vec<(String, String)> = with_ext_write(|ext| {
+        if let Some(conn) = ext.ws_connections.get_mut(&conn_id) {
+            if let Some(ref func_name) = conn.on_message {
+                let func = func_name.clone();
+                conn.inbound_queue
+                    .drain(..)
+                    .map(|msg| (func.clone(), msg))
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
+    });
+
+    for (func_name, message) in pending {
+        dispatch_ws_callback(&func_name, &message).await;
+    }
+}
+
+/// Execute a user-defined SQL callback function with a message argument.
+#[cfg(target_arch = "wasm32")]
+async fn dispatch_ws_callback(func_name: &str, message: &str) {
+    let uf = with_ext_read(|ext| {
+        ext.user_functions
+            .iter()
+            .find(|f| {
+                let fname = f.name.last().map(|s| s.as_str()).unwrap_or("");
+                fname == func_name.to_ascii_lowercase()
+            })
+            .cloned()
+    });
+    if let Some(uf) = uf {
+        let body = uf.body.clone();
+        let param_name = uf.params.first().and_then(|p| p.name.clone());
+        let escaped = message.replace('\'', "''");
+        let substituted = if let Some(pname) = param_name {
+            body.replace(&pname, &format!("'{escaped}'"))
+        } else {
+            body.replace("$1", &format!("'{escaped}'"))
+        };
+        if let Ok(stmt) = crate::parser::sql_parser::parse_statement(&substituted) {
+            if let Ok(planned) = plan_statement(stmt) {
+                let _ = execute_planned_query(&planned, &[]).await;
+            }
+        }
+    }
 }
 
 fn eval_array_subscript(

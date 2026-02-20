@@ -3,10 +3,8 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::EngineError;
-use openferric::core::{BarrierDirection, BarrierStyle, ExerciseStyle, OptionType, PricingEngine};
-use openferric::engines::analytic::HestonEngine;
-use openferric::instruments::vanilla::VanillaOption;
-use openferric::market::Market;
+use openferric::core::{BarrierDirection, BarrierStyle, OptionType};
+use openferric::engines::fft::try_heston_price_fft;
 use openferric::pricing::american::crr_binomial_american;
 use openferric::pricing::barrier::barrier_price_closed_form;
 use openferric::pricing::european::{black_scholes_greeks, black_scholes_price};
@@ -188,25 +186,34 @@ fn eval_heston(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     let rho = parse_f64(&args[8], "openferric.heston() expects numeric rho")?;
     let option_type = parse_option_type(&args[9], "openferric.heston()")?;
 
-    let instrument = VanillaOption {
-        option_type,
-        strike,
+    let prices = try_heston_price_fft(
+        spot,
+        &[strike],
+        rate,
+        0.0, // dividend_yield
+        v0,
+        kappa,
+        theta,
+        sigma_v,
+        rho,
         expiry,
-        exercise: ExerciseStyle::European,
-    };
-    let market = Market::builder()
-        .spot(spot)
-        .rate(rate)
-        .dividend_yield(0.0)
-        .flat_vol(1.0)
-        .build()
-        .map_err(map_pricing_error)?;
-    let engine = HestonEngine::new(v0, kappa, theta, sigma_v, rho);
-    let result = engine
-        .price(&instrument, &market)
-        .map_err(map_pricing_error)?;
+    )
+    .map_err(|e| EngineError { message: e })?;
 
-    Ok(ScalarValue::Float(result.price))
+    let call_price = prices
+        .first()
+        .map(|(_k, p)| *p)
+        .unwrap_or(0.0);
+
+    let price = match option_type {
+        OptionType::Call => call_price,
+        OptionType::Put => {
+            // put-call parity: P = C - S + K * exp(-r*T)
+            call_price - spot + strike * (-rate * expiry).exp()
+        }
+    };
+
+    Ok(ScalarValue::Float(price))
 }
 
 fn parse_f64(value: &ScalarValue, message: &str) -> Result<f64, EngineError> {

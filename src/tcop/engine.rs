@@ -807,12 +807,20 @@ pub(crate) mod ws_wasm {
         }));
         ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
 
-        // onmessage
+        // onmessage — handle text, Blob (via toString), and ArrayBuffer data
         let msgs_clone = Rc::clone(&messages);
         let on_message =
             Closure::<dyn FnMut(MessageEvent)>::wrap(Box::new(move |e: MessageEvent| {
-                if let Ok(txt) = e.data().dyn_into::<js_sys::JsString>() {
+                let data = e.data();
+                if let Ok(txt) = data.dyn_into::<js_sys::JsString>() {
                     msgs_clone.borrow_mut().push(String::from(txt));
+                } else if let Ok(buf) = e.data().dyn_into::<js_sys::ArrayBuffer>() {
+                    let arr = js_sys::Uint8Array::new(&buf);
+                    let mut bytes = vec![0u8; arr.length() as usize];
+                    arr.copy_to(&mut bytes);
+                    if let Ok(s) = String::from_utf8(bytes) {
+                        msgs_clone.borrow_mut().push(s);
+                    }
                 }
             }));
         ws.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
