@@ -3202,8 +3202,9 @@ pub async fn process_pending_ws_callbacks() {
 #[cfg(target_arch = "wasm32")]
 async fn ws_background_dispatch(conn_id: i64) {
     loop {
-        // Yield to the JS event loop — lets onmessage fire and buffers messages.
-        yield_to_event_loop().await;
+        // Yield to the JS event loop for 200ms — lets onmessage callbacks fire
+        // and buffer messages while keeping the main thread free for rendering.
+        sleep_ms(200).await;
 
         // Check the connection is still alive
         let alive = with_ext_read(|ext| {
@@ -3219,48 +3220,56 @@ async fn ws_background_dispatch(conn_id: i64) {
     }
 }
 
-/// Yield control to the browser event loop (setTimeout 0).
+/// Sleep for `ms` milliseconds, yielding to the browser event loop.
+/// Uses `js_sys::global()` so this works in both Window and Web Worker contexts.
 #[cfg(target_arch = "wasm32")]
-async fn yield_to_event_loop() {
+async fn sleep_ms(ms: i32) {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
-        web_sys::window()
-            .expect("no global window")
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, 0)
-            .expect("setTimeout failed");
+        let global = js_sys::global();
+        let set_timeout = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("setTimeout"))
+            .expect("setTimeout not found on global");
+        let set_timeout: js_sys::Function = set_timeout.into();
+        set_timeout
+            .call2(
+                &wasm_bindgen::JsValue::undefined(),
+                &resolve,
+                &wasm_bindgen::JsValue::from(ms),
+            )
+            .expect("setTimeout call failed");
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 /// Drain buffered messages for a connection and dispatch the on_message callback.
+///
+/// Batches all pending messages into a single multi-row INSERT when the callback
+/// body matches `INSERT INTO <table> VALUES (<param>)`. This reduces N separate
+/// parse→plan→execute cycles to just one, keeping the main thread responsive.
 #[cfg(target_arch = "wasm32")]
 async fn drain_and_dispatch_ws(conn_id: i64) {
     sync_wasm_ws_state(conn_id);
     drain_wasm_ws_messages(conn_id);
 
-    let pending: Vec<(String, String)> = with_ext_write(|ext| {
+    let (func_name, messages) = with_ext_write(|ext| {
         if let Some(conn) = ext.ws_connections.get_mut(&conn_id) {
-            if let Some(ref func_name) = conn.on_message {
-                let func = func_name.clone();
-                conn.inbound_queue
-                    .drain(..)
-                    .map(|msg| (func.clone(), msg))
-                    .collect()
+            if let Some(ref name) = conn.on_message {
+                let name = name.clone();
+                let msgs: Vec<String> = conn.inbound_queue.drain(..).collect();
+                (Some(name), msgs)
             } else {
-                Vec::new()
+                (None, Vec::new())
             }
         } else {
-            Vec::new()
+            (None, Vec::new())
         }
     });
 
-    for (func_name, message) in pending {
-        dispatch_ws_callback(&func_name, &message).await;
+    let Some(func_name) = func_name else { return };
+    if messages.is_empty() {
+        return;
     }
-}
 
-/// Execute a user-defined SQL callback function with a message argument.
-#[cfg(target_arch = "wasm32")]
-async fn dispatch_ws_callback(func_name: &str, message: &str) {
+    // Look up the callback function once for the entire batch
     let uf = with_ext_read(|ext| {
         ext.user_functions
             .iter()
@@ -3270,21 +3279,58 @@ async fn dispatch_ws_callback(func_name: &str, message: &str) {
             })
             .cloned()
     });
-    if let Some(uf) = uf {
-        let body = uf.body.clone();
-        let param_name = uf.params.first().and_then(|p| p.name.clone());
+    let Some(uf) = uf else { return };
+
+    let body = uf.body.trim().trim_end_matches(';').trim();
+    let param_placeholder = uf
+        .params
+        .first()
+        .and_then(|p| p.name.clone())
+        .unwrap_or_else(|| "$1".to_string());
+
+    // Try to batch as a single multi-row INSERT.
+    // Matches: INSERT INTO <table> VALUES (<param>)
+    if let Some(batch_sql) = try_build_batch_insert(body, &param_placeholder, &messages) {
+        if let Ok(stmt) = crate::parser::sql_parser::parse_statement(&batch_sql) {
+            if let Ok(planned) = plan_statement(stmt) {
+                let _ = execute_planned_query(&planned, &[]).await;
+                return;
+            }
+        }
+    }
+
+    // Fallback: execute per-message (for non-INSERT callbacks)
+    for message in &messages {
         let escaped = message.replace('\'', "''");
-        let substituted = if let Some(pname) = param_name {
-            body.replace(&pname, &format!("'{escaped}'"))
-        } else {
-            body.replace("$1", &format!("'{escaped}'"))
-        };
+        let substituted = body.replace(&param_placeholder, &format!("'{escaped}'"));
         if let Ok(stmt) = crate::parser::sql_parser::parse_statement(&substituted) {
             if let Ok(planned) = plan_statement(stmt) {
                 let _ = execute_planned_query(&planned, &[]).await;
             }
         }
     }
+}
+
+/// Try to build a batched multi-row INSERT from the callback body and messages.
+///
+/// Given body `INSERT INTO trades VALUES (msg)` and messages `["a","b","c"]`,
+/// produces `INSERT INTO trades VALUES ('a'), ('b'), ('c')`.
+#[cfg(target_arch = "wasm32")]
+fn try_build_batch_insert(body: &str, param: &str, messages: &[String]) -> Option<String> {
+    let lower = body.to_ascii_lowercase();
+    let values_pos = lower.find("values")?;
+    let prefix = &body[..values_pos + 6]; // "INSERT INTO <table> VALUES"
+    let template = body[values_pos + 6..].trim(); // " (msg)" or " ($1)"
+
+    let rows: Vec<String> = messages
+        .iter()
+        .map(|msg| {
+            let escaped = msg.replace('\'', "''");
+            template.replace(param, &format!("'{escaped}'"))
+        })
+        .collect();
+
+    Some(format!("{} {}", prefix, rows.join(", ")))
 }
 
 fn eval_array_subscript(

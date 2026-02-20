@@ -195,7 +195,10 @@
       let editor;
       let resultEditor;
       let pendingResultText = "Loading WASM runtime...";
-      let wasmApi = null;
+      let worker = null;
+      let workerReady = false;
+      let workerMsgId = 0;
+      const workerCallbacks = new Map();
       let monacoReady = false;
       let gridReady = false;
       let wasmStatus = "loading";
@@ -334,74 +337,84 @@
         return out && typeof out === "object" ? out : null;
       }
 
-      function resolveWasmFunction(names) {
-        if (wasmApi) {
-          for (const name of names) {
-            if (typeof wasmApi[name] === "function") {
-              return wasmApi[name];
+      function initWorker() {
+        return new Promise(function (resolve, reject) {
+          worker = new Worker("worker.js", { type: "module" });
+          worker.onmessage = function (e) {
+            const msg = e.data;
+            if (msg.type === "ready") {
+              workerReady = true;
+              httpMode = msg.httpMode;
+              resolve();
+              return;
             }
+            if (msg.type === "init_error") {
+              reject(new Error(msg.error));
+              return;
+            }
+            const cb = workerCallbacks.get(msg.id);
+            if (cb) {
+              workerCallbacks.delete(msg.id);
+              if (msg.type === "error") {
+                cb.reject(new Error(msg.error));
+              } else {
+                cb.resolve(msg.data);
+              }
+            }
+          };
+          worker.onerror = function (err) {
+            reject(err);
+          };
+        });
+      }
+
+      function workerCall(type, extra) {
+        return new Promise(function (resolve, reject) {
+          const id = ++workerMsgId;
+          workerCallbacks.set(id, { resolve: resolve, reject: reject });
+          const msg = { type: type, id: id };
+          if (extra) {
+            Object.keys(extra).forEach(function (k) { msg[k] = extra[k]; });
           }
-        }
-        if (names.includes("execute_sql") && typeof window.openassayExecute === "function") {
-          return window.openassayExecute;
-        }
-        return null;
+          worker.postMessage(msg);
+        });
       }
 
       async function persistSnapshotToLocalStorage() {
-        const exportFn = resolveWasmFunction(["export_state_snapshot", "export_state"]);
-        if (typeof exportFn !== "function") {
-          return;
-        }
-        const snapshot = await exportFn();
-        if (typeof snapshot === "string" && snapshot.trim()) {
-          localStorage.setItem(SNAPSHOT_KEY, snapshot);
-        }
+        if (!workerReady) return;
+        try {
+          const snapshot = await workerCall("export_snapshot");
+          if (typeof snapshot === "string" && snapshot.trim()) {
+            localStorage.setItem(SNAPSHOT_KEY, snapshot);
+          }
+        } catch (_err) {}
       }
 
       async function restoreSnapshotFromLocalStorage() {
-        const importFn = resolveWasmFunction(["import_state_snapshot", "import_state"]);
-        if (typeof importFn !== "function") {
-          return false;
-        }
+        if (!workerReady) return false;
         const snapshot = localStorage.getItem(SNAPSHOT_KEY);
-        if (!snapshot) {
-          return false;
-        }
+        if (!snapshot) return false;
         try {
-          const out = await importFn(snapshot);
+          const out = await workerCall("import_snapshot", { snapshot: snapshot });
           if (isExecutionErrorText(out)) {
             localStorage.removeItem(SNAPSHOT_KEY);
-            const resetFn = resolveWasmFunction(["reset_state_snapshot", "reset_state"]);
-            if (typeof resetFn === "function") { await resetFn(); }
+            try { await workerCall("reset_state"); } catch (_) {}
             console.warn("Snapshot restore failed, cleared stale snapshot:", out);
             return false;
           }
           return true;
         } catch (err) {
           localStorage.removeItem(SNAPSHOT_KEY);
-          const resetFn = resolveWasmFunction(["reset_state_snapshot", "reset_state"]);
-          if (typeof resetFn === "function") { try { await resetFn(); } catch(_){} }
+          try { await workerCall("reset_state"); } catch (_) {}
           console.warn("Snapshot restore threw, cleared stale snapshot:", err);
           return false;
         }
       }
 
-      async function tryLoadWasmApi() {
+      async function initWorkerAndRestore() {
         try {
-          const mod = await import("./pkg/openassay.js");
-          if (typeof mod.default === "function") {
-            await mod.default();
-          }
-          wasmApi = mod;
+          await initWorker();
           wasmStatus = "connected";
-          httpMode =
-            typeof resolveWasmFunction([
-              "execute_sql_http_json",
-              "run_sql_http_json",
-              "execute_sql_http",
-              "run_sql_http",
-            ]) === "function";
           snapshotRestored = await restoreSnapshotFromLocalStorage();
           refreshStatus();
           setResult(snapshotRestored
@@ -422,25 +435,13 @@
           return;
         }
 
-        const runFunction = resolveWasmFunction([
-          "execute_sql_http_json",
-          "run_sql_http_json",
-          "execute_sql_json",
-          "run_sql_json",
-          "execute_sql_http",
-          "run_sql_http",
-          "execute_sql",
-          "exec_sql",
-          "run_sql",
-        ]);
-
-        if (typeof runFunction !== "function") {
-          setResult("No execute function found. Expected `openassayExecute(sql)` or WASM export.");
+        if (!workerReady) {
+          setResult("WASM engine not ready. Please wait for initialization.");
           return;
         }
 
         try {
-          const out = await runFunction(sql);
+          const out = await workerCall("exec_sql", { sql: sql });
           const executionPayload = parseExecutionPayload(out);
 
           if (executionPayload && Array.isArray(executionPayload.results)) {
@@ -450,7 +451,6 @@
                 : JSON.stringify(executionPayload, null, 2);
             setResult(rendered);
             if (!executionPayload.ok) {
-              // Show error in result area when grid has nothing
               resultEditorEl.style.display = "block";
               resultGridEl.style.display = "none";
             } else {
@@ -475,14 +475,13 @@
       }
 
       async function exportSnapshot() {
-        const exportFn = resolveWasmFunction(["export_state_snapshot", "export_state"]);
-        if (typeof exportFn !== "function") {
+        if (!workerReady) {
           setResult("Snapshot export function not found in WASM module.");
           return;
         }
 
         try {
-          const out = await exportFn();
+          const out = await workerCall("export_snapshot");
           const snapshot = typeof out === "string" ? out : JSON.stringify(out, null, 2);
           if (typeof snapshot === "string" && snapshot.trim()) {
             localStorage.setItem(SNAPSHOT_KEY, snapshot);
@@ -499,8 +498,7 @@
       }
 
       async function importSnapshot() {
-        const importFn = resolveWasmFunction(["import_state_snapshot", "import_state"]);
-        if (typeof importFn !== "function") {
+        if (!workerReady) {
           setResult("Snapshot import function not found in WASM module.");
           return;
         }
@@ -515,7 +513,7 @@
         }
 
         try {
-          const out = await importFn(pasted);
+          const out = await workerCall("import_snapshot", { snapshot: pasted });
           const rendered = typeof out === "string" ? out : JSON.stringify(out, null, 2);
           setResult(rendered);
           if (!isExecutionErrorText(rendered)) {
@@ -527,15 +525,14 @@
       }
 
       async function resetState() {
-        const resetFn = resolveWasmFunction(["reset_state_snapshot", "reset_state"]);
-        if (typeof resetFn !== "function") {
+        if (!workerReady) {
           localStorage.removeItem(SNAPSHOT_KEY);
           setResult("Reset function not found in WASM module. Cleared local snapshot only.");
           return;
         }
 
         try {
-          const out = await resetFn();
+          const out = await workerCall("reset_state");
           localStorage.removeItem(SNAPSHOT_KEY);
           setResult(typeof out === "string" ? out : JSON.stringify(out, null, 2));
           clearGrid();
@@ -564,7 +561,7 @@
 
       initGrid();
       refreshStatus();
-      tryLoadWasmApi();
+      initWorkerAndRestore();
 
       setTimeout(function () {
         if (!monacoReady) {

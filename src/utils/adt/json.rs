@@ -2174,10 +2174,7 @@ async fn execute_http_request(
         use wasm_bindgen::JsCast;
         use wasm_bindgen_futures::JsFuture;
 
-        let window = web_sys::window().ok_or_else(|| EngineError {
-            message: format!("{fn_name}(): window is not available"),
-        })?;
-        let mut opts = web_sys::RequestInit::new();
+        let opts = web_sys::RequestInit::new();
         opts.set_method(method);
         if let Some(body) = content.as_ref() {
             opts.set_body(&wasm_bindgen::JsValue::from_str(body));
@@ -2193,7 +2190,25 @@ async fn execute_http_request(
                 })?;
             opts.set_headers(headers.as_ref());
         }
-        let resp_value = JsFuture::from(window.fetch_with_str_and_init(url, &opts))
+        // Use js_sys::global().fetch() so this works in both Window and Web Worker contexts.
+        let global = js_sys::global();
+        let fetch_fn = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("fetch"))
+            .map_err(|_| EngineError {
+                message: format!("{fn_name}(): fetch is not available"),
+            })?;
+        let fetch_fn: js_sys::Function = fetch_fn.dyn_into().map_err(|_| EngineError {
+            message: format!("{fn_name}(): fetch is not a function"),
+        })?;
+        let resp_promise = fetch_fn
+            .call2(
+                &wasm_bindgen::JsValue::undefined(),
+                &wasm_bindgen::JsValue::from_str(url),
+                &opts,
+            )
+            .map_err(|_| EngineError {
+                message: format!("{fn_name}(): fetch call failed"),
+            })?;
+        let resp_value = JsFuture::from(js_sys::Promise::from(resp_promise))
             .await
             .map_err(|e| EngineError {
                 message: format!(
