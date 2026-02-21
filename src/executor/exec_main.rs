@@ -13,7 +13,7 @@ use crate::executor::exec_expr::{
 use crate::parser::ast::SubqueryRef;
 use crate::parser::ast::{
     Expr, GroupByExpr, JoinCondition, JoinExpr, JoinType, OrderByExpr, Query, QueryExpr,
-    SelectQuantifier, SelectStatement, SetOperator, SetQuantifier, TableExpression,
+    SelectItem, SelectQuantifier, SelectStatement, SetOperator, SetQuantifier, TableExpression,
     TableFunctionRef, TableRef, WindowFrameBound,
 };
 use crate::security::{self, RlsCommand, TablePrivilege};
@@ -89,9 +89,29 @@ pub(crate) fn execute_query_with_outer<'a>(
         }
 
         with_cte_context_async(local_ctes, || async {
+            // Check if ORDER BY references columns not in the SELECT output.
+            // If so, temporarily augment the query body to include those columns
+            // as hidden trailing targets, sort, then strip them.
+            let extra_order_cols = collect_extra_order_by_columns(query);
+            let (body, num_hidden) = if extra_order_cols.is_empty() {
+                (query.body.clone(), 0)
+            } else {
+                augment_select_for_order_by(&query.body, &extra_order_cols)
+            };
+
             let mut result =
-                execute_query_expr_with_outer(&query.body, params, outer_scope).await?;
+                execute_query_expr_with_outer(&body, params, outer_scope).await?;
             apply_order_by(&mut result, query, params).await?;
+
+            // Strip hidden ORDER BY columns
+            if num_hidden > 0 {
+                let visible = result.columns.len().saturating_sub(num_hidden);
+                result.columns.truncate(visible);
+                for row in &mut result.rows {
+                    row.truncate(visible);
+                }
+            }
+
             apply_offset_limit(&mut result, query, params).await?;
             Ok(result)
         })
@@ -309,18 +329,6 @@ async fn execute_select(
     };
     let columns = derive_select_columns(select, &cte_columns)?;
     let mut rows = Vec::new();
-    let mut source_rows = if select.from.is_empty() {
-        vec![outer_scope.cloned().unwrap_or_default()]
-    } else {
-        evaluate_from_clause(&select.from, params, outer_scope).await?
-    };
-    if let Some(outer) = outer_scope
-        && !select.from.is_empty()
-    {
-        for scope in &mut source_rows {
-            scope.inherit_outer(outer);
-        }
-    }
 
     let has_aggregate = select
         .targets
@@ -352,7 +360,32 @@ async fn execute_select(
         });
     }
 
-    let filtered_rows = if let Some(predicate) = &select.where_clause {
+    // Predicate pushdown: when there are multiple FROM tables and a WHERE clause,
+    // decompose the WHERE into conjuncts and push applicable predicates into the
+    // FROM clause evaluation, applying them incrementally as tables are joined.
+    // This avoids computing the full cartesian product before filtering.
+    let (mut source_rows, remaining_predicate) =
+        if select.from.len() >= 2 && select.where_clause.is_some() {
+            let conjuncts = decompose_and_conjuncts(select.where_clause.as_ref().unwrap());
+            evaluate_from_clause_with_pushdown(&select.from, params, outer_scope, &conjuncts).await?
+        } else {
+            let source = if select.from.is_empty() {
+                vec![outer_scope.cloned().unwrap_or_default()]
+            } else {
+                evaluate_from_clause(&select.from, params, outer_scope).await?
+            };
+            (source, select.where_clause.clone())
+        };
+
+    if let Some(outer) = outer_scope
+        && !select.from.is_empty()
+    {
+        for scope in &mut source_rows {
+            scope.inherit_outer(outer);
+        }
+    }
+
+    let filtered_rows = if let Some(predicate) = &remaining_predicate {
         let mut rows = Vec::with_capacity(source_rows.len());
         for scope in source_rows {
             if !truthy(&eval_expr(predicate, &scope, params).await?) {
@@ -380,6 +413,19 @@ async fn execute_select(
                 });
             }
         }
+        // Build a map of SELECT aliases for GROUP BY resolution.
+        // PostgreSQL allows GROUP BY to reference output column names (aliases).
+        let select_alias_map: HashMap<String, &Expr> = select
+            .targets
+            .iter()
+            .filter_map(|target| {
+                target
+                    .alias
+                    .as_ref()
+                    .map(|alias| (alias.to_ascii_lowercase(), &target.expr))
+            })
+            .collect();
+
         let grouping_sets = expand_grouping_sets(&select.group_by);
         let all_grouping = collect_grouping_identifiers(&select.group_by);
 
@@ -401,7 +447,13 @@ async fn execute_select(
                 for scope in &filtered_rows {
                     let key_values = grouping_set
                         .iter()
-                        .map(|expr| eval_expr(expr, scope, params))
+                        .map(|expr| {
+                            // Resolve GROUP BY aliases: if the expression is a simple
+                            // identifier that matches a SELECT alias, use the aliased
+                            // expression instead.
+                            let resolved = resolve_group_by_alias(expr, &select_alias_map);
+                            eval_expr(resolved, scope, params)
+                        })
                         .collect::<Vec<_>>();
                     let key_values = {
                         let mut values = Vec::with_capacity(key_values.len());
@@ -558,6 +610,232 @@ pub(crate) async fn evaluate_from_clause(
         current = next;
     }
     Ok(current)
+}
+
+/// Decompose an expression into AND-conjuncts.
+fn decompose_and_conjuncts(expr: &Expr) -> Vec<Expr> {
+    let mut conjuncts = Vec::new();
+    decompose_and_conjuncts_inner(expr, &mut conjuncts);
+    conjuncts
+}
+
+fn decompose_and_conjuncts_inner(expr: &Expr, out: &mut Vec<Expr>) {
+    if let Expr::Binary {
+        op: crate::parser::ast::BinaryOp::And,
+        left,
+        right,
+    } = expr
+    {
+        decompose_and_conjuncts_inner(left, out);
+        decompose_and_conjuncts_inner(right, out);
+    } else {
+        out.push(expr.clone());
+    }
+}
+
+/// Collect all column identifiers (unqualified and qualified) from an expression.
+fn collect_referenced_columns(expr: &Expr, columns: &mut HashSet<String>) {
+    match expr {
+        Expr::Identifier(parts) => {
+            // Add the last part (unqualified column name)
+            if let Some(last) = parts.last() {
+                columns.insert(last.to_ascii_lowercase());
+            }
+            // Add the qualified form too
+            if parts.len() >= 2 {
+                columns.insert(
+                    parts
+                        .iter()
+                        .map(|p| p.to_ascii_lowercase())
+                        .collect::<Vec<_>>()
+                        .join("."),
+                );
+            }
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_referenced_columns(left, columns);
+            collect_referenced_columns(right, columns);
+        }
+        Expr::Unary { expr, .. } => collect_referenced_columns(expr, columns),
+        Expr::FunctionCall { args, filter, .. } => {
+            for arg in args {
+                collect_referenced_columns(arg, columns);
+            }
+            if let Some(filter) = filter.as_deref() {
+                collect_referenced_columns(filter, columns);
+            }
+        }
+        Expr::Cast { expr, .. } => collect_referenced_columns(expr, columns),
+        Expr::IsNull { expr, .. } => collect_referenced_columns(expr, columns),
+        Expr::BooleanTest { expr, .. } => collect_referenced_columns(expr, columns),
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            collect_referenced_columns(expr, columns);
+            collect_referenced_columns(low, columns);
+            collect_referenced_columns(high, columns);
+        }
+        Expr::Like { expr, pattern, .. } => {
+            collect_referenced_columns(expr, columns);
+            collect_referenced_columns(pattern, columns);
+        }
+        Expr::InList { expr, list, .. } => {
+            collect_referenced_columns(expr, columns);
+            for item in list {
+                collect_referenced_columns(item, columns);
+            }
+        }
+        Expr::IsDistinctFrom { left, right, .. } => {
+            collect_referenced_columns(left, columns);
+            collect_referenced_columns(right, columns);
+        }
+        Expr::CaseSimple {
+            operand,
+            when_then,
+            else_expr,
+        } => {
+            collect_referenced_columns(operand, columns);
+            for (when, then) in when_then {
+                collect_referenced_columns(when, columns);
+                collect_referenced_columns(then, columns);
+            }
+            if let Some(e) = else_expr.as_deref() {
+                collect_referenced_columns(e, columns);
+            }
+        }
+        Expr::CaseSearched {
+            when_then,
+            else_expr,
+        } => {
+            for (when, then) in when_then {
+                collect_referenced_columns(when, columns);
+                collect_referenced_columns(then, columns);
+            }
+            if let Some(e) = else_expr.as_deref() {
+                collect_referenced_columns(e, columns);
+            }
+        }
+        Expr::AnyAll { left, right, .. } => {
+            collect_referenced_columns(left, columns);
+            collect_referenced_columns(right, columns);
+        }
+        Expr::Exists(_) | Expr::ScalarSubquery(_) | Expr::InSubquery { .. } => {
+            // Subqueries reference their own scope — mark as referencing all columns
+            // so they won't be pushed down (they'll stay in remaining_predicate)
+            columns.insert("__subquery__".to_string());
+        }
+        _ => {}
+    }
+}
+
+/// Check whether all columns referenced by a predicate are available in the given scope.
+fn predicate_columns_available(predicate: &Expr, scope: &EvalScope) -> bool {
+    let mut referenced = HashSet::new();
+    collect_referenced_columns(predicate, &mut referenced);
+
+    // If predicate contains subqueries, don't push it down
+    if referenced.contains("__subquery__") {
+        return false;
+    }
+
+    for col in &referenced {
+        if !scope.has_column(col) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Evaluate the FROM clause with predicate pushdown.
+///
+/// For each table in the FROM list, after computing the cross product with all
+/// previous tables, immediately apply any WHERE conjuncts whose referenced columns
+/// are all present in the current scope. This prevents the exponential blowup of
+/// computing the full cartesian product before filtering.
+///
+/// Returns the filtered rows and any remaining predicate conjuncts that couldn't
+/// be pushed down (e.g., those with subqueries).
+async fn evaluate_from_clause_with_pushdown(
+    from: &[TableExpression],
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+    conjuncts: &[Expr],
+) -> Result<(Vec<EvalScope>, Option<Expr>), EngineError> {
+    let mut current = vec![EvalScope::default()];
+    let mut applied: Vec<bool> = vec![false; conjuncts.len()];
+
+    for item in from {
+        let mut next = Vec::new();
+        match item {
+            TableExpression::Function(_)
+            | TableExpression::Subquery(SubqueryRef { lateral: true, .. }) => {
+                for lhs_scope in &current {
+                    let mut merged_outer = lhs_scope.clone();
+                    if let Some(outer) = outer_scope {
+                        merged_outer.inherit_outer(outer);
+                    }
+                    let rhs = evaluate_table_expression(item, params, Some(&merged_outer)).await?;
+                    for rhs_scope in &rhs.rows {
+                        next.push(combine_scopes(lhs_scope, rhs_scope, &HashSet::new()));
+                    }
+                }
+            }
+            _ => {
+                let rhs = evaluate_table_expression(item, params, outer_scope).await?;
+                for lhs_scope in &current {
+                    for rhs_scope in &rhs.rows {
+                        next.push(combine_scopes(lhs_scope, rhs_scope, &HashSet::new()));
+                    }
+                }
+            }
+        }
+
+        // Apply pushable predicates — filter early to avoid cartesian blowup
+        for (i, conjunct) in conjuncts.iter().enumerate() {
+            if next.is_empty() {
+                break;
+            }
+            if applied[i] {
+                continue;
+            }
+            // Check if this conjunct can be evaluated with the current scope
+            if predicate_columns_available(conjunct, &next[0]) {
+                let mut filtered = Vec::with_capacity(next.len());
+                for scope in next {
+                    if truthy(&eval_expr(conjunct, &scope, params).await?) {
+                        filtered.push(scope);
+                    }
+                }
+                next = filtered;
+                applied[i] = true;
+            }
+        }
+
+        current = next;
+    }
+
+    // Build remaining predicate from conjuncts that couldn't be pushed down
+    let remaining: Vec<&Expr> = conjuncts
+        .iter()
+        .zip(applied.iter())
+        .filter_map(|(c, &used)| if used { None } else { Some(c) })
+        .collect();
+
+    let remaining_predicate = if remaining.is_empty() {
+        None
+    } else {
+        let mut expr = remaining[0].clone();
+        for conjunct in &remaining[1..] {
+            expr = Expr::Binary {
+                op: crate::parser::ast::BinaryOp::And,
+                left: Box::new(expr),
+                right: Box::new((*conjunct).clone()),
+            };
+        }
+        Some(expr)
+    };
+
+    Ok((current, remaining_predicate))
 }
 
 pub(crate) fn evaluate_table_expression<'a>(
@@ -2113,6 +2391,23 @@ fn group_by_exprs(group_by: &[GroupByExpr]) -> Vec<&Expr> {
         }
     }
     out
+}
+
+/// If `expr` is a simple identifier matching a SELECT alias, return the aliased expression.
+/// Otherwise return `expr` unchanged. Matches PostgreSQL's GROUP BY alias resolution.
+fn resolve_group_by_alias<'a>(
+    expr: &'a Expr,
+    alias_map: &'a HashMap<String, &'a Expr>,
+) -> &'a Expr {
+    if let Expr::Identifier(parts) = expr {
+        if parts.len() == 1 {
+            let key = parts[0].to_ascii_lowercase();
+            if let Some(resolved) = alias_map.get(&key) {
+                return resolved;
+            }
+        }
+    }
+    expr
 }
 
 fn identifier_key(expr: &Expr) -> Option<String> {
@@ -3678,6 +3973,63 @@ pub(crate) fn row_key(row: &[ScalarValue]) -> String {
         }
     }
     key
+}
+
+/// Collect identifiers from ORDER BY that are not present in the SELECT output columns.
+/// These need to be temporarily added to the SELECT for sorting.
+fn collect_extra_order_by_columns(query: &Query) -> Vec<Expr> {
+    let select_columns: HashSet<String> = match &query.body {
+        QueryExpr::Select(select) => select
+            .targets
+            .iter()
+            .filter_map(|target| {
+                if let Some(alias) = &target.alias {
+                    return Some(alias.to_ascii_lowercase());
+                }
+                if let Expr::Identifier(parts) = &target.expr {
+                    parts.last().map(|p| p.to_ascii_lowercase())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        _ => return Vec::new(),
+    };
+
+    let mut extras = Vec::new();
+    for spec in &query.order_by {
+        if let Expr::Identifier(parts) = &spec.expr {
+            if parts.len() == 1 {
+                let name = parts[0].to_ascii_lowercase();
+                if !select_columns.contains(&name) {
+                    extras.push(spec.expr.clone());
+                }
+            }
+        }
+    }
+    extras
+}
+
+/// Augment a SELECT query body to include extra ORDER BY columns as hidden trailing targets.
+/// Returns the modified query body and the number of hidden columns added.
+fn augment_select_for_order_by(body: &QueryExpr, extras: &[Expr]) -> (QueryExpr, usize) {
+    if extras.is_empty() {
+        return (body.clone(), 0);
+    }
+    if let QueryExpr::Select(select) = body {
+        let mut new_select = select.clone();
+        let mut count = 0;
+        for expr in extras {
+            new_select.targets.push(SelectItem {
+                expr: expr.clone(),
+                alias: None,
+            });
+            count += 1;
+        }
+        (QueryExpr::Select(new_select), count)
+    } else {
+        (body.clone(), 0)
+    }
 }
 
 async fn apply_order_by(
