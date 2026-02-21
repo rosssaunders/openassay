@@ -7,21 +7,29 @@ use crate::tcop::engine::{EngineError, QueryResult, ScalarValue};
 static GLOBAL_GUC: OnceLock<RwLock<HashMap<String, String>>> = OnceLock::new();
 
 fn global_guc() -> &'static RwLock<HashMap<String, String>> {
-    GLOBAL_GUC.get_or_init(|| {
-        let mut m = HashMap::new();
-        m.insert("server_version".to_string(), "16.0".to_string());
-        m.insert("server_encoding".to_string(), "UTF8".to_string());
-        m.insert("client_encoding".to_string(), "UTF8".to_string());
-        m.insert("is_superuser".to_string(), "on".to_string());
-        m.insert("DateStyle".to_string(), "ISO, MDY".to_string());
-        m.insert("IntervalStyle".to_string(), "postgres".to_string());
-        m.insert("TimeZone".to_string(), "UTC".to_string());
-        m.insert("integer_datetimes".to_string(), "on".to_string());
-        m.insert("standard_conforming_strings".to_string(), "on".to_string());
-        m.insert("search_path".to_string(), "\"$user\", public".to_string());
-        m.insert("application_name".to_string(), String::new());
-        RwLock::new(m)
-    })
+    GLOBAL_GUC.get_or_init(|| RwLock::new(default_gucs()))
+}
+
+fn default_gucs() -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    m.insert("server_version".to_string(), "16.0".to_string());
+    m.insert("server_encoding".to_string(), "UTF8".to_string());
+    m.insert("client_encoding".to_string(), "UTF8".to_string());
+    m.insert("is_superuser".to_string(), "on".to_string());
+    m.insert("DateStyle".to_string(), "ISO, MDY".to_string());
+    m.insert("IntervalStyle".to_string(), "postgres".to_string());
+    m.insert("TimeZone".to_string(), "UTC".to_string());
+    m.insert("integer_datetimes".to_string(), "on".to_string());
+    m.insert("standard_conforming_strings".to_string(), "on".to_string());
+    m.insert("search_path".to_string(), "\"$user\", public".to_string());
+    m.insert("application_name".to_string(), String::new());
+    m
+}
+
+/// Resets all GUC variables to their default values.
+pub fn reset_all_gucs() {
+    let mut guc = global_guc().write().expect("guc lock poisoned");
+    *guc = default_gucs();
 }
 
 pub(crate) fn with_guc_read<T>(f: impl FnOnce(&HashMap<String, String>) -> T) -> T {

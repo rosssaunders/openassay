@@ -399,12 +399,54 @@ async fn execute_select(
     };
 
     if !select.group_by.is_empty() || has_aggregate {
-        if has_wildcard {
-            return Err(EngineError {
-                message: "wildcard target with grouped/aggregate projection is not implemented"
-                    .to_string(),
-            });
-        }
+        // When wildcard is used with GROUP BY/aggregates, expand it to explicit columns
+        let expanded_select;
+        let select = if has_wildcard {
+            if let Some(ref wc) = wildcard_columns {
+                let mut new_targets = Vec::new();
+                for target in &select.targets {
+                    match &target.expr {
+                        Expr::Wildcard => {
+                            for col in wc {
+                                new_targets.push(SelectItem {
+                                    expr: Expr::ColumnRef(col.lookup_parts.clone()),
+                                    alias: None,
+                                });
+                            }
+                        }
+                        Expr::QualifiedWildcard(qualifier) => {
+                            let q = qualifier.iter().map(|s| s.to_ascii_lowercase()).collect::<Vec<_>>();
+                            for col in wc {
+                                if col.lookup_parts.len() > 1 && col.lookup_parts[..col.lookup_parts.len()-1] == q {
+                                    new_targets.push(SelectItem {
+                                        expr: Expr::ColumnRef(col.lookup_parts.clone()),
+                                        alias: None,
+                                    });
+                                }
+                            }
+                        }
+                        _ => new_targets.push(target.clone()),
+                    }
+                }
+                expanded_select = SelectStatement {
+                    quantifier: select.quantifier.clone(),
+                    targets: new_targets,
+                    from: select.from.clone(),
+                    where_clause: select.where_clause.clone(),
+                    group_by: select.group_by.clone(),
+                    having: select.having.clone(),
+                    window_definitions: select.window_definitions.clone(),
+                };
+                &expanded_select
+            } else {
+                return Err(EngineError {
+                    message: "wildcard target with grouped/aggregate projection requires FROM clause"
+                        .to_string(),
+                });
+            }
+        } else {
+            select
+        };
 
         for expr in group_by_exprs(&select.group_by) {
             if contains_aggregate_expr(expr) {
@@ -493,12 +535,6 @@ async fn execute_select(
 
                 let mut row = Vec::new();
                 for target in &select.targets {
-                    if matches!(target.expr, Expr::Wildcard) {
-                        return Err(EngineError {
-                            message: "wildcard target is not yet implemented in executor"
-                                .to_string(),
-                        });
-                    }
                     row.push(
                         eval_group_expr(
                             &target.expr,

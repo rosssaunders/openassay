@@ -187,6 +187,11 @@ pub enum BackendMessage {
         hint: Option<String>,
         position: Option<u32>,
     },
+    NotificationResponse {
+        process_id: u32,
+        channel: String,
+        payload: String,
+    },
     FlushComplete,
     Terminate,
 }
@@ -242,8 +247,20 @@ enum PlannedOperation {
     Transaction(TransactionCommand),
     Security(SecurityCommand),
     Copy(CopyCommand),
+    Discard(DiscardTarget),
+    Listen(String),
+    Notify { channel: String, payload: String },
+    Unlisten(Option<String>),
     Utility(String),
     Empty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DiscardTarget {
+    All,
+    Plans,
+    Sequences,
+    Temp,
 }
 
 impl PlannedOperation {
@@ -258,6 +275,10 @@ impl PlannedOperation {
             Self::Transaction(TransactionCommand::RollbackToSavepoint(_)) => "ROLLBACK".to_string(),
             Self::Security(command) => command.command_tag().to_string(),
             Self::Copy(_) => "COPY".to_string(),
+            Self::Discard(_) => "DISCARD".to_string(),
+            Self::Listen(_) => "LISTEN".to_string(),
+            Self::Notify { .. } => "NOTIFY".to_string(),
+            Self::Unlisten(_) => "UNLISTEN".to_string(),
             Self::Utility(tag) => tag.clone(),
             Self::Empty => "EMPTY".to_string(),
         }
@@ -445,6 +466,8 @@ pub struct PostgresSession {
     current_role: String,
     process_id: u32,
     secret_key: u32,
+    listen_channels: Vec<String>,
+    pending_notifications: Vec<(String, String, u32)>, // (channel, payload, sender_pid)
 }
 
 impl Default for PostgresSession {
@@ -465,6 +488,8 @@ impl Default for PostgresSession {
             current_role: "postgres".to_string(),
             process_id: 1,
             secret_key: 0xC0DE_BEEF,
+            listen_channels: Vec::new(),
+            pending_notifications: Vec::new(),
         }
     }
 }
@@ -492,6 +517,7 @@ impl PostgresSession {
 
         for message in messages {
             if self.send_ready_for_query && self.startup_complete && !self.ignore_till_sync {
+                self.drain_pending_notifications(&mut out);
                 out.push(BackendMessage::ReadyForQuery {
                     status: self.ready_status(),
                 });
@@ -525,6 +551,7 @@ impl PostgresSession {
         }
 
         if self.send_ready_for_query && self.startup_complete && !self.ignore_till_sync {
+            self.drain_pending_notifications(&mut out);
             out.push(BackendMessage::ReadyForQuery {
                 status: self.ready_status(),
             });
@@ -1414,6 +1441,35 @@ impl PostgresSession {
                 Statement::Copy(statement) => {
                     return Ok(PlannedOperation::Copy(copy_command(statement)?));
                 }
+                Statement::Discard(discard) => {
+                    let target = match discard.target.to_ascii_uppercase().as_str() {
+                        "ALL" => DiscardTarget::All,
+                        "PLANS" => DiscardTarget::Plans,
+                        "SEQUENCES" => DiscardTarget::Sequences,
+                        "TEMP" | "TEMPORARY" => DiscardTarget::Temp,
+                        _ => {
+                            return Err(SessionError {
+                                message: format!(
+                                    "unrecognized DISCARD target: {}",
+                                    discard.target
+                                ),
+                            });
+                        }
+                    };
+                    return Ok(PlannedOperation::Discard(target));
+                }
+                Statement::Listen(listen) => {
+                    return Ok(PlannedOperation::Listen(listen.channel.clone()));
+                }
+                Statement::Notify(notify) => {
+                    return Ok(PlannedOperation::Notify {
+                        channel: notify.channel.clone(),
+                        payload: notify.payload.clone().unwrap_or_default(),
+                    });
+                }
+                Statement::Unlisten(unlisten) => {
+                    return Ok(PlannedOperation::Unlisten(unlisten.channel.clone()));
+                }
                 statement => statement,
             };
             if self.tx_state.in_explicit_block()
@@ -1574,6 +1630,46 @@ impl PostgresSession {
                         })
                     }
                 },
+                PlannedOperation::Discard(target) => {
+                    self.execute_discard(target);
+                    Ok(ExecutionOutcome::Command(Completion {
+                        tag: "DISCARD".to_string(),
+                        rows: 0,
+                    }))
+                }
+                PlannedOperation::Listen(channel) => {
+                    if !self.listen_channels.contains(channel) {
+                        self.listen_channels.push(channel.clone());
+                    }
+                    Ok(ExecutionOutcome::Command(Completion {
+                        tag: "LISTEN".to_string(),
+                        rows: 0,
+                    }))
+                }
+                PlannedOperation::Notify { channel, payload } => {
+                    // In a single-session in-process engine, deliver to self if listening
+                    if self.listen_channels.contains(channel) {
+                        self.pending_notifications.push((
+                            channel.clone(),
+                            payload.clone(),
+                            self.process_id,
+                        ));
+                    }
+                    Ok(ExecutionOutcome::Command(Completion {
+                        tag: "NOTIFY".to_string(),
+                        rows: 0,
+                    }))
+                }
+                PlannedOperation::Unlisten(channel) => {
+                    match channel {
+                        Some(ch) => self.listen_channels.retain(|c| c != ch),
+                        None => self.listen_channels.clear(),
+                    }
+                    Ok(ExecutionOutcome::Command(Completion {
+                        tag: "UNLISTEN".to_string(),
+                        rows: 0,
+                    }))
+                }
                 PlannedOperation::Utility(tag) => Ok(ExecutionOutcome::Command(Completion {
                     tag: tag.clone(),
                     rows: 0,
@@ -2053,6 +2149,37 @@ impl PostgresSession {
             ReadyForQueryStatus::InTransaction
         } else {
             ReadyForQueryStatus::Idle
+        }
+    }
+
+    fn drain_pending_notifications(&mut self, out: &mut Vec<BackendMessage>) {
+        for (channel, payload, sender_pid) in self.pending_notifications.drain(..) {
+            out.push(BackendMessage::NotificationResponse {
+                process_id: sender_pid,
+                channel,
+                payload,
+            });
+        }
+    }
+
+    fn execute_discard(&mut self, target: &DiscardTarget) {
+        match target {
+            DiscardTarget::All => {
+                self.prepared_statements.clear();
+                self.portals.clear();
+                // Reset GUC variables to defaults
+                crate::commands::variable::reset_all_gucs();
+            }
+            DiscardTarget::Plans => {
+                self.prepared_statements.clear();
+                self.portals.clear();
+            }
+            DiscardTarget::Sequences => {
+                // Sequence caches are not session-local in this engine, so this is a no-op
+            }
+            DiscardTarget::Temp => {
+                // Temp tables are not tracked separately; this is a no-op for now
+            }
         }
     }
 

@@ -8,6 +8,15 @@ pub(crate) struct TemporalOperand {
     pub(crate) date_only: bool,
 }
 
+/// Returns true if the text represents a special infinity datetime value.
+pub(crate) fn is_infinity_datetime(text: &str) -> bool {
+    let lower = text.trim().to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "infinity" | "inf" | "-infinity" | "-inf"
+    )
+}
+
 pub(crate) fn parse_temporal_operand(value: &ScalarValue) -> Option<TemporalOperand> {
     let ScalarValue::Text(text) = value else {
         return None;
@@ -22,6 +31,13 @@ pub(crate) fn parse_temporal_operand(value: &ScalarValue) -> Option<TemporalOper
 }
 
 pub(crate) fn temporal_add_days(temporal: TemporalOperand, days: i64) -> ScalarValue {
+    // Infinity dates stay as infinity under arithmetic
+    if temporal.datetime.date.year == 294276 && temporal.datetime.date.month == 12 {
+        return ScalarValue::Text("infinity".to_string());
+    }
+    if temporal.datetime.date.year == -4713 && temporal.datetime.date.month == 1 && temporal.datetime.date.day == 1 {
+        return ScalarValue::Text("-infinity".to_string());
+    }
     let mut datetime = temporal.datetime;
     datetime.date = add_days(datetime.date, days);
     if temporal.date_only {
@@ -350,13 +366,31 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
     let normalized = raw.to_ascii_lowercase();
     match normalized.as_str() {
         "infinity" | "inf" => {
-            return Err(EngineError {
-                message: "special datetime values not yet supported".to_string(),
+            // Return a sentinel max date to represent +infinity
+            return Ok(DateTimeValue {
+                date: DateValue {
+                    year: 294276,
+                    month: 12,
+                    day: 31,
+                },
+                hour: 23,
+                minute: 59,
+                second: 59,
+                microsecond: 999999,
             });
         }
         "-infinity" | "-inf" => {
-            return Err(EngineError {
-                message: "special datetime values not yet supported".to_string(),
+            // Return a sentinel min date to represent -infinity
+            return Ok(DateTimeValue {
+                date: DateValue {
+                    year: -4713,
+                    month: 1,
+                    day: 1,
+                },
+                hour: 0,
+                minute: 0,
+                second: 0,
+                microsecond: 0,
             });
         }
         "epoch" => {
