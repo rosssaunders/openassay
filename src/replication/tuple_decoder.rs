@@ -8,6 +8,7 @@ use crate::tcop::engine::coerce_value_for_column_spec;
 use crate::utils::adt::datetime::{datetime_from_epoch_seconds, format_date, format_timestamp};
 
 const PG_EPOCH_UNIX_OFFSET_SECS: i64 = 946684800;
+const PG_VECTOR_OID: u32 = 6000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecodedColumn {
@@ -23,6 +24,7 @@ pub fn type_signature_for_oid(oid: u32) -> TypeSignature {
         1700 => TypeSignature::Numeric,
         1082 => TypeSignature::Date,
         1114 | 1184 => TypeSignature::Timestamp,
+        PG_VECTOR_OID => TypeSignature::Vector(None),
         _ => TypeSignature::Text,
     }
 }
@@ -127,11 +129,14 @@ pub fn decode_binary_value(
                 text_value
                     .parse::<rust_decimal::Decimal>()
                     .map_err(|_| ReplicationError {
-                        message: format!("invalid numeric binary data: {text_value}"),
-                    })?;
+                message: format!("invalid numeric binary data: {text_value}"),
+            })?;
             Ok(ScalarValue::Numeric(decimal))
         }
         TypeSignature::Text => Ok(ScalarValue::Text(
+            String::from_utf8_lossy(bytes).to_string(),
+        )),
+        TypeSignature::Vector(_) => Ok(ScalarValue::Text(
             String::from_utf8_lossy(bytes).to_string(),
         )),
     }

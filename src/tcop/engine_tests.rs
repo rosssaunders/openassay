@@ -5419,6 +5419,76 @@ fn test_gen_random_uuid() {
 }
 
 #[test]
+fn test_uuid_ossp_extension() {
+    with_isolated_state(|| {
+        run("CREATE EXTENSION \"uuid-ossp\"");
+        let result = run("SELECT uuid_nil(), uuid_generate_v4()");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0][0],
+            ScalarValue::Text("00000000-0000-0000-0000-000000000000".to_string())
+        );
+        assert_eq!(result.rows[0][1].render().len(), 36);
+
+        let v5 = run("SELECT uuid_generate_v5('dns', 'example.com')");
+        assert_eq!(
+            v5.rows[0][0],
+            ScalarValue::Text("cfbff0d1-9375-5685-968c-48ce8b15ae17".to_string())
+        );
+    });
+}
+
+#[test]
+fn test_pgcrypto_functions() {
+    with_isolated_state(|| {
+        run("CREATE EXTENSION pgcrypto");
+        let digest = run("SELECT digest('hello', 'sha256')");
+        assert_eq!(
+            digest.rows[0][0],
+            ScalarValue::Text(
+                "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_string()
+            )
+        );
+
+        let hmac = run("SELECT hmac('data', 'key', 'sha1')");
+        assert_eq!(
+            hmac.rows[0][0],
+            ScalarValue::Text("104152c5bfdca07bc633eebd46199f0255c9f49d".to_string())
+        );
+
+        let bytes = run("SELECT gen_random_bytes(4)");
+        assert_eq!(bytes.rows.len(), 1);
+        assert_eq!(bytes.rows[0][0].render().len(), 8);
+
+        let crypt = run("SELECT crypt('secret', gen_salt('bf'))");
+        let crypt_text = crypt.rows[0][0].render();
+        assert!(crypt_text.starts_with("$2"), "expected bcrypt hash");
+    });
+}
+
+#[test]
+fn test_pgvector_functions_and_operators() {
+    with_isolated_state(|| {
+        run("CREATE EXTENSION vector");
+        let distances = run(
+            "SELECT l2_distance('[1,2]', '[4,6]'), l1_distance('[1,2]', '[4,6]'), cosine_distance('[1,0]', '[0,1]')",
+        );
+        assert_eq!(distances.rows[0][0], ScalarValue::Float(5.0));
+        assert_eq!(distances.rows[0][1], ScalarValue::Float(7.0));
+        assert_eq!(distances.rows[0][2], ScalarValue::Float(1.0));
+
+        let extras =
+            run("SELECT inner_product('[1,2,3]', '[4,5,6]'), vector_dims('[1,2,3]'), vector_norm('[3,4]')");
+        assert_eq!(extras.rows[0][0], ScalarValue::Float(32.0));
+        assert_eq!(extras.rows[0][1], ScalarValue::Int(3));
+        assert_eq!(extras.rows[0][2], ScalarValue::Float(5.0));
+
+        let op_result = run("SELECT '[1,2]' <-> '[4,6]' AS dist");
+        assert_eq!(op_result.rows[0][0], ScalarValue::Float(5.0));
+    });
+}
+
+#[test]
 fn test_make_time() {
     let result = run("SELECT make_time(14, 30, 45.5)");
     assert_eq!(result.rows.len(), 1);

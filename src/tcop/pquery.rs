@@ -20,6 +20,7 @@ const PG_FLOAT8_OID: u32 = 701;
 const PG_NUMERIC_OID: u32 = 1700;
 const PG_DATE_OID: u32 = 1082;
 const PG_TIMESTAMP_OID: u32 = 1114;
+const PG_VECTOR_OID: u32 = 6000;
 
 pub(crate) fn type_signature_to_oid(ty: TypeSignature) -> u32 {
     match ty {
@@ -30,6 +31,7 @@ pub(crate) fn type_signature_to_oid(ty: TypeSignature) -> u32 {
         TypeSignature::Text => PG_TEXT_OID,
         TypeSignature::Date => PG_DATE_OID,
         TypeSignature::Timestamp => PG_TIMESTAMP_OID,
+        TypeSignature::Vector(_) => PG_VECTOR_OID,
     }
 }
 
@@ -40,6 +42,7 @@ pub fn type_oid_size(type_oid: u32) -> i16 {
         PG_FLOAT8_OID => 8,
         PG_DATE_OID => 4,
         PG_TIMESTAMP_OID => 8,
+        PG_VECTOR_OID => -1,
         _ => -1,
     }
 }
@@ -117,6 +120,7 @@ fn cast_type_name_to_oid(type_name: &str) -> u32 {
         "float8" | "float4" | "numeric" | "decimal" | "real" => PG_FLOAT8_OID,
         "date" => PG_DATE_OID,
         "timestamp" | "timestamptz" => PG_TIMESTAMP_OID,
+        "vector" => PG_VECTOR_OID,
         _ => PG_TEXT_OID,
     }
 }
@@ -226,6 +230,12 @@ fn infer_function_return_oid(
         | "jsonb_exists_all" => PG_BOOL_OID,
         "connect" if name.len() == 2 && name[0].eq_ignore_ascii_case("ws") => PG_INT8_OID,
         "send" | "close" if name.len() == 2 && name[0].eq_ignore_ascii_case("ws") => PG_BOOL_OID,
+        "uuid_generate_v1" | "uuid_generate_v4" | "uuid_generate_v5" | "uuid_nil"
+        | "gen_random_uuid" => PG_TEXT_OID,
+        "digest" | "hmac" | "gen_random_bytes" | "crypt" | "gen_salt" => PG_TEXT_OID,
+        "l2_distance" | "cosine_distance" | "inner_product" | "l1_distance"
+        | "vector_norm" => PG_FLOAT8_OID,
+        "vector_dims" => PG_INT8_OID,
         _ => PG_TEXT_OID,
     }
 }
@@ -286,6 +296,9 @@ fn infer_expr_type_oid(
                 | BinaryOp::JsonDelete
                 | BinaryOp::JsonDeletePath => PG_TEXT_OID,
                 BinaryOp::ArrayConcat => left_oid,
+                BinaryOp::VectorL2Distance
+                | BinaryOp::VectorInnerProduct
+                | BinaryOp::VectorCosineDistance => PG_FLOAT8_OID,
                 BinaryOp::Add => {
                     if (left_oid == PG_DATE_OID || left_oid == PG_TIMESTAMP_OID)
                         && right_oid == PG_INT8_OID

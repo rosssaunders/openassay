@@ -14,6 +14,9 @@ pub fn can_coerce_implicit(from: &TypeSignature, to: &TypeSignature) -> bool {
     if from == to {
         return true;
     }
+    if matches!((from, to), (TypeSignature::Vector(_), TypeSignature::Vector(_))) {
+        return true;
+    }
     matches!(
         (from, to),
         // Numeric promotions
@@ -32,6 +35,9 @@ pub fn can_coerce_implicit(from: &TypeSignature, to: &TypeSignature) -> bool {
 /// Check that two types are comparable (for = < > operators etc).
 pub fn types_are_comparable(a: &TypeSignature, b: &TypeSignature) -> bool {
     if a == b {
+        return true;
+    }
+    if matches!((a, b), (TypeSignature::Vector(_), TypeSignature::Vector(_))) {
         return true;
     }
     // Numeric types can be compared with each other
@@ -121,6 +127,9 @@ fn common_supertype(a: &TypeSignature, b: &TypeSignature) -> Option<TypeSignatur
         // Temporal: prefer Timestamp over Date
         (TypeSignature::Date, TypeSignature::Timestamp)
         | (TypeSignature::Timestamp, TypeSignature::Date) => Some(TypeSignature::Timestamp),
+        (TypeSignature::Vector(a_dim), TypeSignature::Vector(b_dim)) => {
+            Some(TypeSignature::Vector(if a_dim == b_dim { *a_dim } else { None }))
+        }
         // Text is the universal fallback
         (TypeSignature::Text, _) | (_, TypeSignature::Text) => Some(TypeSignature::Text),
         _ => None,

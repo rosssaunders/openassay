@@ -2324,7 +2324,7 @@ impl Parser {
 
     fn parse_type_name(&mut self) -> Result<TypeName, ParseError> {
         let base = self.parse_identifier()?.to_ascii_lowercase();
-        let ty = match base.as_str() {
+        let mut ty = match base.as_str() {
             "bool" | "boolean" => TypeName::Bool,
             "smallint" | "int2" => TypeName::Int2,
             "int" | "integer" | "int4" => TypeName::Int4,
@@ -2373,6 +2373,7 @@ impl Parser {
             "bigserial" | "serial8" => TypeName::BigSerial,
             "numeric" | "decimal" => TypeName::Numeric,
             "money" => TypeName::Numeric, // treat money as numeric for now
+            "vector" => TypeName::Vector(None),
             "name" => TypeName::Name,
             // PostgreSQL underscore-prefixed array type aliases
             other if other.starts_with('_') => {
@@ -2401,8 +2402,31 @@ impl Parser {
             }
         };
 
-        // Ignore type modifiers like varchar(255).
-        if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+        // Parse vector(dim) modifier; ignore other type modifiers like varchar(255).
+        if let TypeName::Vector(_) = ty {
+            if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+                let dim = match self.current_kind() {
+                    TokenKind::Integer(v) => {
+                        let value = *v;
+                        self.advance();
+                        if value <= 0 {
+                            return Err(self.error_at_current("vector dimension must be positive"));
+                        }
+                        Some(value as usize)
+                    }
+                    _ => {
+                        return Err(self.error_at_current(
+                            "expected integer dimension in vector(...)",
+                        ));
+                    }
+                };
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after vector dimension",
+                )?;
+                ty = TypeName::Vector(dim);
+            }
+        } else if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
             let mut depth = 1usize;
             while depth > 0 {
                 match self.current_kind() {
@@ -4276,6 +4300,7 @@ impl Parser {
             // Binary and special types
             "bytea" => "bytea".to_string(),
             "uuid" => "uuid".to_string(),
+            "vector" => "vector".to_string(),
             // JSON types
             "json" => "json".to_string(),
             "jsonb" => "jsonb".to_string(),
@@ -4890,6 +4915,15 @@ impl Parser {
             TokenKind::Operator(op) if op == "?&" => Some((BinaryOp::JsonHasAll, 5, 6)),
             TokenKind::Operator(op) if op == "#-" => Some((BinaryOp::JsonDeletePath, 11, 12)),
             TokenKind::Operator(op) if op == "&&" => Some((BinaryOp::ArrayOverlap, 5, 6)),
+            TokenKind::Operator(op) if op == "<->" => {
+                Some((BinaryOp::VectorL2Distance, 7, 8))
+            }
+            TokenKind::Operator(op) if op == "<#>" => {
+                Some((BinaryOp::VectorInnerProduct, 7, 8))
+            }
+            TokenKind::Operator(op) if op == "<=>" => {
+                Some((BinaryOp::VectorCosineDistance, 7, 8))
+            }
             _ => None,
         }
     }
@@ -5579,6 +5613,7 @@ impl Parser {
             "serial" => Ok(TypeName::Serial),
             "bigserial" => Ok(TypeName::BigSerial),
             "numeric" | "decimal" => Ok(TypeName::Numeric),
+            "vector" => Ok(TypeName::Vector(None)),
             "name" => Ok(TypeName::Name),
             _ => Err(()),
         }

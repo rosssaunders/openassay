@@ -710,6 +710,7 @@ pub(crate) fn truthy(value: &ScalarValue) -> bool {
         ScalarValue::Text(v) => !v.is_empty(),
         ScalarValue::Array(values) => !values.is_empty(),
         ScalarValue::Record(fields) => !fields.is_empty(),
+        ScalarValue::Vector(values) => !values.is_empty(),
     }
 }
 
@@ -764,6 +765,7 @@ pub(crate) fn pg_input_is_valid(
             // UUID format: 8-4-4-4-12 hex digits
             parse_uuid_simple(input).is_ok()
         }
+        "vector" => serde_json::from_str::<Vec<f32>>(input).is_ok(),
         _ => {
             // Unknown type - return true by default to be permissive
             true

@@ -7,6 +7,9 @@ use crate::executor::exec_main::{
     compare_order_keys, eval_aggregate_function, execute_query_with_outer, is_aggregate_function,
     parse_non_negative_int, row_key,
 };
+use crate::extensions::pgcrypto::eval_pgcrypto_function;
+use crate::extensions::pgvector::{eval_pgvector_function, eval_vector_distance_operator};
+use crate::extensions::uuid_ossp::eval_uuid_ossp_function;
 use crate::parser::ast::{
     BinaryOp, BooleanTestType, ComparisonQuantifier, CreateFunctionStatement, Expr, OrderByExpr,
     UnaryOp, WindowDefinition, WindowFrameBound, WindowFrameExclusion, WindowFrameUnits,
@@ -2320,7 +2323,8 @@ pub(crate) fn eval_binary(
         Add, And, ArrayConcat, ArrayContainedBy, ArrayContains, ArrayOverlap, Div, Eq, Gt, Gte,
         JsonConcat, JsonContainedBy, JsonContains, JsonDelete, JsonDeletePath, JsonGet,
         JsonGetText, JsonHasAll, JsonHasAny, JsonHasKey, JsonPath, JsonPathExists, JsonPathMatch,
-        JsonPathText, Lt, Lte, Mod, Mul, NotEq, Or, Sub,
+        JsonPathText, Lt, Lte, Mod, Mul, NotEq, Or, Sub, VectorCosineDistance, VectorInnerProduct,
+        VectorL2Distance,
     };
     match op {
         Or => eval_logical_or(left, right),
@@ -2405,6 +2409,30 @@ pub(crate) fn eval_binary(
         JsonHasAll => eval_json_has_any_all_operator(left, right, false),
         JsonDelete => eval_json_delete_operator(left, right),
         JsonDeletePath => eval_json_delete_path_operator(left, right),
+        VectorL2Distance => {
+            if !is_vector_extension_loaded() {
+                return Err(EngineError {
+                    message: "extension \"vector\" is not loaded".to_string(),
+                });
+            }
+            eval_vector_distance_operator("<->", left, right)
+        }
+        VectorInnerProduct => {
+            if !is_vector_extension_loaded() {
+                return Err(EngineError {
+                    message: "extension \"vector\" is not loaded".to_string(),
+                });
+            }
+            eval_vector_distance_operator("<#>", left, right)
+        }
+        VectorCosineDistance => {
+            if !is_vector_extension_loaded() {
+                return Err(EngineError {
+                    message: "extension \"vector\" is not loaded".to_string(),
+                });
+            }
+            eval_vector_distance_operator("<=>", left, right)
+        }
     }
 }
 
@@ -2804,9 +2832,42 @@ async fn eval_function(
         values.push(eval_expr(arg, scope, params).await?);
     }
 
+    if name.len() == 1 {
+        let fname = fn_name.as_str();
+        if is_uuid_ossp_extension_loaded()
+            && matches!(
+                fname,
+                "uuid_generate_v1" | "uuid_generate_v4" | "uuid_generate_v5" | "uuid_nil"
+            )
+        {
+            return eval_uuid_ossp_function(fname, &values);
+        }
+        if is_pgcrypto_extension_loaded()
+            && matches!(
+                fname,
+                "digest" | "hmac" | "gen_random_bytes" | "gen_random_uuid" | "crypt" | "gen_salt"
+            )
+        {
+            return eval_pgcrypto_function(fname, &values);
+        }
+        if is_vector_extension_loaded()
+            && matches!(
+                fname,
+                "l2_distance"
+                    | "cosine_distance"
+                    | "inner_product"
+                    | "l1_distance"
+                    | "vector_dims"
+                    | "vector_norm"
+            )
+        {
+            return eval_pgvector_function(fname, &values);
+        }
+    }
+
     // Handle schema-qualified extension functions.
     if name.len() == 2 {
-        let schema = name[0].to_ascii_lowercase();
+        let schema = name[0].to_ascii_lowercase().replace('-', "_");
         if schema == "ws" {
             match fn_name.as_str() {
                 "connect" => return execute_ws_connect(&values).await,
@@ -2819,6 +2880,30 @@ async fn eval_function(
                     });
                 }
             }
+        }
+        if schema == "uuid_ossp" {
+            if !is_uuid_ossp_extension_loaded() {
+                return Err(EngineError {
+                    message: "extension \"uuid-ossp\" is not loaded".to_string(),
+                });
+            }
+            return eval_uuid_ossp_function(&fn_name, &values);
+        }
+        if schema == "pgcrypto" {
+            if !is_pgcrypto_extension_loaded() {
+                return Err(EngineError {
+                    message: "extension \"pgcrypto\" is not loaded".to_string(),
+                });
+            }
+            return eval_pgcrypto_function(&fn_name, &values);
+        }
+        if schema == "vector" || schema == "pgvector" {
+            if !is_vector_extension_loaded() {
+                return Err(EngineError {
+                    message: "extension \"vector\" is not loaded".to_string(),
+                });
+            }
+            return eval_pgvector_function(&fn_name, &values);
         }
     }
 
@@ -2918,14 +3003,30 @@ fn scalar_to_sql_literal(value: &ScalarValue) -> String {
         ScalarValue::Float(v) => v.to_string(),
         ScalarValue::Numeric(v) => v.to_string(),
         ScalarValue::Text(v) => format!("'{}'", v.replace('\'', "''")),
-        ScalarValue::Array(_) | ScalarValue::Record(_) => {
+        ScalarValue::Array(_) | ScalarValue::Record(_) | ScalarValue::Vector(_) => {
             format!("'{}'", value.render().replace('\'', "''"))
         }
     }
 }
 
+fn is_extension_loaded(name: &str) -> bool {
+    with_ext_read(|ext| ext.extensions.iter().any(|e| e.name == name))
+}
+
 pub(crate) fn is_ws_extension_loaded() -> bool {
-    with_ext_read(|ext| ext.extensions.iter().any(|e| e.name == "ws"))
+    is_extension_loaded("ws")
+}
+
+fn is_pgcrypto_extension_loaded() -> bool {
+    is_extension_loaded("pgcrypto")
+}
+
+fn is_uuid_ossp_extension_loaded() -> bool {
+    is_extension_loaded("uuid-ossp")
+}
+
+fn is_vector_extension_loaded() -> bool {
+    is_extension_loaded("vector")
 }
 
 async fn execute_ws_connect(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {

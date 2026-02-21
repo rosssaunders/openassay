@@ -321,6 +321,7 @@ pub(crate) fn type_signature_from_ast(ty: TypeName) -> TypeSignature {
         | TypeName::Time => TypeSignature::Text,
         TypeName::Date => TypeSignature::Date,
         TypeName::Timestamp | TypeName::TimestampTz => TypeSignature::Timestamp,
+        TypeName::Vector(dim) => TypeSignature::Vector(dim),
         TypeName::Array(_) | TypeName::Name => TypeSignature::Text,
     }
 }
@@ -348,6 +349,7 @@ async fn execute_create_table_as_select(
                 1700 => TypeSignature::Numeric,                                   // numeric
                 1082 => TypeSignature::Date,                                      // date
                 1114 | 1184 => TypeSignature::Timestamp, // timestamp, timestamptz
+                6000 => TypeSignature::Vector(None),                              // vector
                 _ => TypeSignature::Text,                // default to text for unknown types
             };
             ColumnSpec {

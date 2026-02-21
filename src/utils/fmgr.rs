@@ -1126,6 +1126,7 @@ pub(crate) async fn eval_scalar_function(
                 ScalarValue::Text(_) => "text",
                 ScalarValue::Array(_) => "text[]",
                 ScalarValue::Record(_) => "record",
+                ScalarValue::Vector(_) => "vector",
             };
             Ok(ScalarValue::Text(type_name.to_string()))
         }
@@ -1158,11 +1159,13 @@ pub(crate) async fn eval_scalar_function(
                             ScalarValue::Text(s) => s.len() as i64 + 4,
                             ScalarValue::Array(_) => 8, // rough estimate
                             ScalarValue::Record(r) => (r.len() * 8) as i64,
+                            ScalarValue::Vector(v) => (v.len() as i64) * 4 + 4,
                         };
                     }
                     total
                 }
                 ScalarValue::Record(r) => (r.len() as i64) * 8 + 4,
+                ScalarValue::Vector(v) => (v.len() as i64) * 4 + 4,
             };
             Ok(ScalarValue::Int(size))
         }
