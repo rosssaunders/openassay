@@ -9,7 +9,7 @@ use crate::parser::ast::{
     CreateSchemaStatement, CreateSequenceStatement, CreateSubscriptionStatement,
     CreateTableStatement, CreateTriggerStatement, CreateTypeStatement, CreateViewStatement,
     CycleClause, DeleteStatement, DiscardStatement, DoStatement, DropBehavior, DropDomainStatement,
-    DropExtensionStatement, DropIndexStatement, DropRoleStatement, DropSchemaStatement,
+    DropExtensionStatement, DropFunctionStatement, DropIndexStatement, DropRoleStatement, DropSchemaStatement,
     DropSequenceStatement, DropSubscriptionStatement, DropTableStatement, DropTypeStatement,
     DropViewStatement, ExplainStatement, Expr, ForeignKeyAction, ForeignKeyReference,
     FunctionParam, FunctionParamMode, FunctionReturnType, GrantRoleStatement, GrantStatement,
@@ -1314,19 +1314,26 @@ impl Parser {
             }));
         }
         if self.consume_keyword(Keyword::Function) {
-            // DROP FUNCTION name - simple form only
-            let _name = self.parse_qualified_name()?;
+            let if_exists = if self.consume_keyword(Keyword::If) {
+                self.expect_keyword(Keyword::Exists, "expected EXISTS after IF")?;
+                true
+            } else {
+                false
+            };
+            let name = self.parse_qualified_name()?;
             // consume optional parameter list
             if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
                 while !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
                     self.advance();
                 }
             }
-            // We don't actually implement DROP FUNCTION yet, just parse it
-            return Err(self.error_at_current("DROP FUNCTION is not yet supported"));
+            return Ok(Statement::DropFunction(DropFunctionStatement {
+                name,
+                if_exists,
+            }));
         }
         Err(self.error_at_current(
-            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, SUBSCRIPTION, or EXTENSION after DROP",
+            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, FUNCTION, SUBSCRIPTION, or EXTENSION after DROP",
         ))
     }
 

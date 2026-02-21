@@ -32,6 +32,7 @@ pub enum Statement {
     CreateExtension(CreateExtensionStatement),
     DropExtension(DropExtensionStatement),
     CreateFunction(CreateFunctionStatement),
+    DropFunction(DropFunctionStatement),
     CreateTrigger(CreateTriggerStatement),
     CreateSubscription(CreateSubscriptionStatement),
     CreateRole(CreateRoleStatement),
@@ -1034,6 +1035,12 @@ pub struct CreateFunctionStatement {
     pub body: String,
     pub language: String,
     pub or_replace: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DropFunctionStatement {
+    pub name: Vec<String>,
+    pub if_exists: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

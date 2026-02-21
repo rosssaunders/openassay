@@ -232,6 +232,9 @@ pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError>
         Statement::CreateFunction(_) => {
             (Vec::new(), Vec::new(), false, "CREATE FUNCTION".to_string())
         }
+        Statement::DropFunction(_) => {
+            (Vec::new(), Vec::new(), false, "DROP FUNCTION".to_string())
+        }
         Statement::CreateTrigger(_) => {
             (Vec::new(), Vec::new(), false, "CREATE TRIGGER".to_string())
         }
@@ -790,11 +793,27 @@ pub(crate) fn sync_wasm_ws_state(conn_id: i64) {
     }
 }
 
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct UserEnumType {
+    pub(crate) name: Vec<String>,
+    pub(crate) labels: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct UserDomain {
+    pub(crate) name: Vec<String>,
+    pub(crate) base_type: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ExtensionState {
     pub(crate) extensions: Vec<ExtensionRecord>,
     pub(crate) user_functions: Vec<UserFunction>,
     pub(crate) triggers: Vec<UserTrigger>,
+    pub(crate) user_types: Vec<UserEnumType>,
+    pub(crate) user_domains: Vec<UserDomain>,
     pub(crate) ws_connections: HashMap<i64, WsConnection>,
     pub(crate) ws_next_id: i64,
 }
@@ -3334,8 +3353,15 @@ fn coerce_value_for_column(
         (TypeSignature::Text, ScalarValue::Text(v)) => Ok(ScalarValue::Text(v)),
         (TypeSignature::Text, v) => Ok(ScalarValue::Text(v.render())),
         (TypeSignature::Date, ScalarValue::Text(v)) => {
-            let dt = parse_datetime_text(&v)?;
-            Ok(ScalarValue::Text(format_date(dt.date)))
+            let lower = v.trim().to_ascii_lowercase();
+            if lower == "infinity" || lower == "inf" {
+                Ok(ScalarValue::Text("infinity".to_string()))
+            } else if lower == "-infinity" || lower == "-inf" {
+                Ok(ScalarValue::Text("-infinity".to_string()))
+            } else {
+                let dt = parse_datetime_text(&v)?;
+                Ok(ScalarValue::Text(format_date(dt.date)))
+            }
         }
         (TypeSignature::Date, ScalarValue::Int(v)) => {
             let dt = datetime_from_epoch_seconds(v);
@@ -3346,8 +3372,15 @@ fn coerce_value_for_column(
             Ok(ScalarValue::Text(format_date(dt.date)))
         }
         (TypeSignature::Timestamp, ScalarValue::Text(v)) => {
-            let dt = parse_datetime_text(&v)?;
-            Ok(ScalarValue::Text(format_timestamp(dt)))
+            let lower = v.trim().to_ascii_lowercase();
+            if lower == "infinity" || lower == "inf" {
+                Ok(ScalarValue::Text("infinity".to_string()))
+            } else if lower == "-infinity" || lower == "-inf" {
+                Ok(ScalarValue::Text("-infinity".to_string()))
+            } else {
+                let dt = parse_datetime_text(&v)?;
+                Ok(ScalarValue::Text(format_timestamp(dt)))
+            }
         }
         (TypeSignature::Timestamp, ScalarValue::Int(v)) => {
             let dt = datetime_from_epoch_seconds(v);
