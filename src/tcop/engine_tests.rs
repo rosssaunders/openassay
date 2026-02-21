@@ -4586,21 +4586,6 @@ fn create_extension_unknown_errors() {
 }
 
 #[test]
-fn create_extension_openferric_is_available() {
-    let results = run_batch(&[
-        "CREATE EXTENSION openferric",
-        "SELECT extname FROM pg_extension WHERE extname = 'openferric'",
-    ]);
-    assert_eq!(results[0].command_tag, "CREATE EXTENSION");
-    assert_eq!(
-        results[1].rows,
-        vec![vec![ScalarValue::Text("openferric".to_string())]]
-    );
-}
-
-// === CREATE FUNCTION tests ===
-
-#[test]
 fn create_function_basic() {
     let results = run_batch(&[
         "CREATE FUNCTION add_one(x INTEGER) RETURNS INTEGER AS $$ SELECT x + 1 $$ LANGUAGE sql",
@@ -4783,95 +4768,6 @@ fn evaluates_sha256_function() {
         }
         other => panic!("expected Text, got {:?}", other),
     }
-}
-
-#[test]
-fn evaluates_openferric_european_call_function() {
-    let result = run("SELECT openferric.european_call(100, 105, 0.25, 0.20, 0.05)");
-    match &result.rows[0][0] {
-        ScalarValue::Float(v) => assert!(v.is_finite() && *v > 0.0),
-        other => panic!("expected Float, got {:?}", other),
-    }
-}
-
-#[test]
-fn evaluates_openferric_european_put_function() {
-    let result = run("SELECT openferric.european_put(100, 105, 0.25, 0.20, 0.05)");
-    match &result.rows[0][0] {
-        ScalarValue::Float(v) => assert!(v.is_finite() && *v > 0.0),
-        other => panic!("expected Float, got {:?}", other),
-    }
-}
-
-#[test]
-fn evaluates_openferric_european_greeks_function() {
-    let result = run("SELECT openferric.european_greeks(100, 105, 0.25, 0.20, 0.05, 'call')");
-    let ScalarValue::Text(payload) = &result.rows[0][0] else {
-        panic!("expected Text JSON payload");
-    };
-    let value = serde_json::from_str::<JsonValue>(payload).expect("greeks payload should be JSON");
-    let JsonValue::Object(map) = value else {
-        panic!("greeks payload should be JSON object");
-    };
-    for key in ["delta", "gamma", "vega", "theta", "rho"] {
-        let number = map
-            .get(key)
-            .and_then(JsonValue::as_f64)
-            .unwrap_or_else(|| panic!("missing numeric {key}"));
-        assert!(number.is_finite());
-    }
-}
-
-#[test]
-fn evaluates_openferric_american_call_function() {
-    let result = run("SELECT openferric.american_call(100, 105, 0.25, 0.20, 0.05)");
-    match &result.rows[0][0] {
-        ScalarValue::Float(v) => assert!(v.is_finite() && *v > 0.0),
-        other => panic!("expected Float, got {:?}", other),
-    }
-}
-
-#[test]
-fn evaluates_openferric_american_put_function() {
-    let result = run("SELECT openferric.american_put(100, 105, 0.25, 0.20, 0.05, 250)");
-    match &result.rows[0][0] {
-        ScalarValue::Float(v) => assert!(v.is_finite() && *v > 0.0),
-        other => panic!("expected Float, got {:?}", other),
-    }
-}
-
-#[test]
-fn evaluates_openferric_barrier_function() {
-    let result =
-        run("SELECT openferric.barrier(100, 105, 0.25, 0.20, 0.05, 90, 'call', 'out', 'down')");
-    match &result.rows[0][0] {
-        ScalarValue::Float(v) => assert!(v.is_finite() && *v >= 0.0),
-        other => panic!("expected Float, got {:?}", other),
-    }
-}
-
-#[test]
-fn evaluates_openferric_heston_function() {
-    let result =
-        run("SELECT openferric.heston(100, 105, 0.25, 0.05, 0.04, 1.5, 0.04, 0.3, 0.5, 'call')");
-    match &result.rows[0][0] {
-        ScalarValue::Float(v) => assert!(v.is_finite() && *v > 0.0),
-        other => panic!("expected Float, got {:?}", other),
-    }
-}
-
-#[test]
-fn rejects_unqualified_openferric_function_names() {
-    with_isolated_state(|| {
-        let stmt = parse_statement("SELECT european_call(100, 105, 0.25, 0.20, 0.05)").unwrap();
-        let planned = plan_statement(stmt).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[]))
-            .expect_err("unqualified openferric function should fail");
-        assert!(
-            err.message
-                .contains("unsupported function call european_call")
-        );
-    });
 }
 
 #[test]

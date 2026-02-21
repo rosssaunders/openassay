@@ -14,13 +14,11 @@ use crate::executor::exec_main::{
     scope_for_table_row_with_qualifiers,
 };
 use crate::parser::ast::{
-    ConflictTarget, CreateFunctionStatement, CreateSchemaStatement, DeleteStatement, Expr,
+    ConflictTarget, CreateFunctionStatement, DeleteStatement, Expr,
     ForeignKeyAction, FunctionParam, FunctionParamMode, FunctionReturnType, InsertSource,
     InsertStatement, MergeStatement, MergeWhenClause, OnConflictClause, Statement, TableConstraint,
     TriggerEvent, TriggerTiming, UpdateStatement,
 };
-use crate::parser::lexer::{TokenKind, lex_sql};
-use crate::parser::sql_parser::parse_statement;
 use crate::planner::{self, PlanNode};
 use crate::security::{self, RlsCommand, TablePrivilege};
 pub(crate) use crate::storage::heap::{with_storage_read, with_storage_write};
@@ -55,7 +53,6 @@ impl std::error::Error for EngineError {}
 pub use crate::storage::tuple::{CopyBinaryColumn, CopyBinarySnapshot, ScalarValue};
 
 const PG_TEXT_OID: u32 = 25;
-const OPENFERRIC_EXTENSION_SQL: &str = include_str!("../../sql/extensions/openferric.sql");
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueryResult {
@@ -93,7 +90,6 @@ impl PlannedQuery {
 }
 
 pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError> {
-    ensure_openferric_extension_bootstrap()?;
     // Run semantic analysis before planning
     let search_path = crate::catalog::SearchPath::default();
     crate::analyzer::analyze(&statement, &search_path)?;
@@ -306,134 +302,6 @@ pub fn execute_planned_query<'a>(
     })
 }
 
-pub(crate) fn ensure_openferric_extension_bootstrap() -> Result<(), EngineError> {
-    if openferric_bootstrap_loaded() {
-        return Ok(());
-    }
-
-    for statement_sql in split_sql_statements(OPENFERRIC_EXTENSION_SQL) {
-        let statement = parse_statement(&statement_sql).map_err(|err| EngineError {
-            message: format!("failed to parse openferric extension SQL: {err}"),
-        })?;
-        match statement {
-            Statement::CreateSchema(create) => bootstrap_create_schema(&create)?,
-            Statement::CreateFunction(create) => bootstrap_register_user_function(&create)?,
-            _ => {
-                return Err(EngineError {
-                    message: format!(
-                        "unsupported statement in openferric extension SQL: {statement_sql}"
-                    ),
-                });
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn openferric_bootstrap_loaded() -> bool {
-    let has_schema = with_catalog_read(|catalog| catalog.schema("openferric").is_some());
-    let has_wrapper = with_ext_read(|ext| {
-        ext.user_functions.iter().any(|function| {
-            function.name.len() == 2
-                && function.name[0] == "openferric"
-                && function.name[1] == "european_call"
-        })
-    });
-    has_schema && has_wrapper
-}
-
-fn bootstrap_create_schema(create: &CreateSchemaStatement) -> Result<(), EngineError> {
-    let created = with_catalog_write(|catalog| catalog.create_schema(&create.name));
-    match created {
-        Ok(_) => Ok(()),
-        Err(err) if create.if_not_exists && err.message.contains("already exists") => Ok(()),
-        Err(err) => Err(EngineError {
-            message: err.message,
-        }),
-    }
-}
-
-fn bootstrap_register_user_function(create: &CreateFunctionStatement) -> Result<(), EngineError> {
-    let user_function = UserFunction {
-        name: create
-            .name
-            .iter()
-            .map(|part| part.to_ascii_lowercase())
-            .collect(),
-        params: create.params.clone(),
-        return_type: create.return_type.clone(),
-        is_trigger: create.is_trigger,
-        body: create.body.trim().to_string(),
-        language: create.language.clone(),
-    };
-
-    with_ext_write(|ext| {
-        if create.or_replace {
-            ext.user_functions
-                .retain(|existing| !same_function_identity(existing, &user_function));
-        } else if ext
-            .user_functions
-            .iter()
-            .any(|f| same_function_identity(f, &user_function))
-        {
-            return Err(EngineError {
-                message: format!(
-                    "function \"{}\" already exists",
-                    user_function.name.join(".")
-                ),
-            });
-        }
-        ext.user_functions.push(user_function);
-        Ok(())
-    })
-}
-
-fn split_sql_statements(sql: &str) -> Vec<String> {
-    let tokens = if let Ok(tokens) = lex_sql(sql) {
-        tokens
-    } else {
-        let trimmed = sql.trim();
-        if trimmed.is_empty() {
-            return Vec::new();
-        }
-        return vec![trimmed.to_string()];
-    };
-
-    let mut statements = Vec::new();
-    let mut first_token_start: Option<usize> = None;
-    let mut last_token_end = 0usize;
-
-    for token in &tokens {
-        match token.kind {
-            TokenKind::Semicolon => {
-                if let Some(start) = first_token_start {
-                    let statement = sql[start..last_token_end].trim();
-                    if !statement.is_empty() {
-                        statements.push(statement.to_string());
-                    }
-                }
-                first_token_start = None;
-            }
-            TokenKind::Eof => break,
-            _ => {
-                if first_token_start.is_none() {
-                    first_token_start = Some(token.start);
-                }
-                last_token_end = token.end;
-            }
-        }
-    }
-
-    if let Some(start) = first_token_start {
-        let statement = sql[start..last_token_end].trim();
-        if !statement.is_empty() {
-            statements.push(statement.to_string());
-        }
-    }
-
-    statements
-}
 
 fn triggers_for_table_event(
     table: &crate::catalog::Table,
@@ -582,9 +450,7 @@ pub(crate) fn lookup_user_function(name: &[String], arg_count: usize) -> Option<
                 if func.name == lowered {
                     return true;
                 }
-                lowered.len() == 1
-                    && func.name.last() == lowered.last()
-                    && func.name.first().map(String::as_str) != Some("openferric")
+                lowered.len() == 1 && func.name.last() == lowered.last()
             })
             .cloned()
             .collect::<Vec<_>>();
