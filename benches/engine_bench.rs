@@ -17,7 +17,7 @@ fn bench_simple_select(c: &mut Criterion) {
                 sql: "SELECT 1".to_string(),
             }]);
             assert_ok(&out);
-        })
+        });
     });
 }
 
@@ -79,8 +79,56 @@ fn bench_expression_eval(c: &mut Criterion) {
                 sql: "SELECT (1 + 2) * 3 + abs(-4) + sqrt(9)".to_string(),
             }]);
             assert_ok(&out);
-        })
+        });
     });
+}
+
+fn bench_aggregate(c: &mut Criterion, name: &str, setup_sql: &str, query_sql: &str) {
+    c.bench_function(name, |b| {
+        let setup = setup_sql.to_string();
+        let query = query_sql.to_string();
+        b.iter_batched(
+            || {
+                let mut session = PostgresSession::new();
+                let out = session.run_sync([FrontendMessage::Query {
+                    sql: setup.clone(),
+                }]);
+                assert_ok(&out);
+                session
+            },
+            |mut session| {
+                let out = session.run_sync([FrontendMessage::Query {
+                    sql: query.clone(),
+                }]);
+                assert_ok(&out);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+const AGG_1K_SETUP: &str =
+    "CREATE TABLE bench_agg AS SELECT g AS val FROM generate_series(1, 1000) g";
+
+fn bench_aggregate_sum_1k(c: &mut Criterion) {
+    bench_aggregate(c, "aggregate_sum_1k", AGG_1K_SETUP, "SELECT sum(val) FROM bench_agg");
+}
+
+fn bench_aggregate_min_1k(c: &mut Criterion) {
+    bench_aggregate(c, "aggregate_min_1k", AGG_1K_SETUP, "SELECT min(val) FROM bench_agg");
+}
+
+fn bench_aggregate_max_1k(c: &mut Criterion) {
+    bench_aggregate(c, "aggregate_max_1k", AGG_1K_SETUP, "SELECT max(val) FROM bench_agg");
+}
+
+fn bench_aggregate_group_by_1k(c: &mut Criterion) {
+    bench_aggregate(
+        c,
+        "aggregate_group_by_1k",
+        "CREATE TABLE bench_agg_gb AS SELECT g % 10 AS grp, g AS val FROM generate_series(1, 1000) g",
+        "SELECT grp, sum(val), min(val), max(val) FROM bench_agg_gb GROUP BY grp",
+    );
 }
 
 criterion_group!(
@@ -88,6 +136,10 @@ criterion_group!(
     bench_simple_select,
     bench_insert_throughput,
     bench_join_performance,
-    bench_expression_eval
+    bench_expression_eval,
+    bench_aggregate_sum_1k,
+    bench_aggregate_min_1k,
+    bench_aggregate_max_1k,
+    bench_aggregate_group_by_1k
 );
 criterion_main!(benches);

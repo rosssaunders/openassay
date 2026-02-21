@@ -2953,6 +2953,163 @@ unsafe fn sum_f64_avx(values: &[f64]) -> f64 {
     lanes.iter().copied().sum::<f64>() + remainder.iter().copied().sum::<f64>()
 }
 
+fn min_i64_fast(values: &[i64]) -> Option<i64> {
+    if values.is_empty() {
+        return None;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            // SAFETY: We check CPU support with is_x86_feature_detected!("avx2") before calling.
+            return Some(unsafe { min_i64_avx2(values) });
+        }
+    }
+    Some(values.iter().copied().min().unwrap())
+}
+
+fn max_i64_fast(values: &[i64]) -> Option<i64> {
+    if values.is_empty() {
+        return None;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            // SAFETY: We check CPU support with is_x86_feature_detected!("avx2") before calling.
+            return Some(unsafe { max_i64_avx2(values) });
+        }
+    }
+    Some(values.iter().copied().max().unwrap())
+}
+
+fn min_f64_fast(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx") {
+            // SAFETY: We check CPU support with is_x86_feature_detected!("avx") before calling.
+            return Some(unsafe { min_f64_avx(values) });
+        }
+    }
+    Some(values.iter().copied().fold(f64::INFINITY, f64::min))
+}
+
+fn max_f64_fast(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx") {
+            // SAFETY: We check CPU support with is_x86_feature_detected!("avx") before calling.
+            return Some(unsafe { max_f64_avx(values) });
+        }
+    }
+    Some(values.iter().copied().fold(f64::NEG_INFINITY, f64::max))
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn min_i64_avx2(values: &[i64]) -> i64 {
+    let chunks = values.chunks_exact(4);
+    let remainder = chunks.remainder();
+    let mut acc = _mm256_set1_epi64x(i64::MAX);
+    for chunk in chunks {
+        // SAFETY: chunk is exactly 4 i64 values; loadu accepts unaligned addresses.
+        let v = unsafe { _mm256_loadu_si256(chunk.as_ptr().cast()) };
+        // AVX2 has no _mm256_min_epi64, so use cmpgt + blendv:
+        // mask = v > acc (all-ones where v > acc), then blend keeps acc where mask is set, v otherwise
+        let mask = _mm256_cmpgt_epi64(v, acc);
+        acc = _mm256_blendv_epi8(v, acc, mask);
+    }
+    let mut lanes = [0_i64; 4];
+    // SAFETY: lanes has exactly 32 bytes of writable storage.
+    unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast(), acc) };
+    let mut result = lanes[0];
+    for &lane in &lanes[1..] {
+        result = result.min(lane);
+    }
+    for &val in remainder {
+        result = result.min(val);
+    }
+    result
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn max_i64_avx2(values: &[i64]) -> i64 {
+    let chunks = values.chunks_exact(4);
+    let remainder = chunks.remainder();
+    let mut acc = _mm256_set1_epi64x(i64::MIN);
+    for chunk in chunks {
+        // SAFETY: chunk is exactly 4 i64 values; loadu accepts unaligned addresses.
+        let v = unsafe { _mm256_loadu_si256(chunk.as_ptr().cast()) };
+        // mask = acc > v (all-ones where acc > v), then blend keeps v where mask is set, acc otherwise
+        let mask = _mm256_cmpgt_epi64(acc, v);
+        acc = _mm256_blendv_epi8(v, acc, mask);
+    }
+    let mut lanes = [0_i64; 4];
+    // SAFETY: lanes has exactly 32 bytes of writable storage.
+    unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast(), acc) };
+    let mut result = lanes[0];
+    for &lane in &lanes[1..] {
+        result = result.max(lane);
+    }
+    for &val in remainder {
+        result = result.max(val);
+    }
+    result
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn min_f64_avx(values: &[f64]) -> f64 {
+    let chunks = values.chunks_exact(4);
+    let remainder = chunks.remainder();
+    let mut acc = _mm256_set1_pd(f64::INFINITY);
+    for chunk in chunks {
+        // SAFETY: chunk is exactly 4 f64 values; loadu accepts unaligned addresses.
+        let v = unsafe { _mm256_loadu_pd(chunk.as_ptr()) };
+        acc = _mm256_min_pd(acc, v);
+    }
+    let mut lanes = [0.0_f64; 4];
+    // SAFETY: lanes has exactly 32 bytes of writable storage.
+    unsafe { _mm256_storeu_pd(lanes.as_mut_ptr(), acc) };
+    let mut result = lanes[0];
+    for &lane in &lanes[1..] {
+        result = result.min(lane);
+    }
+    for &val in remainder {
+        result = result.min(val);
+    }
+    result
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn max_f64_avx(values: &[f64]) -> f64 {
+    let chunks = values.chunks_exact(4);
+    let remainder = chunks.remainder();
+    let mut acc = _mm256_set1_pd(f64::NEG_INFINITY);
+    for chunk in chunks {
+        // SAFETY: chunk is exactly 4 f64 values; loadu accepts unaligned addresses.
+        let v = unsafe { _mm256_loadu_pd(chunk.as_ptr()) };
+        acc = _mm256_max_pd(acc, v);
+    }
+    let mut lanes = [0.0_f64; 4];
+    // SAFETY: lanes has exactly 32 bytes of writable storage.
+    unsafe { _mm256_storeu_pd(lanes.as_mut_ptr(), acc) };
+    let mut result = lanes[0];
+    for &lane in &lanes[1..] {
+        result = result.max(lane);
+    }
+    for &val in remainder {
+        result = result.max(val);
+    }
+    result
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn eval_aggregate_function(
     fn_name: &str,
@@ -3144,6 +3301,79 @@ pub(crate) async fn eval_aggregate_function(
             }
             sort_aggregate_rows(&mut rows, order_by);
 
+            // Try SIMD fast path for pure-numeric columns
+            let mut int_values = Vec::new();
+            let mut float_values = Vec::new();
+            let mut all_numeric = true;
+            for row in &rows {
+                match &row.args[0] {
+                    ScalarValue::Null => continue,
+                    ScalarValue::Int(v) => int_values.push(*v),
+                    ScalarValue::Float(v) => {
+                        if v.is_nan() {
+                            all_numeric = false;
+                            break;
+                        }
+                        float_values.push(*v);
+                    }
+                    _ => {
+                        all_numeric = false;
+                        break;
+                    }
+                }
+            }
+
+            if all_numeric && (!int_values.is_empty() || !float_values.is_empty()) {
+                let result = if float_values.is_empty() {
+                    // Pure integer path
+                    let v = if fn_name == "min" {
+                        min_i64_fast(&int_values)
+                    } else {
+                        max_i64_fast(&int_values)
+                    };
+                    v.map(ScalarValue::Int)
+                } else if int_values.is_empty() {
+                    // Pure float path
+                    let v = if fn_name == "min" {
+                        min_f64_fast(&float_values)
+                    } else {
+                        max_f64_fast(&float_values)
+                    };
+                    v.map(ScalarValue::Float)
+                } else {
+                    // Mixed int+float: compute winners separately to avoid i64→f64 precision loss
+                    let int_winner = if fn_name == "min" {
+                        min_i64_fast(&int_values).unwrap()
+                    } else {
+                        max_i64_fast(&int_values).unwrap()
+                    };
+                    let float_winner = if fn_name == "min" {
+                        min_f64_fast(&float_values).unwrap()
+                    } else {
+                        max_f64_fast(&float_values).unwrap()
+                    };
+                    let int_as_f64 = int_winner as f64;
+                    let pick_int = if fn_name == "min" {
+                        int_as_f64 <= float_winner
+                    } else {
+                        int_as_f64 >= float_winner
+                    };
+                    // If the cast was lossless, return as Int to preserve type;
+                    // otherwise return as Float.
+                    if pick_int {
+                        if int_winner as f64 == int_as_f64 && (int_as_f64 as i64) == int_winner {
+                            Some(ScalarValue::Int(int_winner))
+                        } else {
+                            Some(ScalarValue::Float(int_as_f64))
+                        }
+                    } else {
+                        Some(ScalarValue::Float(float_winner))
+                    }
+                };
+                return Ok(result.unwrap_or(ScalarValue::Null));
+            }
+
+            // Scalar fallback for non-numeric types, NaN, Numeric/Decimal, etc.
             let mut current: Option<ScalarValue> = None;
             for row in rows {
                 let value = row.args[0].clone();
@@ -4182,7 +4412,9 @@ pub(crate) fn parse_non_negative_int(
 
 #[cfg(test)]
 mod tests {
-    use super::{sum_f64_fast, sum_i64_fast};
+    use super::{
+        max_f64_fast, max_i64_fast, min_f64_fast, min_i64_fast, sum_f64_fast, sum_i64_fast,
+    };
 
     #[test]
     fn fast_i64_sum_matches_scalar() {
@@ -4196,5 +4428,49 @@ mod tests {
         let fast = sum_f64_fast(&values);
         let scalar = values.iter().copied().sum::<f64>();
         assert!((fast - scalar).abs() < f64::EPSILON * 100.0);
+    }
+
+    #[test]
+    fn fast_i64_min_matches_scalar() {
+        let values = (1..=2048).collect::<Vec<i64>>();
+        assert_eq!(min_i64_fast(&values), values.iter().copied().min());
+    }
+
+    #[test]
+    fn fast_i64_max_matches_scalar() {
+        let values = (1..=2048).collect::<Vec<i64>>();
+        assert_eq!(max_i64_fast(&values), values.iter().copied().max());
+    }
+
+    #[test]
+    fn fast_f64_min_matches_scalar() {
+        let values = (1..=2048).map(|v| v as f64 * 0.5).collect::<Vec<f64>>();
+        let fast = min_f64_fast(&values).unwrap();
+        let scalar = values.iter().copied().fold(f64::INFINITY, f64::min);
+        assert!((fast - scalar).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn fast_f64_max_matches_scalar() {
+        let values = (1..=2048).map(|v| v as f64 * 0.5).collect::<Vec<f64>>();
+        let fast = max_f64_fast(&values).unwrap();
+        let scalar = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert!((fast - scalar).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn fast_i64_min_max_with_negatives() {
+        let values: Vec<i64> = (-1024..=1024).collect();
+        assert_eq!(min_i64_fast(&values), Some(-1024));
+        assert_eq!(max_i64_fast(&values), Some(1024));
+    }
+
+    #[test]
+    fn fast_f64_min_max_with_negatives() {
+        let values: Vec<f64> = (-1024..=1024).map(|v| v as f64 * 0.1).collect();
+        let min = min_f64_fast(&values).unwrap();
+        let max = max_f64_fast(&values).unwrap();
+        assert!((min - (-102.4)).abs() < f64::EPSILON);
+        assert!((max - 102.4).abs() < f64::EPSILON);
     }
 }
