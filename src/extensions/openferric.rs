@@ -307,6 +307,7 @@ fn finite_json_number(value: f64, message: &str) -> Result<JsonValue, EngineErro
         })
 }
 
+#[allow(dead_code)]
 fn map_pricing_error(error: openferric::core::PricingError) -> EngineError {
     EngineError {
         message: error.to_string(),

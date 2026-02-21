@@ -229,7 +229,8 @@ async fn execute_simple_query_via_session(sql: &str) -> Result<Vec<CliQueryResul
             | BackendMessage::CopyData { .. }
             | BackendMessage::CopyDone
             | BackendMessage::FlushComplete
-            | BackendMessage::Terminate => {}
+            | BackendMessage::Terminate
+            | BackendMessage::NotificationResponse { .. } => {}
         }
     }
 

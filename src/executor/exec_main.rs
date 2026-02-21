@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
+use std::arch::x86_64::{_mm256_setzero_si256, _mm256_loadu_si256, _mm256_add_epi64, _mm256_storeu_si256, _mm256_setzero_pd, _mm256_loadu_pd, _mm256_add_pd, _mm256_storeu_pd};
 
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
 use crate::executor::exec_expr::{
@@ -366,6 +366,7 @@ async fn execute_select(
     // This avoids computing the full cartesian product before filtering.
     let (mut source_rows, remaining_predicate) =
         if select.from.len() >= 2 && select.where_clause.is_some() {
+            #[allow(clippy::unnecessary_unwrap)]
             let conjuncts = decompose_and_conjuncts(select.where_clause.as_ref().unwrap());
             evaluate_from_clause_with_pushdown(&select.from, params, outer_scope, &conjuncts).await?
         } else {
@@ -409,7 +410,7 @@ async fn execute_select(
                         Expr::Wildcard => {
                             for col in wc {
                                 new_targets.push(SelectItem {
-                                    expr: Expr::ColumnRef(col.lookup_parts.clone()),
+                                    expr: Expr::Identifier(col.lookup_parts.clone()),
                                     alias: None,
                                 });
                             }
@@ -419,7 +420,7 @@ async fn execute_select(
                             for col in wc {
                                 if col.lookup_parts.len() > 1 && col.lookup_parts[..col.lookup_parts.len()-1] == q {
                                     new_targets.push(SelectItem {
-                                        expr: Expr::ColumnRef(col.lookup_parts.clone()),
+                                        expr: Expr::Identifier(col.lookup_parts.clone()),
                                         alias: None,
                                     });
                                 }
@@ -430,6 +431,7 @@ async fn execute_select(
                 }
                 expanded_select = SelectStatement {
                     quantifier: select.quantifier.clone(),
+                    distinct_on: select.distinct_on.clone(),
                     targets: new_targets,
                     from: select.from.clone(),
                     where_clause: select.where_clause.clone(),
@@ -2435,14 +2437,13 @@ fn resolve_group_by_alias<'a>(
     expr: &'a Expr,
     alias_map: &'a HashMap<String, &'a Expr>,
 ) -> &'a Expr {
-    if let Expr::Identifier(parts) = expr {
-        if parts.len() == 1 {
+    if let Expr::Identifier(parts) = expr
+        && parts.len() == 1 {
             let key = parts[0].to_ascii_lowercase();
             if let Some(resolved) = alias_map.get(&key) {
                 return resolved;
             }
         }
-    }
     expr
 }
 
@@ -4034,14 +4035,13 @@ fn collect_extra_order_by_columns(query: &Query) -> Vec<Expr> {
 
     let mut extras = Vec::new();
     for spec in &query.order_by {
-        if let Expr::Identifier(parts) = &spec.expr {
-            if parts.len() == 1 {
+        if let Expr::Identifier(parts) = &spec.expr
+            && parts.len() == 1 {
                 let name = parts[0].to_ascii_lowercase();
                 if !select_columns.contains(&name) {
                     extras.push(spec.expr.clone());
                 }
             }
-        }
     }
     extras
 }

@@ -1314,6 +1314,12 @@ impl Parser {
             }));
         }
         if self.consume_keyword(Keyword::Function) {
+            let if_exists = if self.consume_keyword(Keyword::If) {
+                self.expect_keyword(Keyword::Exists, "expected EXISTS after IF")?;
+                true
+            } else {
+                false
+            };
             let name = self.parse_qualified_name()?;
             // consume optional parameter list
             if self.consume_if(|k| matches!(k, TokenKind::LParen)) {

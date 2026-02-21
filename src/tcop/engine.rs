@@ -928,12 +928,14 @@ pub(crate) fn sync_wasm_ws_state(conn_id: i64) {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct UserEnumType {
     pub(crate) name: Vec<String>,
     pub(crate) labels: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct UserDomain {
     pub(crate) name: Vec<String>,
     pub(crate) base_type: String,

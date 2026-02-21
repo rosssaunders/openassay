@@ -1,6 +1,6 @@
 use crate::parser::ast::{CreateDomainStatement, CreateTypeStatement, DropDomainStatement, DropTypeStatement};
 use crate::tcop::engine::{
-    EngineError, QueryResult, UserDomain, UserEnumType, with_ext_read, with_ext_write,
+    EngineError, QueryResult, UserDomain, UserEnumType, with_ext_write,
 };
 
 pub async fn execute_create_type(
@@ -68,7 +68,7 @@ pub async fn execute_create_domain(
     create: &CreateDomainStatement,
 ) -> Result<QueryResult, EngineError> {
     let normalized_name: Vec<String> = create.name.iter().map(|s| s.to_ascii_lowercase()).collect();
-    let base_type = create.base_type.name.to_ascii_lowercase();
+    let base_type = format!("{:?}", create.base_type).to_ascii_lowercase();
 
     with_ext_write(|ext| {
         if ext.user_domains.iter().any(|d| d.name == normalized_name) {

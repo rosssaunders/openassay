@@ -9,6 +9,7 @@ pub(crate) struct TemporalOperand {
 }
 
 /// Returns true if the text represents a special infinity datetime value.
+#[allow(dead_code)]
 pub(crate) fn is_infinity_datetime(text: &str) -> bool {
     let lower = text.trim().to_ascii_lowercase();
     matches!(
