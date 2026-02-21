@@ -1257,7 +1257,7 @@ fn binary_op_to_sql(op: &crate::parser::ast::BinaryOp) -> &'static str {
 }
 
 #[allow(dead_code)]
-fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
+pub(crate) fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
     use crate::parser::ast::Expr;
 
     match expr {

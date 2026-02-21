@@ -32,7 +32,7 @@ use crate::utils::adt::json::{
 use crate::tcop::engine::{drain_wasm_ws_messages, sync_wasm_ws_state};
 use crate::utils::adt::misc::{
     compare_values_for_predicate, eval_regexp_matches_set_function,
-    eval_regexp_split_to_table_set_function, parse_f64_numeric_scalar, truthy,
+    eval_regexp_split_to_table_set_function, parse_f64_numeric_scalar, render_expr_to_sql, truthy,
 };
 use crate::utils::fmgr::eval_scalar_function;
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -1702,11 +1702,14 @@ fn virtual_relation_rows(
                 let mut out = Vec::new();
                 for schema in catalog.schemas() {
                     for table in schema.tables() {
+                        let has_index = !table.indexes().is_empty()
+                            || table.key_constraints().iter().any(|k| k.primary);
                         out.push((
                             table.oid(),
                             table.name().to_string(),
                             schema.oid(),
                             pg_relkind_for_table(table.kind()).to_string(),
+                            has_index,
                         ));
                     }
                 }
@@ -1715,12 +1718,17 @@ fn virtual_relation_rows(
             entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
             Ok(entries
                 .into_iter()
-                .map(|(oid, relname, relnamespace, relkind)| {
+                .map(|(oid, relname, relnamespace, relkind, relhasindex)| {
                     vec![
                         ScalarValue::Int(oid as i64),
                         ScalarValue::Text(relname),
                         ScalarValue::Int(relnamespace as i64),
                         ScalarValue::Text(relkind),
+                        ScalarValue::Int(10), // relowner: superuser OID
+                        ScalarValue::Bool(relhasindex),
+                        ScalarValue::Bool(false), // relhasrules
+                        ScalarValue::Bool(false), // relhastriggers
+                        ScalarValue::Bool(false), // relisshared
                     ]
                 })
                 .collect())
@@ -1737,6 +1745,7 @@ fn virtual_relation_rows(
                                 column.name().to_string(),
                                 type_signature_to_oid(column.type_signature()),
                                 !column.nullable(),
+                                column.default().is_some(),
                             ));
                         }
                     }
@@ -1746,32 +1755,49 @@ fn virtual_relation_rows(
             entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
             Ok(entries
                 .into_iter()
-                .map(|(attrelid, attnum, attname, atttypid, attnotnull)| {
+                .map(|(attrelid, attnum, attname, atttypid, attnotnull, atthasdef)| {
                     vec![
                         ScalarValue::Int(attrelid as i64),
                         ScalarValue::Text(attname),
                         ScalarValue::Int(atttypid as i64),
                         ScalarValue::Int(attnum as i64 + 1),
                         ScalarValue::Bool(attnotnull),
+                        ScalarValue::Bool(false), // attisdropped: live columns are never dropped
+                        ScalarValue::Bool(atthasdef),
                     ]
                 })
                 .collect())
         }
         ("pg_catalog", "pg_type") => {
+            // typnamespace 11 = pg_catalog OID, typowner 10 = superuser
+            // typlen: -1 = variable, otherwise fixed byte length
             let mut entries = vec![
-                (16u32, "bool".to_string()),
-                (20u32, "int8".to_string()),
-                (25u32, "text".to_string()),
-                (701u32, "float8".to_string()),
-                (1082u32, "date".to_string()),
-                (1114u32, "timestamp".to_string()),
+                (16u32, "bool", 11u32, 10u32, 1i64, false, "b", 0u32, 0u32),
+                (20u32, "int8", 11u32, 10u32, 8i64, true, "b", 0u32, 0u32),
+                (25u32, "text", 11u32, 10u32, -1i64, false, "b", 0u32, 0u32),
+                (701u32, "float8", 11u32, 10u32, 8i64, true, "b", 0u32, 0u32),
+                (1082u32, "date", 11u32, 10u32, 4i64, true, "b", 0u32, 0u32),
+                (1114u32, "timestamp", 11u32, 10u32, 8i64, true, "b", 0u32, 0u32),
+                (1700u32, "numeric", 11u32, 10u32, -1i64, false, "b", 0u32, 0u32),
             ];
             entries.sort_by_key(|a| a.0);
             Ok(entries
                 .into_iter()
-                .map(|(oid, typname)| {
-                    vec![ScalarValue::Int(oid as i64), ScalarValue::Text(typname)]
-                })
+                .map(
+                    |(oid, typname, typnamespace, typowner, typlen, typbyval, typtype, typelem, typarray)| {
+                        vec![
+                            ScalarValue::Int(oid as i64),
+                            ScalarValue::Text(typname.to_string()),
+                            ScalarValue::Int(typnamespace as i64),
+                            ScalarValue::Int(typowner as i64),
+                            ScalarValue::Int(typlen),
+                            ScalarValue::Bool(typbyval),
+                            ScalarValue::Text(typtype.to_string()),
+                            ScalarValue::Int(typelem as i64),
+                            ScalarValue::Int(typarray as i64),
+                        ]
+                    },
+                )
                 .collect())
         }
         ("information_schema", "tables") => {
@@ -1806,6 +1832,9 @@ fn virtual_relation_rows(
                 for schema in catalog.schemas() {
                     for table in schema.tables() {
                         for column in table.columns() {
+                            let col_default = column
+                                .default()
+                                .map(|expr| render_expr_to_sql(expr));
                             out.push((
                                 schema.name().to_string(),
                                 table.name().to_string(),
@@ -1817,6 +1846,8 @@ fn virtual_relation_rows(
                                 } else {
                                     "NO".to_string()
                                 },
+                                col_default,
+                                information_schema_numeric_precision(column.type_signature()),
                             ));
                         }
                     }
@@ -1827,14 +1858,18 @@ fn virtual_relation_rows(
             Ok(entries
                 .into_iter()
                 .map(
-                    |(table_schema, table_name, ordinal, column_name, data_type, is_nullable)| {
+                    |(table_schema, table_name, ordinal, column_name, data_type, is_nullable, col_default, numeric_precision)| {
                         vec![
                             ScalarValue::Text(table_schema),
                             ScalarValue::Text(table_name),
                             ScalarValue::Text(column_name),
                             ScalarValue::Int(ordinal as i64 + 1),
-                            ScalarValue::Text(data_type),
+                            col_default.map(ScalarValue::Text).unwrap_or(ScalarValue::Null),
                             ScalarValue::Text(is_nullable),
+                            ScalarValue::Text(data_type),
+                            ScalarValue::Null, // character_maximum_length
+                            numeric_precision.map(ScalarValue::Int).unwrap_or(ScalarValue::Null),
+                            ScalarValue::Text("NO".to_string()), // is_identity
                         ]
                     },
                 )
@@ -1859,12 +1894,87 @@ fn virtual_relation_rows(
                 .collect())
         }
         ("information_schema", "key_column_usage") => {
-            // Return empty for now - would need constraint introspection
-            Ok(Vec::new())
+            with_catalog_read(|catalog| {
+                let mut rows = Vec::new();
+                for schema in catalog.schemas() {
+                    for table in schema.tables() {
+                        // Primary key and unique constraints
+                        for kc in table.key_constraints() {
+                            let con_name = kc.name.clone().unwrap_or_else(|| {
+                                format!(
+                                    "{}_{}",
+                                    table.name(),
+                                    if kc.primary { "pkey" } else { "key" }
+                                )
+                            });
+                            for (pos, col_name) in kc.columns.iter().enumerate() {
+                                rows.push(vec![
+                                    ScalarValue::Text(con_name.clone()),
+                                    ScalarValue::Text(schema.name().to_string()),
+                                    ScalarValue::Text(table.name().to_string()),
+                                    ScalarValue::Text(col_name.clone()),
+                                    ScalarValue::Int(pos as i64 + 1),
+                                ]);
+                            }
+                        }
+                        // Foreign key constraints
+                        for fk in table.foreign_key_constraints() {
+                            let con_name = fk.name.clone().unwrap_or_else(|| {
+                                format!("{}_fkey", table.name())
+                            });
+                            for (pos, col_name) in fk.columns.iter().enumerate() {
+                                rows.push(vec![
+                                    ScalarValue::Text(con_name.clone()),
+                                    ScalarValue::Text(schema.name().to_string()),
+                                    ScalarValue::Text(table.name().to_string()),
+                                    ScalarValue::Text(col_name.clone()),
+                                    ScalarValue::Int(pos as i64 + 1),
+                                ]);
+                            }
+                        }
+                    }
+                }
+                Ok(rows)
+            })
         }
         ("information_schema", "table_constraints") => {
-            // Return empty for now
-            Ok(Vec::new())
+            with_catalog_read(|catalog| {
+                let mut rows = Vec::new();
+                for schema in catalog.schemas() {
+                    for table in schema.tables() {
+                        for kc in table.key_constraints() {
+                            let con_name = kc.name.clone().unwrap_or_else(|| {
+                                format!(
+                                    "{}_{}",
+                                    table.name(),
+                                    if kc.primary { "pkey" } else { "key" }
+                                )
+                            });
+                            let con_type = if kc.primary { "PRIMARY KEY" } else { "UNIQUE" };
+                            rows.push(vec![
+                                ScalarValue::Text(con_name),
+                                ScalarValue::Text(schema.name().to_string()),
+                                ScalarValue::Text(table.name().to_string()),
+                                ScalarValue::Text(con_type.to_string()),
+                                ScalarValue::Text("NO".to_string()),
+                            ]);
+                        }
+                        for fk in table.foreign_key_constraints() {
+                            let con_name = fk.name.clone().unwrap_or_else(|| {
+                                format!("{}_fkey", table.name())
+                            });
+                            rows.push(vec![
+                                ScalarValue::Text(con_name),
+                                ScalarValue::Text(schema.name().to_string()),
+                                ScalarValue::Text(table.name().to_string()),
+                                ScalarValue::Text("FOREIGN KEY".to_string()),
+                                ScalarValue::Text("NO".to_string()),
+                            ]);
+                        }
+                    }
+                }
+                Ok(rows)
+            })
         }
         ("pg_catalog", "pg_database") => {
             Ok(vec![vec![
@@ -1880,8 +1990,12 @@ fn virtual_relation_rows(
             Ok(vec![vec![
                 ScalarValue::Int(10),
                 ScalarValue::Text(role),
-                ScalarValue::Bool(true),
-                ScalarValue::Bool(true),
+                ScalarValue::Bool(true),  // rolsuper
+                ScalarValue::Bool(true),  // rolcanlogin
+                ScalarValue::Bool(true),  // rolinherit
+                ScalarValue::Bool(true),  // rolcreaterole
+                ScalarValue::Bool(true),  // rolcreatedb
+                ScalarValue::Int(-1),     // rolconnlimit: -1 means unlimited
             ]])
         }
         ("pg_catalog", "pg_settings") => Ok(crate::commands::variable::with_guc_read(|guc| {
@@ -1892,6 +2006,8 @@ fn virtual_relation_rows(
                         ScalarValue::Text(value.clone()),
                         ScalarValue::Text("Ungrouped".to_string()),
                         ScalarValue::Text(String::new()),
+                        ScalarValue::Text("string".to_string()), // vartype
+                        ScalarValue::Text("user".to_string()),   // context
                     ]
                 })
                 .collect()
@@ -1952,13 +2068,200 @@ fn virtual_relation_rows(
                             ScalarValue::Int(90000 + i as i64),
                             ScalarValue::Text(f.name.last().cloned().unwrap_or_default()),
                             ScalarValue::Int(0), // pronamespace placeholder
+                            ScalarValue::Int(10), // proowner: superuser
+                            ScalarValue::Int(14), // prolang: 14 = sql
+                            ScalarValue::Text(String::new()), // prosrc placeholder
                         ]
                     })
                     .collect()
             }))
         }
         ("pg_catalog", "pg_constraint") => {
-            // Return empty for now
+            with_catalog_read(|catalog| {
+                let mut rows = Vec::new();
+                let mut con_oid: i64 = 70000;
+                for schema in catalog.schemas() {
+                    for table in schema.tables() {
+                        let col_ordinals: std::collections::HashMap<String, i64> = table
+                            .columns()
+                            .iter()
+                            .map(|c| (c.name().to_string(), c.ordinal() as i64 + 1))
+                            .collect();
+                        for kc in table.key_constraints() {
+                            let con_name = kc.name.clone().unwrap_or_else(|| {
+                                format!(
+                                    "{}_{}",
+                                    table.name(),
+                                    if kc.primary { "pkey" } else { "key" }
+                                )
+                            });
+                            let contype = if kc.primary { "p" } else { "u" };
+                            let conkey = format!(
+                                "{{{}}}",
+                                kc.columns
+                                    .iter()
+                                    .map(|c| col_ordinals
+                                        .get(c)
+                                        .copied()
+                                        .unwrap_or(0)
+                                        .to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            );
+                            rows.push(vec![
+                                ScalarValue::Int(con_oid),
+                                ScalarValue::Text(con_name),
+                                ScalarValue::Int(schema.oid() as i64),
+                                ScalarValue::Text(contype.to_string()),
+                                ScalarValue::Int(table.oid() as i64),
+                                ScalarValue::Int(0), // confrelid: 0 for non-FK
+                                ScalarValue::Text(conkey),
+                                ScalarValue::Null, // confkey: NULL for non-FK
+                                ScalarValue::Null, // confdeltype: NULL for non-FK
+                                ScalarValue::Null, // confupdtype: NULL for non-FK
+                            ]);
+                            con_oid += 1;
+                        }
+                        for fk in table.foreign_key_constraints() {
+                            let con_name = fk.name.clone().unwrap_or_else(|| {
+                                format!("{}_fkey", table.name())
+                            });
+                            let conkey = format!(
+                                "{{{}}}",
+                                fk.columns
+                                    .iter()
+                                    .map(|c| col_ordinals
+                                        .get(c)
+                                        .copied()
+                                        .unwrap_or(0)
+                                        .to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            );
+                            // Resolve referenced table OID
+                            let ref_table_oid = catalog
+                                .schema(fk.referenced_table.first().map(String::as_str).unwrap_or("public"))
+                                .and_then(|s| {
+                                    fk.referenced_table.last().and_then(|n| s.table(n))
+                                })
+                                .map(|t| t.oid() as i64)
+                                .unwrap_or(0);
+                            let ref_col_ordinals: std::collections::HashMap<String, i64> = catalog
+                                .schema(fk.referenced_table.first().map(String::as_str).unwrap_or("public"))
+                                .and_then(|s| fk.referenced_table.last().and_then(|n| s.table(n)))
+                                .map(|t| {
+                                    t.columns()
+                                        .iter()
+                                        .map(|c| (c.name().to_string(), c.ordinal() as i64 + 1))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let confkey = format!(
+                                "{{{}}}",
+                                fk.referenced_columns
+                                    .iter()
+                                    .map(|c| ref_col_ordinals
+                                        .get(c)
+                                        .copied()
+                                        .unwrap_or(0)
+                                        .to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            );
+                            let confdeltype = fk_action_char(fk.on_delete);
+                            let confupdtype = fk_action_char(fk.on_update);
+                            rows.push(vec![
+                                ScalarValue::Int(con_oid),
+                                ScalarValue::Text(con_name),
+                                ScalarValue::Int(schema.oid() as i64),
+                                ScalarValue::Text("f".to_string()),
+                                ScalarValue::Int(table.oid() as i64),
+                                ScalarValue::Int(ref_table_oid),
+                                ScalarValue::Text(conkey),
+                                ScalarValue::Text(confkey),
+                                ScalarValue::Text(confdeltype.to_string()),
+                                ScalarValue::Text(confupdtype.to_string()),
+                            ]);
+                            con_oid += 1;
+                        }
+                    }
+                }
+                Ok(rows)
+            })
+        }
+        ("pg_catalog", "pg_index") => {
+            with_catalog_read(|catalog| {
+                let mut rows = Vec::new();
+                let mut index_oid: i64 = 80000;
+                for schema in catalog.schemas() {
+                    for table in schema.tables() {
+                        let col_ordinals: std::collections::HashMap<String, i64> = table
+                            .columns()
+                            .iter()
+                            .map(|c| (c.name().to_string(), c.ordinal() as i64 + 1))
+                            .collect();
+                        // Key constraints (PK / UNIQUE) produce implicit indexes
+                        for kc in table.key_constraints() {
+                            let indkey = kc
+                                .columns
+                                .iter()
+                                .map(|c| col_ordinals.get(c).copied().unwrap_or(0).to_string())
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            rows.push(vec![
+                                ScalarValue::Int(index_oid),
+                                ScalarValue::Int(table.oid() as i64),
+                                ScalarValue::Int(kc.columns.len() as i64),
+                                ScalarValue::Bool(kc.primary || kc.columns.len() > 0), // indisunique
+                                ScalarValue::Bool(kc.primary), // indisprimary
+                                ScalarValue::Text(indkey),
+                            ]);
+                            index_oid += 1;
+                        }
+                        // Explicit indexes
+                        for idx in table.indexes() {
+                            let indkey = idx
+                                .columns
+                                .iter()
+                                .map(|c| col_ordinals.get(c).copied().unwrap_or(0).to_string())
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            rows.push(vec![
+                                ScalarValue::Int(index_oid),
+                                ScalarValue::Int(table.oid() as i64),
+                                ScalarValue::Int(idx.columns.len() as i64),
+                                ScalarValue::Bool(idx.unique),
+                                ScalarValue::Bool(false), // indisprimary
+                                ScalarValue::Text(indkey),
+                            ]);
+                            index_oid += 1;
+                        }
+                    }
+                }
+                Ok(rows)
+            })
+        }
+        ("pg_catalog", "pg_attrdef") => {
+            with_catalog_read(|catalog| {
+                let mut rows = Vec::new();
+                for schema in catalog.schemas() {
+                    for table in schema.tables() {
+                        for column in table.columns() {
+                            if let Some(default_expr) = column.default() {
+                                rows.push(vec![
+                                    ScalarValue::Int(table.oid() as i64),
+                                    ScalarValue::Int(column.ordinal() as i64 + 1),
+                                    ScalarValue::Text(render_expr_to_sql(default_expr)),
+                                ]);
+                            }
+                        }
+                    }
+                }
+                Ok(rows)
+            })
+        }
+        ("pg_catalog", "pg_inherits") => {
+            // OpenAssay does not support table inheritance; return empty result set
             Ok(Vec::new())
         }
         ("pg_catalog", "pg_extension") => Ok(with_ext_read(|ext| {
@@ -2037,6 +2340,24 @@ fn information_schema_data_type(signature: TypeSignature) -> &'static str {
         TypeSignature::Text => "text",
         TypeSignature::Date => "date",
         TypeSignature::Timestamp => "timestamp without time zone",
+    }
+}
+
+fn information_schema_numeric_precision(signature: TypeSignature) -> Option<i64> {
+    match signature {
+        TypeSignature::Int8 => Some(64),
+        TypeSignature::Float8 => Some(53),
+        TypeSignature::Numeric => None, // variable precision
+        _ => None,
+    }
+}
+
+fn fk_action_char(action: crate::parser::ast::ForeignKeyAction) -> char {
+    use crate::parser::ast::ForeignKeyAction;
+    match action {
+        ForeignKeyAction::Restrict => 'r',
+        ForeignKeyAction::Cascade => 'c',
+        ForeignKeyAction::SetNull => 'n',
     }
 }
 
