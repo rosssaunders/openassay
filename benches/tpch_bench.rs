@@ -221,7 +221,7 @@ SELECT
     AVG(l_discount) AS avg_disc,
     COUNT(*) AS count_order
 FROM lineitem
-WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '90 days'
+WHERE l_shipdate <= DATE '1998-09-02'
 GROUP BY l_returnflag, l_linestatus
 ORDER BY l_returnflag, l_linestatus
 "#),
@@ -281,7 +281,7 @@ SELECT
 FROM orders
 WHERE
     o_orderdate >= DATE '1993-07-01'
-    AND o_orderdate < DATE '1993-07-01' + INTERVAL '3 months'
+    AND o_orderdate < DATE '1993-10-01'
     AND EXISTS (
         SELECT * FROM lineitem
         WHERE l_orderkey = o_orderkey AND l_commitdate < l_receiptdate
@@ -305,7 +305,7 @@ WHERE
     AND n_regionkey = r_regionkey
     AND r_name = 'ASIA'
     AND o_orderdate >= DATE '1994-01-01'
-    AND o_orderdate < DATE '1994-01-01' + INTERVAL '1 year'
+    AND o_orderdate < DATE '1995-01-01'
 GROUP BY n_name
 ORDER BY revenue DESC
 "#),
@@ -317,7 +317,7 @@ SELECT
 FROM lineitem
 WHERE
     l_shipdate >= DATE '1994-01-01'
-    AND l_shipdate < DATE '1994-01-01' + INTERVAL '1 year'
+    AND l_shipdate < DATE '1995-01-01'
     AND l_discount BETWEEN 0.05 AND 0.07
     AND l_quantity < 24
 "#),
@@ -415,7 +415,7 @@ WHERE
     c_custkey = o_custkey
     AND l_orderkey = o_orderkey
     AND o_orderdate >= DATE '1993-10-01'
-    AND o_orderdate < DATE '1993-10-01' + INTERVAL '3 months'
+    AND o_orderdate < DATE '1994-01-01'
     AND l_returnflag = 'R'
     AND c_nationkey = n_nationkey
 GROUP BY c_custkey, c_name, c_acctbal, c_phone, n_name, c_address, c_comment
@@ -464,7 +464,7 @@ WHERE
     AND l_commitdate < l_receiptdate
     AND l_shipdate < l_commitdate
     AND l_receiptdate >= DATE '1994-01-01'
-    AND l_receiptdate < DATE '1994-01-01' + INTERVAL '1 year'
+    AND l_receiptdate < DATE '1995-01-01'
 GROUP BY l_shipmode
 ORDER BY l_shipmode
 "#),
@@ -495,7 +495,7 @@ FROM lineitem, part
 WHERE
     l_partkey = p_partkey
     AND l_shipdate >= DATE '1995-09-01'
-    AND l_shipdate < DATE '1995-09-01' + INTERVAL '1 month'
+    AND l_shipdate < DATE '1995-10-01'
 "#),
 
     // Q15: Top Supplier (uses CTE instead of view)
@@ -507,7 +507,7 @@ WITH revenue AS (
     FROM lineitem
     WHERE
         l_shipdate >= DATE '1996-01-01'
-        AND l_shipdate < DATE '1996-01-01' + INTERVAL '3 months'
+        AND l_shipdate < DATE '1996-04-01'
     GROUP BY l_suppkey
 )
 SELECT s_suppkey, s_name, s_address, s_phone, total_revenue
@@ -622,7 +622,7 @@ WHERE
                     l_partkey = ps_partkey
                     AND l_suppkey = ps_suppkey
                     AND l_shipdate >= DATE '1994-01-01'
-                    AND l_shipdate < DATE '1994-01-01' + INTERVAL '1 year'
+                    AND l_shipdate < DATE '1995-01-01'
             )
     )
     AND s_nationkey = n_nationkey
