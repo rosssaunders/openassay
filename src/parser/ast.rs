@@ -251,6 +251,7 @@ pub enum TypeName {
     BigSerial,        // auto-incrementing INT8
     Numeric,          // DECIMAL/NUMERIC
     Array(Box<Self>), // e.g. int4[], text[][]
+    Vector(Option<usize>),
     Name,             // PostgreSQL name type (63-byte identifier)
 }
 
@@ -971,6 +972,9 @@ pub enum BinaryOp {
     ArrayContainedBy, // <@
     ArrayOverlap,     // &&
     ArrayConcat,      // ||
+    VectorL2Distance,     // <->
+    VectorInnerProduct,   // <#>
+    VectorCosineDistance, // <=>
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -42,6 +42,18 @@ pub(crate) fn scalar_to_json_value(value: &ScalarValue) -> Result<JsonValue, Eng
             }
             Ok(JsonValue::Array(items))
         }
+        ScalarValue::Vector(values) => {
+            let mut items = Vec::with_capacity(values.len());
+            for value in values {
+                let Some(num) = JsonNumber::from_f64(*value as f64) else {
+                    return Err(EngineError {
+                        message: "cannot convert non-finite numeric to JSON value".to_string(),
+                    });
+                };
+                items.push(JsonValue::Number(num));
+            }
+            Ok(JsonValue::Array(items))
+        }
     }
 }
 

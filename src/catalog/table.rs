@@ -19,6 +19,7 @@ pub enum TypeSignature {
     Text,
     Date,
     Timestamp,
+    Vector(Option<usize>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

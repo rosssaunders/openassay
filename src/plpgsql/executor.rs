@@ -1725,7 +1725,7 @@ fn scalar_to_sql_literal(value: &ScalarValue) -> String {
         ScalarValue::Float(v) => v.to_string(),
         ScalarValue::Numeric(v) => v.to_string(),
         ScalarValue::Text(v) => format!("'{}'", v.replace('\'', "''")),
-        ScalarValue::Array(_) | ScalarValue::Record(_) => {
+        ScalarValue::Array(_) | ScalarValue::Record(_) | ScalarValue::Vector(_) => {
             format!("'{}'", value.render().replace('\'', "''"))
         }
     }
