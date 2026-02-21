@@ -46,6 +46,14 @@ proptest = "1.6"
 name = "engine_bench"
 harness = false
 
+[[bench]]
+name = "tpch_bench"
+harness = false
+
+[[bench]]
+name = "clickbench_bench"
+harness = false
+
 [lints.clippy]
 # ── Enable lint groups ──────────────────────────────────────
 all        = { level = "deny", priority = -1 }

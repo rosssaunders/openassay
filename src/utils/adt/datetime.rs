@@ -192,10 +192,10 @@ pub(crate) fn current_date_string() -> Result<String, EngineError> {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct IntervalValue {
-    months: i64,
-    days: i64,
-    seconds: i64,
+pub(crate) struct IntervalValue {
+    pub(crate) months: i64,
+    pub(crate) days: i64,
+    pub(crate) seconds: i64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1200,11 +1200,41 @@ fn interval_from_seconds(seconds: i64) -> IntervalValue {
     }
 }
 
-fn parse_interval_text(text: &str) -> Result<IntervalValue, EngineError> {
-    let parts = text.split_whitespace().collect::<Vec<_>>();
-    if parts.len() < 5 {
+/// Parse an interval from its canonical display format (`{months} mons {days} days HH:MM:SS`)
+/// or from a human-readable literal (`'1 year 2 months 3 days 4 hours'`).
+///
+/// Modelled after PostgreSQL's `DecodeInterval()` in `datetime.c`.
+pub(crate) fn parse_interval_text(text: &str) -> Result<IntervalValue, EngineError> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
         return Err(EngineError {
             message: "invalid interval value".to_string(),
+        });
+    }
+
+    // Try canonical format first: `{months} mons {days} days [-]HH:MM:SS`
+    if let Ok(iv) = try_parse_canonical_interval(trimmed) {
+        return Ok(iv);
+    }
+
+    // Try PostgreSQL literal format: value unit pairs like '1 year 2 months 3 days'
+    parse_interval_literal(trimmed)
+}
+
+/// Try parsing the canonical `{months} mons {days} days HH:MM:SS` format.
+fn try_parse_canonical_interval(text: &str) -> Result<IntervalValue, EngineError> {
+    let parts: Vec<&str> = text.split_whitespace().collect();
+    if parts.len() < 5 {
+        return Err(EngineError {
+            message: "not canonical format".to_string(),
+        });
+    }
+    // Expect: "{months} mons {days} days {time}"
+    if parts.get(1).map(|s| s.trim_end_matches(',')) != Some("mons")
+        && parts.get(1).map(|s| s.trim_end_matches(',')) != Some("mon")
+    {
+        return Err(EngineError {
+            message: "not canonical format".to_string(),
         });
     }
     let months = parts[0].parse::<i64>().map_err(|_| EngineError {
@@ -1214,7 +1244,12 @@ fn parse_interval_text(text: &str) -> Result<IntervalValue, EngineError> {
         message: "invalid interval days".to_string(),
     })?;
     let time = parts[4];
-    let time_parts = time.split(':').collect::<Vec<_>>();
+    let (negative, time_str) = if let Some(stripped) = time.strip_prefix('-') {
+        (true, stripped)
+    } else {
+        (false, time)
+    };
+    let time_parts: Vec<&str> = time_str.split(':').collect();
     if time_parts.len() != 3 {
         return Err(EngineError {
             message: "invalid interval time".to_string(),
@@ -1229,12 +1264,358 @@ fn parse_interval_text(text: &str) -> Result<IntervalValue, EngineError> {
     let second = time_parts[2].parse::<i64>().map_err(|_| EngineError {
         message: "invalid interval second".to_string(),
     })?;
-    let total_seconds = hour * 3_600 + minute * 60 + second;
+    let mut total_seconds = hour * 3_600 + minute * 60 + second;
+    if negative {
+        total_seconds = -total_seconds;
+    }
     Ok(IntervalValue {
         months,
         days,
         seconds: total_seconds,
     })
+}
+
+/// Parse a PostgreSQL interval literal like `'1 year 2 months 3 days 4 hours 5 minutes 6 seconds'`.
+///
+/// Also handles ISO 8601 duration format (`P1Y2M3DT4H5M6S`) and PostgreSQL's
+/// shorthand for plain numbers (`'90'` treated as seconds per PG default).
+fn parse_interval_literal(text: &str) -> Result<IntervalValue, EngineError> {
+    let trimmed = text.trim();
+
+    // Handle ISO 8601 duration: P1Y2M3DT4H5M6S
+    if trimmed.starts_with('P') || trimmed.starts_with('p') {
+        return parse_iso_8601_interval(trimmed);
+    }
+
+    // Handle PostgreSQL SQL-standard format: 'Y-M' or 'H:M:S'
+    if !trimmed.contains(' ') {
+        // Pure number → seconds
+        if let Ok(secs) = trimmed.parse::<i64>() {
+            return Ok(IntervalValue {
+                months: 0,
+                days: 0,
+                seconds: secs,
+            });
+        }
+        // HH:MM:SS time format
+        if trimmed.contains(':') {
+            return parse_interval_time_only(trimmed);
+        }
+    }
+
+    // value-unit pair parsing: '1 year 2 months 3 days ...'
+    let mut months: i64 = 0;
+    let mut days: i64 = 0;
+    let mut seconds: i64 = 0;
+
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = tokens[i];
+
+        // Check if this is a time component (HH:MM:SS)
+        if token.contains(':') {
+            let iv = parse_interval_time_only(token)?;
+            seconds += iv.seconds;
+            i += 1;
+            continue;
+        }
+
+        // Try to parse as a number
+        let value = token.parse::<f64>().map_err(|_| EngineError {
+            message: format!("invalid interval component: \"{token}\""),
+        })?;
+
+        // Look ahead for unit
+        let unit = if i + 1 < tokens.len() {
+            let next = tokens[i + 1].to_ascii_lowercase();
+            let next = next.trim_end_matches(',');
+            match next {
+                "year" | "years" | "yr" | "yrs" | "y" => {
+                    i += 2;
+                    "year"
+                }
+                "month" | "months" | "mon" | "mons" => {
+                    i += 2;
+                    "month"
+                }
+                "week" | "weeks" | "w" => {
+                    i += 2;
+                    "week"
+                }
+                "day" | "days" | "d" => {
+                    i += 2;
+                    "day"
+                }
+                "hour" | "hours" | "hr" | "hrs" | "h" => {
+                    i += 2;
+                    "hour"
+                }
+                "minute" | "minutes" | "min" | "mins" | "m" => {
+                    i += 2;
+                    "minute"
+                }
+                "second" | "seconds" | "sec" | "secs" | "s" => {
+                    i += 2;
+                    "second"
+                }
+                "millisecond" | "milliseconds" | "ms" => {
+                    i += 2;
+                    "millisecond"
+                }
+                _ => {
+                    // No recognized unit — treat as seconds (PostgreSQL default)
+                    i += 1;
+                    "second"
+                }
+            }
+        } else {
+            // Last token with no unit — treat as seconds
+            i += 1;
+            "second"
+        };
+
+        match unit {
+            "year" => months += (value * 12.0) as i64,
+            "month" => months += value as i64,
+            "week" => days += (value * 7.0) as i64,
+            "day" => days += value as i64,
+            "hour" => seconds += (value * 3_600.0) as i64,
+            "minute" => seconds += (value * 60.0) as i64,
+            "second" => seconds += value as i64,
+            "millisecond" => seconds += (value / 1000.0) as i64,
+            _ => {}
+        }
+    }
+
+    Ok(IntervalValue {
+        months,
+        days,
+        seconds,
+    })
+}
+
+fn parse_interval_time_only(text: &str) -> Result<IntervalValue, EngineError> {
+    let (negative, time_str) = if let Some(stripped) = text.strip_prefix('-') {
+        (true, stripped)
+    } else {
+        (false, text)
+    };
+    let parts: Vec<&str> = time_str.split(':').collect();
+    if parts.len() < 2 || parts.len() > 3 {
+        return Err(EngineError {
+            message: format!("invalid interval time: \"{text}\""),
+        });
+    }
+    let hour = parts[0].parse::<i64>().map_err(|_| EngineError {
+        message: "invalid interval hour".to_string(),
+    })?;
+    let minute = parts[1].parse::<i64>().map_err(|_| EngineError {
+        message: "invalid interval minute".to_string(),
+    })?;
+    let second = if parts.len() == 3 {
+        parts[2].parse::<i64>().map_err(|_| EngineError {
+            message: "invalid interval second".to_string(),
+        })?
+    } else {
+        0
+    };
+    let mut total = hour * 3_600 + minute * 60 + second;
+    if negative {
+        total = -total;
+    }
+    Ok(IntervalValue {
+        months: 0,
+        days: 0,
+        seconds: total,
+    })
+}
+
+fn parse_iso_8601_interval(text: &str) -> Result<IntervalValue, EngineError> {
+    let mut months: i64 = 0;
+    let mut days: i64 = 0;
+    let mut seconds: i64 = 0;
+    let mut in_time = false;
+    let mut num_start = None;
+    let chars: Vec<char> = text.chars().collect();
+
+    for i in 1..chars.len() {
+        let c = chars[i];
+        if c == 'T' || c == 't' {
+            in_time = true;
+            continue;
+        }
+        if c.is_ascii_digit() || c == '.' || c == '-' {
+            if num_start.is_none() {
+                num_start = Some(i);
+            }
+            continue;
+        }
+        if let Some(start) = num_start {
+            let num_str: String = chars[start..i].iter().collect();
+            let value = num_str.parse::<f64>().map_err(|_| EngineError {
+                message: format!("invalid ISO 8601 interval number: \"{num_str}\""),
+            })?;
+            match (in_time, c) {
+                (false, 'Y' | 'y') => months += (value * 12.0) as i64,
+                (false, 'M' | 'm') => months += value as i64,
+                (false, 'W' | 'w') => days += (value * 7.0) as i64,
+                (false, 'D' | 'd') => days += value as i64,
+                (true, 'H' | 'h') => seconds += (value * 3_600.0) as i64,
+                (true, 'M' | 'm') => seconds += (value * 60.0) as i64,
+                (true, 'S' | 's') => seconds += value as i64,
+                _ => {
+                    return Err(EngineError {
+                        message: format!("invalid ISO 8601 interval designator: '{c}'"),
+                    });
+                }
+            }
+            num_start = None;
+        }
+    }
+
+    Ok(IntervalValue {
+        months,
+        days,
+        seconds,
+    })
+}
+
+/// Try to parse a ScalarValue as an interval. Returns `Some(IntervalValue)` if the
+/// value looks like an interval string (canonical or literal format).
+pub(crate) fn parse_interval_operand(value: &ScalarValue) -> Option<IntervalValue> {
+    let ScalarValue::Text(text) = value else {
+        return None;
+    };
+    parse_interval_text(text).ok()
+}
+
+/// Check whether a text value looks like it could be an interval (as opposed to a date/timestamp).
+/// This is a heuristic used to disambiguate `Text` values in arithmetic operators.
+pub(crate) fn is_interval_text(text: &str) -> bool {
+    let trimmed = text.trim().to_ascii_lowercase();
+    // Canonical format: starts with a number followed by "mons" or "mon"
+    if trimmed.contains(" mons ") || trimmed.contains(" mon ") {
+        return true;
+    }
+    // Keyword-style: contains interval unit keywords
+    let units = [
+        "year", "years", "month", "months", "day", "days", "hour", "hours", "minute", "minutes",
+        "second", "seconds", "week", "weeks",
+    ];
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    for part in &parts {
+        let p = part.trim_end_matches(',');
+        if units.contains(&p) {
+            return true;
+        }
+    }
+    // ISO 8601 duration
+    if trimmed.starts_with('p') && trimmed.len() > 1 {
+        return true;
+    }
+    false
+}
+
+/// Add an interval to a date/timestamp, following PostgreSQL semantics.
+///
+/// PostgreSQL's `timestamp_pl_interval` applies months first (adjusting for
+/// end-of-month), then days, then seconds. This function mirrors that logic.
+pub(crate) fn temporal_add_interval(
+    temporal: TemporalOperand,
+    interval: IntervalValue,
+) -> ScalarValue {
+    let mut dt = temporal.datetime;
+
+    // Step 1: Add months (following Postgres's timestamp_pl_interval logic)
+    if interval.months != 0 {
+        let total_months = dt.date.year as i64 * 12 + dt.date.month as i64 - 1 + interval.months;
+        let new_year = total_months.div_euclid(12) as i32;
+        let new_month = (total_months.rem_euclid(12) + 1) as u32;
+        // Clamp day to end of month (Postgres semantics)
+        let max_day = days_in_month(new_year, new_month);
+        dt.date.year = new_year;
+        dt.date.month = new_month;
+        if dt.date.day > max_day {
+            dt.date.day = max_day;
+        }
+    }
+
+    // Step 2: Add days
+    if interval.days != 0 {
+        dt.date = add_days(dt.date, interval.days);
+    }
+
+    // Step 3: Add seconds (including time component)
+    if interval.seconds != 0 {
+        let epoch = datetime_to_epoch_seconds(dt) + interval.seconds;
+        dt = datetime_from_epoch_seconds(epoch);
+    }
+
+    if temporal.date_only && interval.seconds == 0 {
+        ScalarValue::Text(format_date(dt.date))
+    } else {
+        ScalarValue::Text(format_timestamp(dt))
+    }
+}
+
+/// Negate an interval value (used for subtraction).
+pub(crate) fn interval_negate(iv: IntervalValue) -> IntervalValue {
+    IntervalValue {
+        months: -iv.months,
+        days: -iv.days,
+        seconds: -iv.seconds,
+    }
+}
+
+/// Add two intervals together.
+pub(crate) fn interval_add(a: IntervalValue, b: IntervalValue) -> IntervalValue {
+    IntervalValue {
+        months: a.months + b.months,
+        days: a.days + b.days,
+        seconds: a.seconds + b.seconds,
+    }
+}
+
+/// Multiply an interval by a scalar.
+pub(crate) fn interval_mul(iv: IntervalValue, factor: f64) -> IntervalValue {
+    IntervalValue {
+        months: (iv.months as f64 * factor) as i64,
+        days: (iv.days as f64 * factor) as i64,
+        seconds: (iv.seconds as f64 * factor) as i64,
+    }
+}
+
+/// Format an interval as its canonical text representation for CAST/display.
+/// Format an interval value to its canonical display string.
+pub(crate) fn format_interval_value(iv: IntervalValue) -> String {
+    format_interval(iv)
+}
+
+/// Format an interval as its canonical text representation for CAST/display.
+pub(crate) fn eval_interval_cast(value: &ScalarValue) -> Result<ScalarValue, EngineError> {
+    if matches!(value, ScalarValue::Null) {
+        return Ok(ScalarValue::Null);
+    }
+    let interval = match value {
+        ScalarValue::Text(text) => parse_interval_text(text)?,
+        ScalarValue::Int(secs) => IntervalValue {
+            months: 0,
+            days: 0,
+            seconds: *secs,
+        },
+        ScalarValue::Float(secs) => IntervalValue {
+            months: 0,
+            days: 0,
+            seconds: *secs as i64,
+        },
+        _ => {
+            return Err(EngineError {
+                message: "cannot cast value to interval".to_string(),
+            });
+        }
+    };
+    Ok(ScalarValue::Text(format_interval(interval)))
 }
 
 fn format_interval(interval: IntervalValue) -> String {

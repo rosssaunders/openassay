@@ -24,8 +24,10 @@ use crate::tcop::engine::{drain_native_ws_messages, native_ws_handles, ws_native
 #[cfg(target_arch = "wasm32")]
 use crate::tcop::engine::{drain_wasm_ws_messages, sync_wasm_ws_state, ws_wasm};
 use crate::utils::adt::datetime::{
-    datetime_to_epoch_seconds, days_from_civil, format_date, format_timestamp,
-    parse_datetime_scalar, parse_temporal_operand, temporal_add_days,
+    datetime_to_epoch_seconds, days_from_civil, eval_interval_cast, format_date, format_interval_value,
+    format_timestamp, interval_add, interval_mul, interval_negate, is_interval_text,
+    parse_datetime_scalar, parse_interval_operand, parse_temporal_operand, temporal_add_days,
+    temporal_add_interval,
 };
 use crate::utils::adt::json::{
     eval_json_concat_operator, eval_json_contained_by_operator, eval_json_contains_operator,
@@ -50,6 +52,18 @@ pub(crate) struct EvalScope {
 }
 
 impl EvalScope {
+    /// Check whether a column name (unqualified or qualified) exists in this scope.
+    pub(crate) fn has_column(&self, name: &str) -> bool {
+        if name.contains('.') {
+            // For qualified references (e.g. "n2.n_nationkey"), only check the
+            // qualified map — do NOT fall back to unqualified, as that could
+            // match a different table's column with the same name.
+            self.qualified.contains_key(name)
+        } else {
+            self.unqualified.contains_key(name) || self.ambiguous.contains(name)
+        }
+    }
+
     pub(crate) fn from_output_row(columns: &[String], row: &[ScalarValue]) -> Self {
         let mut scope = Self::default();
         for (col, value) in columns.iter().zip(row.iter()) {
@@ -2131,11 +2145,7 @@ pub(crate) fn eval_cast_scalar(
             let dt = parse_datetime_scalar(&value)?;
             Ok(ScalarValue::Text(format_timestamp(dt)))
         }
-        "interval" => {
-            // For now, just return the text representation
-            // A full implementation would parse and format intervals properly
-            Ok(ScalarValue::Text(value.render()))
-        }
+        "interval" => eval_interval_cast(&value),
         "json" | "jsonb" => {
             // For JSON/JSONB casts, validate that the input is valid JSON
             let text = value.render();
@@ -2304,13 +2314,30 @@ pub(crate) fn eval_binary(
         }),
         Add => eval_add(left, right),
         Sub => eval_sub(left, right),
-        Mul => numeric_bin(
-            left,
-            right,
-            crate::utils::adt::int_arithmetic::int4_mul,
-            |a, b| a * b,
-            |a, b| Ok(a * b),
-        ),
+        Mul => {
+            // interval * numeric or numeric * interval
+            let left_is_interval = matches!(&left, ScalarValue::Text(t) if is_interval_text(t));
+            let right_is_interval = matches!(&right, ScalarValue::Text(t) if is_interval_text(t));
+            if left_is_interval {
+                if let Some(iv) = parse_interval_operand(&left) {
+                    let factor = parse_f64_scalar(&right, "interval multiplication expects numeric")?;
+                    return Ok(ScalarValue::Text(format_interval_value(interval_mul(iv, factor))));
+                }
+            }
+            if right_is_interval {
+                if let Some(iv) = parse_interval_operand(&right) {
+                    let factor = parse_f64_scalar(&left, "interval multiplication expects numeric")?;
+                    return Ok(ScalarValue::Text(format_interval_value(interval_mul(iv, factor))));
+                }
+            }
+            numeric_bin(
+                left,
+                right,
+                crate::utils::adt::int_arithmetic::int4_mul,
+                |a, b| a * b,
+                |a, b| Ok(a * b),
+            )
+        }
         Div => numeric_div(left, right),
         Mod => numeric_mod(left, right),
         JsonGet => eval_json_get_operator(left, right, false),
@@ -2377,11 +2404,34 @@ fn eval_add(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
         );
     }
 
+    // Check for interval operands before temporal, since intervals are also Text.
+    let left_is_interval = matches!(&left, ScalarValue::Text(t) if is_interval_text(t));
+    let right_is_interval = matches!(&right, ScalarValue::Text(t) if is_interval_text(t));
+
+    // interval + interval
+    if left_is_interval && right_is_interval {
+        if let (Some(a), Some(b)) = (parse_interval_operand(&left), parse_interval_operand(&right))
+        {
+            return Ok(ScalarValue::Text(format_interval_value(interval_add(a, b))));
+        }
+    }
+
+    // temporal + interval  or  interval + temporal
     if let Some(lhs) = parse_temporal_operand(&left) {
+        if right_is_interval {
+            if let Some(iv) = parse_interval_operand(&right) {
+                return Ok(temporal_add_interval(lhs, iv));
+            }
+        }
         let days = parse_i64_scalar(&right, "date/time arithmetic expects integer day value")?;
         return Ok(temporal_add_days(lhs, days));
     }
     if let Some(rhs) = parse_temporal_operand(&right) {
+        if left_is_interval {
+            if let Some(iv) = parse_interval_operand(&left) {
+                return Ok(temporal_add_interval(rhs, iv));
+            }
+        }
         let days = parse_i64_scalar(&left, "date/time arithmetic expects integer day value")?;
         return Ok(temporal_add_days(rhs, days));
     }
@@ -2406,7 +2456,28 @@ fn eval_sub(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
         );
     }
 
+    // Check for interval operands before temporal
+    let left_is_interval = matches!(&left, ScalarValue::Text(t) if is_interval_text(t));
+    let right_is_interval = matches!(&right, ScalarValue::Text(t) if is_interval_text(t));
+
+    // interval - interval
+    if left_is_interval && right_is_interval {
+        if let (Some(a), Some(b)) = (parse_interval_operand(&left), parse_interval_operand(&right))
+        {
+            return Ok(ScalarValue::Text(format_interval_value(interval_add(
+                a,
+                interval_negate(b),
+            ))));
+        }
+    }
+
+    // temporal - interval
     if let Some(lhs) = parse_temporal_operand(&left) {
+        if right_is_interval {
+            if let Some(iv) = parse_interval_operand(&right) {
+                return Ok(temporal_add_interval(lhs, interval_negate(iv)));
+            }
+        }
         if let Some(rhs) = parse_temporal_operand(&right) {
             if lhs.date_only && rhs.date_only {
                 let left_days = days_from_civil(
@@ -2706,7 +2777,20 @@ async fn eval_function(
     }
 
     let mut values = Vec::with_capacity(args.len());
-    for arg in args {
+    for (i, arg) in args.iter().enumerate() {
+        // For EXTRACT / date_part / date_trunc the first argument is a date/time
+        // field keyword (e.g. YEAR, MONTH) which the parser stores as an
+        // Identifier.  Treat it as a string literal so we don't try to resolve
+        // it as a column reference.
+        if i == 0
+            && matches!(fn_name.as_str(), "extract" | "date_part" | "date_trunc")
+            && matches!(arg, Expr::Identifier(parts) if parts.len() == 1)
+        {
+            if let Expr::Identifier(parts) = arg {
+                values.push(ScalarValue::Text(parts[0].clone()));
+                continue;
+            }
+        }
         values.push(eval_expr(arg, scope, params).await?);
     }
 

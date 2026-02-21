@@ -1,0 +1,87 @@
+name: perf-bench
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      save_baseline:
+        description: "Save results as new baseline"
+        required: false
+        default: "false"
+        type: boolean
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout openferric (sibling dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: rosssaunders/openferric
+          path: openferric-dep
+
+      - name: Place openferric as sibling
+        run: mv openferric-dep ../openferric
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run TPC-H benchmarks
+        run: cargo bench --bench tpch_bench -- --output-format bencher 2>&1 | tee tpch_results.txt
+
+      - name: Run ClickBench benchmarks
+        run: cargo bench --bench clickbench_bench -- --output-format bencher 2>&1 | tee clickbench_results.txt
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compare against baseline
+        id: compare
+        run: |
+          python3 scripts/compare_benchmarks.py \
+            --baseline benches/baselines \
+            --current target/criterion \
+            --warn 10 \
+            --fail 15 \
+            --output benchmark_report.md
+
+      - name: Save baseline (manual trigger only)
+        if: github.event.inputs.save_baseline == 'true'
+        run: |
+          python3 scripts/compare_benchmarks.py \
+            --baseline benches/baselines \
+            --current target/criterion \
+            --save-baseline
+
+      - name: Upload benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-report
+          path: |
+            benchmark_report.md
+            tpch_results.txt
+            clickbench_results.txt
+
+      - name: Comment on PR (if applicable)
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('benchmark_report.md', 'utf8');
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: report
+            });
