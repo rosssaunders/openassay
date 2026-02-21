@@ -3121,6 +3121,7 @@ fn infer_row_description_fields(
             Some(ScalarValue::Text(_)) => (25, -1),
             Some(ScalarValue::Array(_)) => (25, -1),
             Some(ScalarValue::Record(_)) => (2249, -1),
+            Some(ScalarValue::Vector(_)) => (6000, -1),
             Some(ScalarValue::Null) | None => (25, -1),
         };
         fields.push(default_field_description(name, type_oid, type_size, 0));

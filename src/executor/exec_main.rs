@@ -2037,6 +2037,7 @@ fn information_schema_data_type(signature: TypeSignature) -> &'static str {
         TypeSignature::Text => "text",
         TypeSignature::Date => "date",
         TypeSignature::Timestamp => "timestamp without time zone",
+        TypeSignature::Vector(_) => "vector",
     }
 }
 

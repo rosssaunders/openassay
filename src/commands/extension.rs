@@ -24,6 +24,9 @@ pub async fn execute_create_extension(
             "ws" => ("1.0".to_string(), "WebSocket client extension".to_string()),
             "http" => ("1.0".to_string(), "HTTP client extension".to_string()),
             "openferric" => ("1.0".to_string(), "OpenFerric pricing wrappers".to_string()),
+            "uuid-ossp" => ("1.0".to_string(), "UUID generation functions".to_string()),
+            "pgcrypto" => ("1.0".to_string(), "Cryptographic functions".to_string()),
+            "vector" => ("1.0".to_string(), "Vector type and distance functions".to_string()),
             _ => {
                 return Err(EngineError {
                     message: format!("extension \"{name}\" is not available"),

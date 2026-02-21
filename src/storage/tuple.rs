@@ -9,6 +9,8 @@ pub enum ScalarValue {
     Array(Vec<Self>),
     /// Row/Record type for ROW(a, b, c) or (a, b, c) expressions
     Record(Vec<Self>),
+    /// Fixed-dimension float vector used by the pgvector extension
+    Vector(Vec<f32>),
 }
 
 impl ScalarValue {
@@ -34,6 +36,7 @@ impl ScalarValue {
                     .collect();
                 format!("({})", parts.join(","))
             }
+            Self::Vector(values) => render_vector_literal(values),
         }
     }
 }
@@ -86,6 +89,14 @@ fn render_array_literal(values: &[ScalarValue]) -> String {
         })
         .collect();
     format!("{{{}}}", parts.join(","))
+}
+
+fn render_vector_literal(values: &[f32]) -> String {
+    let parts: Vec<String> = values
+        .iter()
+        .map(|v| render_float4(*v as f64))
+        .collect();
+    format!("[{}]", parts.join(","))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
