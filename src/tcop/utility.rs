@@ -2,7 +2,7 @@
 use crate::commands::subscription;
 use crate::commands::{
     alter, create_table, do_block, drop, explain, extension, function, index, matview, schema,
-    sequence, trigger, variable, view,
+    sequence, trigger, typecmd, variable, view,
 };
 use crate::parser::ast::Statement;
 use crate::tcop::engine::{EngineError, QueryResult};
@@ -52,12 +52,17 @@ pub async fn execute_utility_statement(
         Statement::Explain(explain_stmt) => explain::execute_explain(explain_stmt, params).await,
         Statement::Set(set_stmt) => variable::execute_set(set_stmt).await,
         Statement::Show(show_stmt) => variable::execute_show(show_stmt).await,
-        Statement::Discard(_) => Ok(QueryResult {
-            columns: Vec::new(),
-            rows: Vec::new(),
-            command_tag: "DISCARD".to_string(),
-            rows_affected: 0,
-        }),
+        Statement::Discard(_) => {
+            // DISCARD is handled at the session level in PostgresSession::execute_discard
+            // since it needs to clear session-local state (prepared statements, portals).
+            // If we reach here, return a success result.
+            Ok(QueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                command_tag: "DISCARD".to_string(),
+                rows_affected: 0,
+            })
+        }
         Statement::Do(do_stmt) => do_block::execute_do_block(do_stmt).await,
         Statement::Listen(_) => Ok(QueryResult {
             columns: Vec::new(),
@@ -80,6 +85,7 @@ pub async fn execute_utility_statement(
         Statement::CreateExtension(create) => extension::execute_create_extension(create).await,
         Statement::DropExtension(drop_ext) => extension::execute_drop_extension(drop_ext).await,
         Statement::CreateFunction(create) => function::execute_create_function(create).await,
+        Statement::DropFunction(drop_fn) => function::execute_drop_function(drop_fn).await,
         Statement::CreateTrigger(create) => trigger::execute_create_trigger(create).await,
         #[cfg(not(target_arch = "wasm32"))]
         Statement::CreateSubscription(create) => {
@@ -97,30 +103,10 @@ pub async fn execute_utility_statement(
         Statement::DropSubscription(_) => Err(EngineError {
             message: "subscriptions are not supported in wasm builds".to_string(),
         }),
-        Statement::CreateType(_) => Ok(QueryResult {
-            columns: Vec::new(),
-            rows: Vec::new(),
-            command_tag: "CREATE TYPE".to_string(),
-            rows_affected: 0,
-        }),
-        Statement::CreateDomain(_) => Ok(QueryResult {
-            columns: Vec::new(),
-            rows: Vec::new(),
-            command_tag: "CREATE DOMAIN".to_string(),
-            rows_affected: 0,
-        }),
-        Statement::DropType(_) => Ok(QueryResult {
-            columns: Vec::new(),
-            rows: Vec::new(),
-            command_tag: "DROP TYPE".to_string(),
-            rows_affected: 0,
-        }),
-        Statement::DropDomain(_) => Ok(QueryResult {
-            columns: Vec::new(),
-            rows: Vec::new(),
-            command_tag: "DROP DOMAIN".to_string(),
-            rows_affected: 0,
-        }),
+        Statement::CreateType(create) => typecmd::execute_create_type(create).await,
+        Statement::CreateDomain(create) => typecmd::execute_create_domain(create).await,
+        Statement::DropType(drop_type) => typecmd::execute_drop_type(drop_type).await,
+        Statement::DropDomain(drop_domain) => typecmd::execute_drop_domain(drop_domain).await,
         _ => Err(EngineError {
             message: "statement is not a utility command".to_string(),
         }),
@@ -156,6 +142,7 @@ pub fn is_utility_statement(statement: &Statement) -> bool {
             | Statement::CreateExtension(_)
             | Statement::DropExtension(_)
             | Statement::CreateFunction(_)
+            | Statement::DropFunction(_)
             | Statement::CreateTrigger(_)
             | Statement::CreateSubscription(_)
             | Statement::DropSubscription(_)

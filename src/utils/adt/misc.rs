@@ -853,16 +853,30 @@ fn parse_uuid_simple(s: &str) -> Result<(), ()> {
 /// Returns the SQL definition of a view. Accepts view name as text or regclass OID.
 pub(crate) fn pg_get_viewdef(
     view_name: &str,
-    _pretty: bool,
+    pretty: bool,
 ) -> Result<String, crate::tcop::engine::EngineError> {
-    // For now, return a placeholder message indicating the view exists but we can't retrieve the definition.
-    // TODO: Implement actual view definition retrieval from catalog when proper catalog access is available.
-    Ok(format!("-- View definition for: {view_name}"))
+    use crate::catalog::{with_catalog_read, SearchPath};
+    use crate::catalog::table::TableKind;
+
+    // Try to look up the view in the catalog
+    let parts: Vec<String> = view_name.split('.').map(|s| s.trim().to_string()).collect();
+    let result = with_catalog_read(|catalog| {
+        let search_path = SearchPath::default();
+        catalog.resolve_table(&parts, &search_path).ok().and_then(|table| {
+            if matches!(table.kind(), TableKind::View | TableKind::MaterializedView) {
+                table.view_definition().cloned()
+            } else {
+                None
+            }
+        })
+    });
+
+    match result {
+        Some(query) => Ok(render_query_to_sql(&query, pretty)),
+        None => Ok(format!("-- View definition for: {view_name}")),
+    }
 }
 
-// The following functions are prepared for future pg_get_viewdef implementation
-// when proper catalog access is available. They convert AST back to SQL.
-#[allow(dead_code)]
 fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> String {
     use crate::parser::ast::QueryExpr;
 

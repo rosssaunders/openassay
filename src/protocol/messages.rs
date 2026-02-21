@@ -464,6 +464,17 @@ pub fn encode_backend_message(message: &BackendMessage) -> Option<Vec<u8>> {
                 *position,
             ),
         )),
+        BackendMessage::NotificationResponse {
+            process_id,
+            channel,
+            payload,
+        } => {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(&process_id.to_be_bytes());
+            push_cstring(&mut buf, channel);
+            push_cstring(&mut buf, payload);
+            Some(frame_message(b'A', buf))
+        }
         BackendMessage::FlushComplete => None,
         BackendMessage::Terminate => None,
     }
