@@ -4163,12 +4163,16 @@ impl Parser {
     }
 
     fn expect_window_row_keyword(&mut self, message: &'static str) -> Result<(), ParseError> {
-        match self.current_kind() {
-            TokenKind::Identifier(ident) if ident.eq_ignore_ascii_case("row") => {
-                self.advance();
-                Ok(())
-            }
-            _ => Err(self.error_at_current(message)),
+        let is_row = match self.current_kind() {
+            TokenKind::Keyword(Keyword::Row) => true,
+            TokenKind::Identifier(ident) => ident.eq_ignore_ascii_case("row"),
+            _ => false,
+        };
+        if is_row {
+            self.advance();
+            Ok(())
+        } else {
+            Err(self.error_at_current(message))
         }
     }
 
@@ -6615,7 +6619,7 @@ mod tests {
         match &create.constraints[0] {
             TableConstraint::PrimaryKey { name, columns } => {
                 assert!(name.is_none());
-                assert_eq!(columns, &vec!["a".to_string(), "b".to_string()])
+                assert_eq!(columns, &vec!["a".to_string(), "b".to_string()]);
             }
             other => panic!("expected primary key constraint, got {other:?}"),
         }

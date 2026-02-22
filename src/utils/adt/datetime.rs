@@ -476,6 +476,31 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
         }
     };
 
+    // If no time part was found, check if the whole string is a time-only value
+    // (e.g. "12:30:45", "13:30:25.575401", "11:59 PM"). Detect by: no T separator
+    // found, no time_part split, and the string looks like HH:MM...
+    if time_part.is_none() && date_part.contains(':') {
+        let colon_pos = date_part.find(':').unwrap();
+        // An hour is at most 2 digits (0-24); a 4-digit year before ':' is a date
+        if colon_pos <= 2
+            && let Ok((hour, minute, second, microsecond)) = parse_time_text(date_part)
+        {
+            // Use epoch date as placeholder; callers interested in time only
+            // (EXTRACT, ::time cast, etc.) won't use the date field.
+            return Ok(DateTimeValue {
+                date: DateValue {
+                    year: 2000,
+                    month: 1,
+                    day: 1,
+                },
+                hour,
+                minute,
+                second,
+                microsecond,
+            });
+        }
+    }
+
     let date = parse_date_text(date_part)?;
     let (hour, minute, second, microsecond) = match time_part {
         None => (0, 0, 0, 0),
@@ -809,7 +834,7 @@ fn parse_month_name(text: &str) -> Option<u32> {
     }
 }
 
-fn parse_time_text(text: &str) -> Result<(u32, u32, u32, u32), EngineError> {
+pub(crate) fn parse_time_text(text: &str) -> Result<(u32, u32, u32, u32), EngineError> {
     let mut cleaned = text.trim().to_string();
 
     // Check for AM/PM

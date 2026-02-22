@@ -1527,7 +1527,25 @@ async fn window_frame_rows(
     params: &[Option<String>],
 ) -> Result<Vec<usize>, EngineError> {
     let Some(frame) = window.frame.as_ref() else {
-        return Ok(partition.to_vec());
+        // PostgreSQL default frame:
+        // - With ORDER BY: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW (cumulative)
+        // - Without ORDER BY: entire partition (ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+        if window.order_by.is_empty() {
+            return Ok(partition.to_vec());
+        }
+        // Apply RANGE UNBOUNDED PRECEDING TO CURRENT ROW: include all rows with
+        // order keys <= current row's order keys (peers included).
+        let current_keys = &order_keys[current_pos];
+        let frame_indices: Vec<usize> = partition
+            .iter()
+            .enumerate()
+            .filter(|(pos, _)| {
+                compare_order_keys(&order_keys[*pos], current_keys, &window.order_by)
+                    != Ordering::Greater
+            })
+            .map(|(_, &row_idx)| row_idx)
+            .collect();
+        return Ok(frame_indices);
     };
 
     match frame.units {
@@ -2130,15 +2148,21 @@ pub(crate) fn eval_cast_scalar(
             Ok(ScalarValue::Text(format_date(dt.date)))
         }
         "time" => {
-            // Parse and format time properly
-            use crate::utils::adt::datetime::{format_time, parse_datetime_scalar};
-            let dt = parse_datetime_scalar(&value)?;
-            Ok(ScalarValue::Text(format_time(
-                dt.hour,
-                dt.minute,
-                dt.second,
-                dt.microsecond,
-            )))
+            use crate::utils::adt::datetime::{format_time, parse_datetime_scalar, parse_time_text};
+            // Try parsing as a bare time string first (e.g. "12:30:45", "11:59 PM")
+            // If that fails, fall back to full datetime parsing (e.g. "2024-01-15 12:30:45")
+            let (hour, minute, second, microsecond) = if let ScalarValue::Text(s) = &value {
+                if let Ok(t) = parse_time_text(s) {
+                    t
+                } else {
+                    let dt = parse_datetime_scalar(&value)?;
+                    (dt.hour, dt.minute, dt.second, dt.microsecond)
+                }
+            } else {
+                let dt = parse_datetime_scalar(&value)?;
+                (dt.hour, dt.minute, dt.second, dt.microsecond)
+            };
+            Ok(ScalarValue::Text(format_time(hour, minute, second, microsecond)))
         }
         "timestamp" => {
             let dt = parse_datetime_scalar(&value)?;
@@ -2317,16 +2341,14 @@ pub(crate) fn eval_binary(
             // interval * numeric or numeric * interval
             let left_is_interval = matches!(&left, ScalarValue::Text(t) if is_interval_text(t));
             let right_is_interval = matches!(&right, ScalarValue::Text(t) if is_interval_text(t));
-            if left_is_interval
-                && let Some(iv) = parse_interval_operand(&left) {
-                    let factor = parse_f64_scalar(&right, "interval multiplication expects numeric")?;
-                    return Ok(ScalarValue::Text(format_interval_value(interval_mul(iv, factor))));
-                }
-            if right_is_interval
-                && let Some(iv) = parse_interval_operand(&right) {
-                    let factor = parse_f64_scalar(&left, "interval multiplication expects numeric")?;
-                    return Ok(ScalarValue::Text(format_interval_value(interval_mul(iv, factor))));
-                }
+            if left_is_interval && let Some(iv) = parse_interval_operand(&left) {
+                let factor = parse_f64_scalar(&right, "interval multiplication expects numeric")?;
+                return Ok(ScalarValue::Text(format_interval_value(interval_mul(iv, factor))));
+            }
+            if right_is_interval && let Some(iv) = parse_interval_operand(&right) {
+                let factor = parse_f64_scalar(&left, "interval multiplication expects numeric")?;
+                return Ok(ScalarValue::Text(format_interval_value(interval_mul(iv, factor))));
+            }
             numeric_bin(
                 left,
                 right,
@@ -2408,24 +2430,22 @@ fn eval_add(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
     // interval + interval
     if left_is_interval && right_is_interval
         && let (Some(a), Some(b)) = (parse_interval_operand(&left), parse_interval_operand(&right))
-        {
-            return Ok(ScalarValue::Text(format_interval_value(interval_add(a, b))));
-        }
+    {
+        return Ok(ScalarValue::Text(format_interval_value(interval_add(a, b))));
+    }
 
     // temporal + interval  or  interval + temporal
     if let Some(lhs) = parse_temporal_operand(&left) {
-        if right_is_interval
-            && let Some(iv) = parse_interval_operand(&right) {
-                return Ok(temporal_add_interval(lhs, iv));
-            }
+        if right_is_interval && let Some(iv) = parse_interval_operand(&right) {
+            return Ok(temporal_add_interval(lhs, iv));
+        }
         let days = parse_i64_scalar(&right, "date/time arithmetic expects integer day value")?;
         return Ok(temporal_add_days(lhs, days));
     }
     if let Some(rhs) = parse_temporal_operand(&right) {
-        if left_is_interval
-            && let Some(iv) = parse_interval_operand(&left) {
-                return Ok(temporal_add_interval(rhs, iv));
-            }
+        if left_is_interval && let Some(iv) = parse_interval_operand(&left) {
+            return Ok(temporal_add_interval(rhs, iv));
+        }
         let days = parse_i64_scalar(&left, "date/time arithmetic expects integer day value")?;
         return Ok(temporal_add_days(rhs, days));
     }
@@ -2457,19 +2477,18 @@ fn eval_sub(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
     // interval - interval
     if left_is_interval && right_is_interval
         && let (Some(a), Some(b)) = (parse_interval_operand(&left), parse_interval_operand(&right))
-        {
-            return Ok(ScalarValue::Text(format_interval_value(interval_add(
-                a,
-                interval_negate(b),
-            ))));
-        }
+    {
+        return Ok(ScalarValue::Text(format_interval_value(interval_add(
+            a,
+            interval_negate(b),
+        ))));
+    }
 
     // temporal - interval
     if let Some(lhs) = parse_temporal_operand(&left) {
-        if right_is_interval
-            && let Some(iv) = parse_interval_operand(&right) {
-                return Ok(temporal_add_interval(lhs, interval_negate(iv)));
-            }
+        if right_is_interval && let Some(iv) = parse_interval_operand(&right) {
+            return Ok(temporal_add_interval(lhs, interval_negate(iv)));
+        }
         if let Some(rhs) = parse_temporal_operand(&right) {
             if lhs.date_only && rhs.date_only {
                 let left_days = days_from_civil(
@@ -2777,10 +2796,11 @@ async fn eval_function(
         if i == 0
             && matches!(fn_name.as_str(), "extract" | "date_part" | "date_trunc")
             && matches!(arg, Expr::Identifier(parts) if parts.len() == 1)
-            && let Expr::Identifier(parts) = arg {
-                values.push(ScalarValue::Text(parts[0].clone()));
-                continue;
-            }
+            && let Expr::Identifier(parts) = arg
+        {
+            values.push(ScalarValue::Text(parts[0].clone()));
+            continue;
+        }
         values.push(eval_expr(arg, scope, params).await?);
     }
 

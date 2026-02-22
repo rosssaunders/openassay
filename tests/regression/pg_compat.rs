@@ -8,12 +8,10 @@ fn load_pg_compat_tests() -> Vec<(String, String, Option<String>)> {
     let sql_dir = Path::new("tests/regression/pg_compat/sql");
     let expected_dir = Path::new("tests/regression/pg_compat/expected");
 
-    if !sql_dir.exists() {
-        panic!(
-            "PostgreSQL compatibility test SQL directory not found: {}",
-            sql_dir.display()
-        );
-    }
+    assert!(sql_dir.exists(), 
+        "PostgreSQL compatibility test SQL directory not found: {}",
+        sql_dir.display()
+    );
 
     let mut files = fs::read_dir(sql_dir)
         .expect("read pg_compat sql dir")
@@ -35,7 +33,7 @@ fn load_pg_compat_tests() -> Vec<(String, String, Option<String>)> {
             let sql = fs::read_to_string(&sql_path).expect("read pg_compat sql file");
 
             // Try to load expected output
-            let expected_path = expected_dir.join(format!("{}.out", name));
+            let expected_path = expected_dir.join(format!("{name}.out"));
             let expected = if expected_path.exists() {
                 Some(fs::read_to_string(&expected_path).expect("read pg_compat expected file"))
             } else {
@@ -161,13 +159,12 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
             continue;
         }
 
-        if bytes[i] == b'$' {
-            if let Some(tag_len) = parse_dollar_tag(bytes, i) {
+        if bytes[i] == b'$'
+            && let Some(tag_len) = parse_dollar_tag(bytes, i) {
                 dollar_tag = Some(bytes[i..i + tag_len].to_vec());
                 i += tag_len;
                 continue;
             }
-        }
 
         if bytes[i] == b';' {
             let statement = sql[statement_start..i].trim();
@@ -207,24 +204,24 @@ fn run_sql_statement(session: &mut PostgresSession, sql: &str) -> Result<String,
                 position,
             } => {
                 has_error = true;
-                result.push_str(&format!("ERROR: {}\n", message));
+                result.push_str(&format!("ERROR: {message}\n"));
                 if !code.is_empty() {
-                    result.push_str(&format!("SQLSTATE: {}\n", code));
+                    result.push_str(&format!("SQLSTATE: {code}\n"));
                 }
                 if let Some(detail) = detail {
-                    result.push_str(&format!("DETAIL: {}\n", detail));
+                    result.push_str(&format!("DETAIL: {detail}\n"));
                 }
                 if let Some(hint) = hint {
-                    result.push_str(&format!("HINT: {}\n", hint));
+                    result.push_str(&format!("HINT: {hint}\n"));
                 }
                 if let Some(position) = position {
-                    result.push_str(&format!("POSITION: {}\n", position));
+                    result.push_str(&format!("POSITION: {position}\n"));
                 }
             }
             BackendMessage::CommandComplete { tag, rows } => {
-                result.push_str(&format!("{}\n", tag));
+                result.push_str(&format!("{tag}\n"));
                 if *rows > 0 {
-                    result.push_str(&format!("({} rows)\n", rows));
+                    result.push_str(&format!("({rows} rows)\n"));
                 }
             }
             BackendMessage::DataRow { values } => {
@@ -342,7 +339,7 @@ fn postgresql_compatibility_suite() {
     println!("Running {} PostgreSQL compatibility tests...", tests.len());
 
     for (test_name, sql, _expected) in tests {
-        print!("Testing {}... ", test_name);
+        print!("Testing {test_name}... ");
 
         let mut session = PostgresSession::new();
 
@@ -437,29 +434,27 @@ fn postgresql_compatibility_suite() {
     // Print summary
     println!("\n=== PostgreSQL Compatibility Test Results ===");
     println!("Total tests: {}", passed + failed + skipped);
-    println!("Passed: {}", passed);
-    println!("Failed: {}", failed);
-    println!("Skipped: {}", skipped);
+    println!("Passed: {passed}");
+    println!("Failed: {failed}");
+    println!("Skipped: {skipped}");
 
     if passed + failed > 0 {
         let pass_rate = (passed * 100) / (passed + failed);
-        println!("Pass rate: {}%", pass_rate);
+        println!("Pass rate: {pass_rate}%");
     }
 
     if failed > 0 {
         println!("\nFailed tests:");
         for (test_name, result) in &results {
             if result.starts_with("FAIL") {
-                println!("  {}: {}", test_name, result);
+                println!("  {test_name}: {result}");
             }
         }
     }
 
     // Don't fail the test if we have some compatibility issues - this is expected
     // The goal is to measure compatibility, not to have 100% compatibility immediately
-    if passed == 0 && failed > 0 {
-        panic!("No tests passed - there might be a fundamental issue");
-    }
+    assert!(!(passed == 0 && failed > 0), "No tests passed - there might be a fundamental issue")
 }
 
 /// Test individual PostgreSQL features that openassay claims to support
@@ -469,42 +464,41 @@ fn test_core_postgresql_features() {
 
     // Test basic SELECT
     let result = run_sql_statement(&mut session, "SELECT 1 AS test");
-    assert!(result.is_ok(), "Basic SELECT failed: {:?}", result);
+    assert!(result.is_ok(), "Basic SELECT failed: {result:?}");
 
     // Test CREATE TABLE
     let result = run_sql_statement(
         &mut session,
         "CREATE TABLE test_table (id INTEGER, name TEXT)",
     );
-    assert!(result.is_ok(), "CREATE TABLE failed: {:?}", result);
+    assert!(result.is_ok(), "CREATE TABLE failed: {result:?}");
 
     // Test INSERT
     let result = run_sql_statement(&mut session, "INSERT INTO test_table VALUES (1, 'test')");
-    assert!(result.is_ok(), "INSERT failed: {:?}", result);
+    assert!(result.is_ok(), "INSERT failed: {result:?}");
 
     // Test SELECT with WHERE
     let result = run_sql_statement(&mut session, "SELECT * FROM test_table WHERE id = 1");
-    assert!(result.is_ok(), "SELECT with WHERE failed: {:?}", result);
+    assert!(result.is_ok(), "SELECT with WHERE failed: {result:?}");
 
     // Test JOIN
     let result = run_sql_statement(
         &mut session,
         "CREATE TABLE test_table2 (id INTEGER, value TEXT)",
     );
-    assert!(result.is_ok(), "CREATE second table failed: {:?}", result);
+    assert!(result.is_ok(), "CREATE second table failed: {result:?}");
 
     let result = run_sql_statement(&mut session, "INSERT INTO test_table2 VALUES (1, 'joined')");
     assert!(
         result.is_ok(),
-        "INSERT into second table failed: {:?}",
-        result
+        "INSERT into second table failed: {result:?}"
     );
 
     let result = run_sql_statement(
         &mut session,
         "SELECT t1.name, t2.value FROM test_table t1 JOIN test_table2 t2 ON t1.id = t2.id",
     );
-    assert!(result.is_ok(), "JOIN failed: {:?}", result);
+    assert!(result.is_ok(), "JOIN failed: {result:?}");
 
     println!("Core PostgreSQL features test completed successfully!");
 }

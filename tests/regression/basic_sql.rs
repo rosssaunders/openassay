@@ -67,8 +67,7 @@ fn regression_corpus_suite() {
         let expected = parse_expected_rows(&sql);
         assert!(
             !expected.is_empty(),
-            "regression corpus file {} has no expected rows",
-            name
+            "regression corpus file {name} has no expected rows"
         );
         let rows = run_fixture(&sql);
         assert_eq!(rows, expected, "regression corpus mismatch in {name}");

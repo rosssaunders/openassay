@@ -58,6 +58,9 @@ fn is_pg_catalog_virtual_relation(relation: &str) -> bool {
             | "pg_proc"
             | "pg_constraint"
             | "pg_extension"
+            | "pg_index"
+            | "pg_attrdef"
+            | "pg_inherits"
     )
 }
 
@@ -100,6 +103,26 @@ fn virtual_relation_column_defs(
                 name: "relkind".to_string(),
                 type_oid: PG_TEXT_OID,
             },
+            VirtualRelationColumnDef {
+                name: "relowner".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "relhasindex".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "relhasrules".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "relhastriggers".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "relisshared".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
         ],
         ("pg_catalog", "pg_attribute") => vec![
             VirtualRelationColumnDef {
@@ -122,6 +145,14 @@ fn virtual_relation_column_defs(
                 name: "attnotnull".to_string(),
                 type_oid: PG_BOOL_OID,
             },
+            VirtualRelationColumnDef {
+                name: "attisdropped".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "atthasdef".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
         ],
         ("pg_catalog", "pg_type") => vec![
             VirtualRelationColumnDef {
@@ -131,6 +162,34 @@ fn virtual_relation_column_defs(
             VirtualRelationColumnDef {
                 name: "typname".to_string(),
                 type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "typnamespace".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "typowner".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "typlen".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "typbyval".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "typtype".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "typelem".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "typarray".to_string(),
+                type_oid: PG_INT8_OID,
             },
         ],
         ("information_schema", "tables") => vec![
@@ -165,11 +224,27 @@ fn virtual_relation_column_defs(
                 type_oid: PG_INT8_OID,
             },
             VirtualRelationColumnDef {
-                name: "data_type".to_string(),
+                name: "column_default".to_string(),
                 type_oid: PG_TEXT_OID,
             },
             VirtualRelationColumnDef {
                 name: "is_nullable".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "data_type".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "character_maximum_length".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "numeric_precision".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "is_identity".to_string(),
                 type_oid: PG_TEXT_OID,
             },
         ],
@@ -226,6 +301,10 @@ fn virtual_relation_column_defs(
                 name: "constraint_type".to_string(),
                 type_oid: PG_TEXT_OID,
             },
+            VirtualRelationColumnDef {
+                name: "is_deferrable".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
         ],
         ("pg_catalog", "pg_database") => vec![
             VirtualRelationColumnDef {
@@ -266,6 +345,22 @@ fn virtual_relation_column_defs(
                 name: "rolcanlogin".to_string(),
                 type_oid: PG_BOOL_OID,
             },
+            VirtualRelationColumnDef {
+                name: "rolinherit".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "rolcreaterole".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "rolcreatedb".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "rolconnlimit".to_string(),
+                type_oid: PG_INT8_OID,
+            },
         ],
         ("pg_catalog", "pg_settings") => vec![
             VirtualRelationColumnDef {
@@ -282,6 +377,14 @@ fn virtual_relation_column_defs(
             },
             VirtualRelationColumnDef {
                 name: "short_desc".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "vartype".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "context".to_string(),
                 type_oid: PG_TEXT_OID,
             },
         ],
@@ -340,6 +443,18 @@ fn virtual_relation_column_defs(
                 name: "pronamespace".to_string(),
                 type_oid: PG_INT8_OID,
             },
+            VirtualRelationColumnDef {
+                name: "proowner".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "prolang".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "prosrc".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
         ],
         ("pg_catalog", "pg_constraint") => vec![
             VirtualRelationColumnDef {
@@ -362,6 +477,26 @@ fn virtual_relation_column_defs(
                 name: "conrelid".to_string(),
                 type_oid: PG_INT8_OID,
             },
+            VirtualRelationColumnDef {
+                name: "confrelid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "conkey".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "confkey".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "confdeltype".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "confupdtype".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
         ],
         ("pg_catalog", "pg_extension") => vec![
             VirtualRelationColumnDef {
@@ -375,6 +510,60 @@ fn virtual_relation_column_defs(
             VirtualRelationColumnDef {
                 name: "extdescription".to_string(),
                 type_oid: PG_TEXT_OID,
+            },
+        ],
+        ("pg_catalog", "pg_index") => vec![
+            VirtualRelationColumnDef {
+                name: "indexrelid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "indrelid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "indnatts".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "indisunique".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "indisprimary".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "indkey".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+        ],
+        ("pg_catalog", "pg_attrdef") => vec![
+            VirtualRelationColumnDef {
+                name: "adrelid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "adnum".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "adsrc".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+        ],
+        ("pg_catalog", "pg_inherits") => vec![
+            VirtualRelationColumnDef {
+                name: "inhrelid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "inhparent".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "inhseqno".to_string(),
+                type_oid: PG_INT8_OID,
             },
         ],
         ("ws", "connections") => vec![

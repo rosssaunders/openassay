@@ -68,7 +68,7 @@ fn run_subselect_sql() {
     println!("Passed: {}/{}", passed, passed + failed);
     println!("Pass rate: {}%", (passed * 100) / (passed + failed));
     println!("\nAll {} errors:", errors.len());
-    for (i, stmt, err) in errors.iter() {
+    for (i, stmt, err) in &errors {
         println!("  #{}: {} -> {}", i, &stmt[..stmt.len().min(70)], err);
     }
 

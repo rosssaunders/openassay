@@ -7,7 +7,7 @@ fn measure_arrays_pass_rate() {
     let statements: Vec<&str> = sql
         .split(';')
         .map(|s| s.trim())
-        .filter(|s| !s.is_empty() && !s.starts_with("--") && !s.starts_with("\\"))
+        .filter(|s| !s.is_empty() && !s.starts_with("--") && !s.starts_with('\\'))
         .collect();
 
     println!("\nTotal statements: {}", statements.len());
@@ -27,7 +27,7 @@ fn measure_arrays_pass_rate() {
 
         if i < 5 {
             let short = if stmt.len() > 120 { &stmt[..120] } else { stmt };
-            println!("  stmt#{}: {}", i, short);
+            println!("  stmt#{i}: {short}");
         }
         if has_error {
             let err = messages
@@ -42,7 +42,7 @@ fn measure_arrays_pass_rate() {
                 .next()
                 .unwrap_or_default();
             let short = if stmt.len() > 80 { &stmt[..80] } else { stmt };
-            errors.push(format!("FAIL stmt#{}: {} => {}", i, short, err));
+            errors.push(format!("FAIL stmt#{i}: {short} => {err}"));
             failed += 1;
         } else {
             passed += 1;
@@ -51,7 +51,7 @@ fn measure_arrays_pass_rate() {
 
     println!("\nFailed statements:");
     for e in &errors {
-        println!("  {}", e);
+        println!("  {e}");
     }
 
     println!(
