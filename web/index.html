@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenAssay Browser Test</title>
+    <title>OpenAssay Browser Harness</title>
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css"
@@ -17,10 +17,14 @@
         color-scheme: dark;
         --bg: #0b1020;
         --panel: #0f172a;
+        --panel-2: #111b33;
         --panel-border: #1e293b;
         --text: #dbe4f0;
         --muted: #94a3b8;
         --accent: #22c55e;
+        --accent-soft: #1b3b2a;
+        --warn: #f59e0b;
+        --danger: #f43f5e;
       }
 
       * {
@@ -31,33 +35,70 @@
       body {
         height: 100%;
         margin: 0;
-        background: radial-gradient(circle at top, #1e293b 0%, #0b1020 50%, #05080f 100%);
+        background: radial-gradient(circle at top, #1e293b 0%, #0b1020 48%, #05080f 100%);
         color: var(--text);
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
           "Courier New", monospace;
       }
 
       .app {
-        max-width: 1100px;
+        max-width: 1200px;
         margin: 0 auto;
         padding: 1rem;
         display: grid;
         gap: 0.75rem;
       }
 
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+
       .title {
         margin: 0;
-        font-size: 1rem;
-        font-weight: 600;
+        font-size: 1.05rem;
+        font-weight: 700;
+      }
+
+      .mode-tabs {
+        display: flex;
+        gap: 0.45rem;
+      }
+
+      .mode-tab {
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        background: #10182d;
+        color: var(--muted);
+        cursor: pointer;
+        padding: 0.45rem 0.75rem;
+        font-size: 0.82rem;
+      }
+
+      .mode-tab.active {
+        border-color: var(--accent);
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .view {
+        display: none;
+      }
+
+      .view.active {
+        display: block;
       }
 
       .toolbar {
         display: flex;
         align-items: center;
         gap: 0.75rem;
+        flex-wrap: wrap;
       }
 
-      .toolbar button {
+      .btn {
         border: 1px solid var(--panel-border);
         border-radius: 6px;
         background: #111827;
@@ -66,19 +107,33 @@
         padding: 0.45rem 0.75rem;
       }
 
-      .toolbar button:hover {
+      .btn:hover {
         border-color: var(--accent);
       }
 
-      .toolbar button.active {
+      .btn.active {
         border-color: var(--accent);
-        background: #1a2e1a;
+        background: var(--accent-soft);
         color: var(--accent);
+      }
+
+      .btn.warn {
+        color: var(--warn);
+      }
+
+      .btn.danger {
+        color: var(--danger);
+      }
+
+      .status {
+        color: var(--muted);
+        font-size: 0.84rem;
       }
 
       .examples {
         display: flex;
-        gap: 0.5rem;
+        gap: 0.45rem;
+        flex-wrap: wrap;
       }
 
       .examples button {
@@ -88,7 +143,7 @@
         color: var(--muted);
         cursor: pointer;
         padding: 0.35rem 0.65rem;
-        font-size: 0.8rem;
+        font-size: 0.79rem;
         font-family: inherit;
       }
 
@@ -99,18 +154,13 @@
 
       .examples button.active {
         border-color: var(--accent);
-        background: #1a2e1a;
+        background: var(--accent-soft);
         color: var(--accent);
-      }
-
-      .status {
-        color: var(--muted);
-        font-size: 0.85rem;
       }
 
       #editor {
         width: 100%;
-        height: 55vh;
+        height: 52vh;
         border: 1px solid var(--panel-border);
         border-radius: 8px;
         overflow: hidden;
@@ -121,12 +171,6 @@
         border-radius: 8px;
         background: var(--panel);
         padding: 0.75rem;
-      }
-
-      .output h2 {
-        margin: 0 0 0.5rem;
-        font-size: 0.9rem;
-        color: var(--muted);
       }
 
       #result-editor {
@@ -154,31 +198,498 @@
         --ag-border-color: #1e293b;
         --ag-row-hover-color: #17213a;
       }
+
+      .otc-layout {
+        display: grid;
+        gap: 0.75rem;
+        grid-template-columns: minmax(360px, 1fr) minmax(360px, 1fr);
+      }
+
+      .panel {
+        border: 1px solid var(--panel-border);
+        border-radius: 10px;
+        background: linear-gradient(160deg, rgba(15, 23, 42, 0.96), rgba(8, 15, 30, 0.96));
+        padding: 0.8rem;
+      }
+
+      .panel h2 {
+        margin: 0 0 0.6rem;
+        font-size: 0.9rem;
+        color: var(--muted);
+      }
+
+      .panel.tight h2 {
+        margin-bottom: 0.35rem;
+      }
+
+      .ticket-grid {
+        display: grid;
+        gap: 0.55rem;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .field {
+        display: grid;
+        gap: 0.28rem;
+      }
+
+      .field label {
+        font-size: 0.72rem;
+        color: var(--muted);
+      }
+
+      .field input,
+      .field select,
+      .field textarea {
+        width: 100%;
+        border: 1px solid var(--panel-border);
+        border-radius: 6px;
+        background: #0b142a;
+        color: var(--text);
+        font: inherit;
+        padding: 0.42rem 0.5rem;
+      }
+
+      .field textarea {
+        min-height: 180px;
+        line-height: 1.45;
+      }
+
+      .field.full {
+        grid-column: 1 / -1;
+      }
+
+      .muted-line {
+        font-size: 0.76rem;
+        color: var(--muted);
+      }
+
+      .metric-grid {
+        display: grid;
+        gap: 0.35rem;
+      }
+
+      .metric {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.7rem;
+        border-bottom: 1px dashed rgba(148, 163, 184, 0.18);
+        padding-bottom: 0.22rem;
+      }
+
+      .metric .label {
+        color: var(--muted);
+        font-size: 0.77rem;
+      }
+
+      .metric .value {
+        font-size: 0.79rem;
+      }
+
+      .metric .value.good {
+        color: var(--accent);
+      }
+
+      .metric .value.bad {
+        color: var(--danger);
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        flex-wrap: wrap;
+      }
+
+      .sparkline-box {
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        background: #0a1328;
+        padding: 0.35rem;
+      }
+
+      .sparkline-box svg {
+        width: 100%;
+        height: 56px;
+        display: block;
+      }
+
+      .scenario-controls {
+        display: grid;
+        gap: 0.5rem;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-bottom: 0.5rem;
+      }
+
+      .scenario-table-wrap {
+        max-height: 250px;
+        overflow: auto;
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+      }
+
+      .scenario-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.75rem;
+      }
+
+      .scenario-table th,
+      .scenario-table td {
+        border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+        text-align: left;
+        padding: 0.33rem 0.42rem;
+      }
+
+      .scenario-table th {
+        position: sticky;
+        top: 0;
+        background: #111a31;
+        color: var(--muted);
+      }
+
+      .quote-grid {
+        display: grid;
+        gap: 0.55rem;
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .quote-grid .field textarea {
+        min-height: 230px;
+      }
+
+      .otc-topbar {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.6rem;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.4rem;
+        border: 1px solid var(--panel-border);
+        border-radius: 999px;
+        padding: 0.2rem 0.56rem;
+        font-size: 0.72rem;
+        color: var(--muted);
+        background: #10192f;
+      }
+
+      .pill strong {
+        color: var(--text);
+      }
+
+      @media (max-width: 1020px) {
+        .otc-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .scenario-controls,
+        .quote-grid,
+        .ticket-grid {
+          grid-template-columns: 1fr;
+        }
+      }
     </style>
   </head>
   <body>
     <main class="app">
-      <h1 class="title">OpenAssay Browser SQL Harness</h1>
-      <div class="toolbar">
-        <button id="run" type="button">Run (Cmd/Ctrl + Enter)</button>
-        <button id="export-snapshot" type="button">Export Snapshot</button>
-        <button id="import-snapshot" type="button">Import Snapshot</button>
-        <button id="reset-state" type="button">Reset DB</button>
-        <span class="status" id="status">Monaco: loading</span>
+      <div class="topbar">
+        <h1 class="title">OpenAssay Browser Harness</h1>
+        <div class="mode-tabs">
+          <button id="mode-sql" class="mode-tab active" type="button">SQL Harness</button>
+          <button id="mode-otc" class="mode-tab" type="button">OTC Pricer</button>
+        </div>
       </div>
-      <div class="examples">
-        <span style="color: var(--muted); font-size: 0.8rem; align-self: center;">Examples:</span>
-        <button id="ex-deribit" class="active" type="button">Currencies</button>
-        <button id="ex-orderbook" type="button">Order Book</button>
-        <button id="ex-volsurface" type="button">Vol Surface</button>
-        <button id="ex-websocket" type="button">WebSocket</button>
-        <button id="ex-window" type="button">Window Functions</button>
-      </div>
-      <div id="editor"></div>
-      <section class="output">
-        <div id="result-grid" class="ag-theme-quartz-dark"></div>
+
+      <section id="sql-view" class="view active">
+        <div class="toolbar">
+          <button id="run" class="btn" type="button">Run (Cmd/Ctrl + Enter)</button>
+          <button id="export-snapshot" class="btn" type="button">Export Snapshot</button>
+          <button id="import-snapshot" class="btn" type="button">Import Snapshot</button>
+          <button id="reset-state" class="btn" type="button">Reset DB</button>
+          <span class="status" id="status">Monaco: loading</span>
+        </div>
+        <div class="examples">
+          <span style="color: var(--muted); font-size: 0.8rem; align-self: center">Examples:</span>
+          <button id="ex-deribit" class="active" type="button">Currencies</button>
+          <button id="ex-orderbook" type="button">Order Book</button>
+          <button id="ex-volsurface" type="button">Vol Surface</button>
+          <button id="ex-websocket" type="button">WebSocket</button>
+          <button id="ex-window" type="button">Window Functions</button>
+        </div>
+        <div id="editor"></div>
+        <section class="output">
+          <div id="result-grid" class="ag-theme-quartz-dark"></div>
+        </section>
+        <div id="result-editor" style="display: none"></div>
       </section>
-      <div id="result-editor" style="display:none;"></div>
+
+      <section id="otc-view" class="view">
+        <div class="panel tight">
+          <div class="otc-topbar">
+            <h2>OTC Exotic Pricer</h2>
+            <div class="row">
+              <span class="pill">Surface: <strong id="otc-surface-source">initializing</strong></span>
+              <span class="pill">Surface TS: <strong id="otc-surface-time">-</strong></span>
+              <span class="pill">Points: <strong id="otc-surface-points">0</strong></span>
+              <span class="pill">Status: <strong id="otc-status">booting</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="otc-layout">
+          <section class="panel">
+            <h2>Ticket Builder</h2>
+            <div class="ticket-grid">
+              <div class="field">
+                <label for="otc-product">product</label>
+                <select id="otc-product">
+                  <option value="barrier_ko">Barrier KO</option>
+                  <option value="barrier_ki">Barrier KI</option>
+                  <option value="digital">Digital (cash-or-nothing)</option>
+                  <option value="one_touch">One-touch</option>
+                  <option value="no_touch">No-touch</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="otc-side">option side / payout side</label>
+                <select id="otc-side">
+                  <option value="call">Call / Up</option>
+                  <option value="put">Put / Down</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="otc-asset">asset</label>
+                <select id="otc-asset">
+                  <option value="BTC">BTC</option>
+                  <option value="ETH">ETH</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="otc-notional">notional</label>
+                <input id="otc-notional" type="number" min="0" step="0.01" value="100000" />
+              </div>
+              <div class="field">
+                <label for="otc-ccy">settlement currency</label>
+                <select id="otc-ccy">
+                  <option value="USD">USD</option>
+                  <option value="USDT">USDT</option>
+                  <option value="BTC">BTC</option>
+                  <option value="ETH">ETH</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="otc-expiry">expiry</label>
+                <input id="otc-expiry" type="date" />
+              </div>
+              <div class="field">
+                <label for="otc-strike">strike</label>
+                <input id="otc-strike" type="number" min="0" step="0.01" value="50000" />
+              </div>
+              <div class="field">
+                <label for="otc-barrier">barrier</label>
+                <input id="otc-barrier" type="number" min="0" step="0.01" value="45000" />
+              </div>
+              <div class="field">
+                <label for="otc-barrier-dir">barrier direction</label>
+                <select id="otc-barrier-dir">
+                  <option value="auto">Auto from spot/barrier</option>
+                  <option value="down">Down</option>
+                  <option value="up">Up</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="otc-rebate">rebate / payout multiplier</label>
+                <input id="otc-rebate" type="number" min="0" step="0.0001" value="0.1" />
+              </div>
+              <div class="field">
+                <label for="otc-monitoring">monitoring frequency</label>
+                <select id="otc-monitoring">
+                  <option value="continuous">Continuous</option>
+                  <option value="hourly">Hourly</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="otc-market-linkage">market linkage</label>
+                <select id="otc-market-linkage">
+                  <option value="live">Live</option>
+                  <option value="frozen">Frozen</option>
+                  <option value="manual">Manual</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="otc-manual-spot">manual spot</label>
+                <input id="otc-manual-spot" type="number" min="0" step="0.01" value="50000" />
+              </div>
+              <div class="field">
+                <label for="otc-manual-vol">manual implied vol (decimal)</label>
+                <input id="otc-manual-vol" type="number" min="0" step="0.0001" value="0.65" />
+              </div>
+              <div class="field">
+                <label for="otc-rate">risk-free rate</label>
+                <input id="otc-rate" type="number" step="0.0001" value="0.03" />
+              </div>
+              <div class="field">
+                <label for="otc-carry">carry used</label>
+                <input id="otc-carry" type="number" step="0.0001" value="0" />
+              </div>
+              <div class="field full">
+                <div class="row">
+                  <label style="display:flex; align-items:center; gap:0.35rem; font-size:0.75rem; color:var(--muted)">
+                    <input id="otc-market-auto" type="checkbox" checked /> auto-proxy bid/ask from live surface
+                  </label>
+                  <button id="otc-refresh-surface" class="btn" type="button">Refresh Surface Now</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Model Output</h2>
+            <div class="metric-grid">
+              <div class="metric"><span class="label">premium</span><span class="value" id="out-premium">-</span></div>
+              <div class="metric"><span class="label">implied vol equivalent</span><span class="value" id="out-ive">-</span></div>
+              <div class="metric"><span class="label">delta</span><span class="value" id="out-delta">-</span></div>
+              <div class="metric"><span class="label">gamma</span><span class="value" id="out-gamma">-</span></div>
+              <div class="metric"><span class="label">vega</span><span class="value" id="out-vega">-</span></div>
+              <div class="metric"><span class="label">vanna</span><span class="value" id="out-vanna">-</span></div>
+              <div class="metric"><span class="label">volga</span><span class="value" id="out-volga">-</span></div>
+              <div class="metric"><span class="label">theta</span><span class="value" id="out-theta">-</span></div>
+              <div class="metric"><span class="label">time to expiry (years)</span><span class="value" id="out-ttm">-</span></div>
+              <div class="metric"><span class="label">carry used</span><span class="value" id="out-carry">-</span></div>
+              <div class="metric"><span class="label">surface vol used</span><span class="value" id="out-surface-vol">-</span></div>
+              <div class="metric"><span class="label">spot used</span><span class="value" id="out-spot">-</span></div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Market Comparison</h2>
+            <div class="ticket-grid">
+              <div class="field">
+                <label for="otc-bid">bid input</label>
+                <input id="otc-bid" type="number" step="0.01" />
+              </div>
+              <div class="field">
+                <label for="otc-ask">ask input</label>
+                <input id="otc-ask" type="number" step="0.01" />
+              </div>
+              <div class="field">
+                <label>market mid</label>
+                <div class="muted-line" id="out-market-mid">-</div>
+              </div>
+              <div class="field">
+                <label>model value</label>
+                <div class="muted-line" id="out-model-value">-</div>
+              </div>
+              <div class="field">
+                <label>diff (absolute)</label>
+                <div class="muted-line" id="out-diff-abs">-</div>
+              </div>
+              <div class="field">
+                <label>diff (%)</label>
+                <div class="muted-line" id="out-diff-pct">-</div>
+              </div>
+              <div class="field full">
+                <label>within spread indicator</label>
+                <div class="muted-line" id="out-within-spread">-</div>
+              </div>
+              <div class="field full">
+                <label>diff sparkline</label>
+                <div class="sparkline-box"><svg id="diff-sparkline" viewBox="0 0 240 56" preserveAspectRatio="none"></svg></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <h2>Freeze & Snapshot</h2>
+            <div class="ticket-grid">
+              <div class="field">
+                <label for="otc-freeze-scope">freeze controls</label>
+                <select id="otc-freeze-scope">
+                  <option value="market">Market</option>
+                  <option value="surface">Surface</option>
+                  <option value="both" selected>Both</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>actions</label>
+                <div class="row">
+                  <button id="otc-freeze" class="btn warn" type="button">Freeze Snapshot</button>
+                  <button id="otc-unfreeze" class="btn danger" type="button">Unfreeze</button>
+                </div>
+              </div>
+              <div class="field full">
+                <label>snapshot state</label>
+                <div class="muted-line" id="otc-freeze-state">live</div>
+              </div>
+              <div class="field full">
+                <label>snapshot timestamp</label>
+                <div class="muted-line" id="otc-freeze-time">-</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel" style="grid-column: 1 / -1">
+            <h2>Scenario Engine</h2>
+            <div class="scenario-controls">
+              <div class="field">
+                <label for="otc-scen-spot">spot ladder ±X%</label>
+                <input id="otc-scen-spot" type="number" step="0.1" value="10" />
+              </div>
+              <div class="field">
+                <label for="otc-scen-vol">vol shift ±Y pts</label>
+                <input id="otc-scen-vol" type="number" step="0.1" value="5" />
+              </div>
+              <div class="field">
+                <label for="otc-scen-time">time roll days</label>
+                <input id="otc-scen-time" type="number" step="1" value="7" />
+              </div>
+              <div class="field">
+                <label for="otc-scen-barrier">barrier proximity ±%</label>
+                <input id="otc-scen-barrier" type="number" step="0.1" value="3" />
+              </div>
+            </div>
+            <div class="scenario-table-wrap">
+              <table class="scenario-table">
+                <thead>
+                  <tr>
+                    <th>Bucket</th>
+                    <th>Scenario</th>
+                    <th>Premium</th>
+                    <th>Diff vs Base</th>
+                  </tr>
+                </thead>
+                <tbody id="scenario-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel" style="grid-column: 1 / -1">
+            <h2>Quote Export</h2>
+            <div class="row" style="margin-bottom: 0.55rem">
+              <button id="otc-copy-json" class="btn" type="button">Copy JSON</button>
+              <button id="otc-copy-md" class="btn" type="button">Copy Markdown</button>
+              <button id="otc-copy-pack" class="btn" type="button">Copy JSON + Markdown</button>
+            </div>
+            <div class="quote-grid">
+              <div class="field">
+                <label for="otc-export-json">JSON quote pack</label>
+                <textarea id="otc-export-json" readonly></textarea>
+              </div>
+              <div class="field">
+                <label for="otc-export-md">Markdown quote pack</label>
+                <textarea id="otc-export-md" readonly></textarea>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
@@ -191,7 +702,12 @@
       const exportBtn = document.getElementById("export-snapshot");
       const importBtn = document.getElementById("import-snapshot");
       const resetBtn = document.getElementById("reset-state");
+      const sqlView = document.getElementById("sql-view");
+      const otcView = document.getElementById("otc-view");
+      const modeSqlBtn = document.getElementById("mode-sql");
+      const modeOtcBtn = document.getElementById("mode-otc");
       const SNAPSHOT_KEY = "openassay_snapshot_v1";
+
       let editor;
       let resultEditor;
       let pendingResultText = "Loading WASM runtime...";
@@ -216,6 +732,21 @@
         },
         animateRows: false,
       };
+
+      function switchMode(mode) {
+        const sqlActive = mode === "sql";
+        sqlView.classList.toggle("active", sqlActive);
+        otcView.classList.toggle("active", !sqlActive);
+        modeSqlBtn.classList.toggle("active", sqlActive);
+        modeOtcBtn.classList.toggle("active", !sqlActive);
+      }
+
+      modeSqlBtn.addEventListener("click", function () {
+        switchMode("sql");
+      });
+      modeOtcBtn.addEventListener("click", function () {
+        switchMode("otc");
+      });
 
       function refreshStatus() {
         const parts = [
@@ -374,7 +905,9 @@
           workerCallbacks.set(id, { resolve: resolve, reject: reject });
           const msg = { type: type, id: id };
           if (extra) {
-            Object.keys(extra).forEach(function (k) { msg[k] = extra[k]; });
+            Object.keys(extra).forEach(function (k) {
+              msg[k] = extra[k];
+            });
           }
           worker.postMessage(msg);
         });
@@ -398,15 +931,17 @@
           const out = await workerCall("import_snapshot", { snapshot: snapshot });
           if (isExecutionErrorText(out)) {
             localStorage.removeItem(SNAPSHOT_KEY);
-            try { await workerCall("reset_state"); } catch (_) {}
-            console.warn("Snapshot restore failed, cleared stale snapshot:", out);
+            try {
+              await workerCall("reset_state");
+            } catch (_) {}
             return false;
           }
           return true;
-        } catch (err) {
+        } catch (_err) {
           localStorage.removeItem(SNAPSHOT_KEY);
-          try { await workerCall("reset_state"); } catch (_) {}
-          console.warn("Snapshot restore threw, cleared stale snapshot:", err);
+          try {
+            await workerCall("reset_state");
+          } catch (_) {}
           return false;
         }
       }
@@ -417,9 +952,11 @@
           wasmStatus = "connected";
           snapshotRestored = await restoreSnapshotFromLocalStorage();
           refreshStatus();
-          setResult(snapshotRestored
-            ? "WASM engine connected. Previous session restored."
-            : "WASM engine connected. Run SQL to see results.");
+          setResult(
+            snapshotRestored
+              ? "WASM engine connected. Previous session restored."
+              : "WASM engine connected. Run SQL to see results."
+          );
         } catch (err) {
           wasmStatus = "not found";
           refreshStatus();
@@ -540,36 +1077,6 @@
           setResult("Reset failed:\n" + (err && err.message ? err.message : String(err)));
         }
       }
-
-      window.MonacoEnvironment = {
-        getWorkerUrl: function () {
-          return (
-            "data:text/javascript;charset=utf-8," +
-            encodeURIComponent(
-              "self.MonacoEnvironment = { baseUrl: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/' };" +
-                "importScripts('https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/base/worker/workerMain.js');"
-            )
-          );
-        },
-      };
-
-      require.config({
-        paths: {
-          vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs",
-        },
-      });
-
-      initGrid();
-      refreshStatus();
-      initWorkerAndRestore();
-
-      setTimeout(function () {
-        if (!monacoReady) {
-          setResult(
-            "Monaco editor is still loading. Check network access to https://cdn.jsdelivr.net/ and disable blockers for this page."
-          );
-        }
-      }, 8000);
 
       const examples = {
         "ex-deribit": [
@@ -724,6 +1231,36 @@
         });
       }
 
+      window.MonacoEnvironment = {
+        getWorkerUrl: function () {
+          return (
+            "data:text/javascript;charset=utf-8," +
+            encodeURIComponent(
+              "self.MonacoEnvironment = { baseUrl: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/' };" +
+                "importScripts('https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/base/worker/workerMain.js');"
+            )
+          );
+        },
+      };
+
+      require.config({
+        paths: {
+          vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs",
+        },
+      });
+
+      initGrid();
+      refreshStatus();
+      initWorkerAndRestore();
+
+      setTimeout(function () {
+        if (!monacoReady) {
+          setResult(
+            "Monaco editor is still loading. Check network access to https://cdn.jsdelivr.net/ and disable blockers for this page."
+          );
+        }
+      }, 8000);
+
       require(["vs/editor/editor.main"], function () {
         monacoReady = true;
         refreshStatus();
@@ -756,12 +1293,1109 @@
         exportBtn.addEventListener("click", exportSnapshot);
         importBtn.addEventListener("click", importSnapshot);
         resetBtn.addEventListener("click", resetState);
-        document.getElementById("ex-deribit").addEventListener("click", function () { setExample("ex-deribit"); });
-        document.getElementById("ex-orderbook").addEventListener("click", function () { setExample("ex-orderbook"); });
-        document.getElementById("ex-volsurface").addEventListener("click", function () { setExample("ex-volsurface"); });
-        document.getElementById("ex-websocket").addEventListener("click", function () { setExample("ex-websocket"); });
-        document.getElementById("ex-window").addEventListener("click", function () { setExample("ex-window"); });
+        document.getElementById("ex-deribit").addEventListener("click", function () {
+          setExample("ex-deribit");
+        });
+        document.getElementById("ex-orderbook").addEventListener("click", function () {
+          setExample("ex-orderbook");
+        });
+        document.getElementById("ex-volsurface").addEventListener("click", function () {
+          setExample("ex-volsurface");
+        });
+        document.getElementById("ex-websocket").addEventListener("click", function () {
+          setExample("ex-websocket");
+        });
+        document.getElementById("ex-window").addEventListener("click", function () {
+          setExample("ex-window");
+        });
       });
+
+      const OTC = {
+        product: document.getElementById("otc-product"),
+        side: document.getElementById("otc-side"),
+        asset: document.getElementById("otc-asset"),
+        notional: document.getElementById("otc-notional"),
+        ccy: document.getElementById("otc-ccy"),
+        expiry: document.getElementById("otc-expiry"),
+        strike: document.getElementById("otc-strike"),
+        barrier: document.getElementById("otc-barrier"),
+        barrierDir: document.getElementById("otc-barrier-dir"),
+        rebate: document.getElementById("otc-rebate"),
+        monitoring: document.getElementById("otc-monitoring"),
+        linkage: document.getElementById("otc-market-linkage"),
+        manualSpot: document.getElementById("otc-manual-spot"),
+        manualVol: document.getElementById("otc-manual-vol"),
+        rate: document.getElementById("otc-rate"),
+        carry: document.getElementById("otc-carry"),
+        marketAuto: document.getElementById("otc-market-auto"),
+        refreshSurface: document.getElementById("otc-refresh-surface"),
+        bid: document.getElementById("otc-bid"),
+        ask: document.getElementById("otc-ask"),
+        freezeScope: document.getElementById("otc-freeze-scope"),
+        freezeBtn: document.getElementById("otc-freeze"),
+        unfreezeBtn: document.getElementById("otc-unfreeze"),
+        freezeState: document.getElementById("otc-freeze-state"),
+        freezeTime: document.getElementById("otc-freeze-time"),
+        scenSpot: document.getElementById("otc-scen-spot"),
+        scenVol: document.getElementById("otc-scen-vol"),
+        scenTime: document.getElementById("otc-scen-time"),
+        scenBarrier: document.getElementById("otc-scen-barrier"),
+        scenarioBody: document.getElementById("scenario-body"),
+        copyJson: document.getElementById("otc-copy-json"),
+        copyMd: document.getElementById("otc-copy-md"),
+        copyPack: document.getElementById("otc-copy-pack"),
+        exportJson: document.getElementById("otc-export-json"),
+        exportMd: document.getElementById("otc-export-md"),
+        surfaceSource: document.getElementById("otc-surface-source"),
+        surfaceTime: document.getElementById("otc-surface-time"),
+        surfacePoints: document.getElementById("otc-surface-points"),
+        status: document.getElementById("otc-status"),
+        outPremium: document.getElementById("out-premium"),
+        outIve: document.getElementById("out-ive"),
+        outDelta: document.getElementById("out-delta"),
+        outGamma: document.getElementById("out-gamma"),
+        outVega: document.getElementById("out-vega"),
+        outVanna: document.getElementById("out-vanna"),
+        outVolga: document.getElementById("out-volga"),
+        outTheta: document.getElementById("out-theta"),
+        outTtm: document.getElementById("out-ttm"),
+        outCarry: document.getElementById("out-carry"),
+        outSurfaceVol: document.getElementById("out-surface-vol"),
+        outSpot: document.getElementById("out-spot"),
+        outMarketMid: document.getElementById("out-market-mid"),
+        outModelValue: document.getElementById("out-model-value"),
+        outDiffAbs: document.getElementById("out-diff-abs"),
+        outDiffPct: document.getElementById("out-diff-pct"),
+        outWithin: document.getElementById("out-within-spread"),
+        sparkline: document.getElementById("diff-sparkline"),
+      };
+
+      const otcState = {
+        dirty: true,
+        lastRepriceAt: 0,
+        diffHistory: [],
+        lastOutput: null,
+        lastScenarioRows: [],
+        lastQuotePack: null,
+        surfaceFetchPending: false,
+        liveSurface: null,
+        liveMarket: null,
+        freeze: {
+          market: false,
+          surface: false,
+          frozenSurface: null,
+          frozenMarket: null,
+          capturedAt: null,
+        },
+      };
+
+      function setOtcStatus(text) {
+        OTC.status.textContent = text;
+      }
+
+      function nowIso() {
+        return new Date().toISOString();
+      }
+
+      function numberValue(input, fallback) {
+        const value = Number(input.value);
+        return Number.isFinite(value) ? value : fallback;
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+      }
+
+      function fmt(value, digits) {
+        if (!Number.isFinite(value)) return "-";
+        return value.toLocaleString(undefined, {
+          minimumFractionDigits: digits,
+          maximumFractionDigits: digits,
+        });
+      }
+
+      function fmtSigned(value, digits) {
+        if (!Number.isFinite(value)) return "-";
+        const sign = value > 0 ? "+" : "";
+        return sign + fmt(value, digits);
+      }
+
+      function erf(x) {
+        const sign = x < 0 ? -1 : 1;
+        const ax = Math.abs(x);
+        const t = 1 / (1 + 0.3275911 * ax);
+        const y =
+          1 -
+          (((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t +
+            0.254829592) *
+            t *
+            Math.exp(-ax * ax));
+        return sign * y;
+      }
+
+      function normalCdf(x) {
+        return 0.5 * (1 + erf(x / Math.sqrt(2)));
+      }
+
+      function normalPdf(x) {
+        return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+      }
+
+      function getYearFraction(expiryDateStr) {
+        const parsed = Date.parse(expiryDateStr + "T08:00:00Z");
+        if (!Number.isFinite(parsed)) {
+          return 0;
+        }
+        const years = (parsed - Date.now()) / (365 * 24 * 3600 * 1000);
+        return Math.max(years, 1 / (365 * 24));
+      }
+
+      function parseDeribitExpiryCode(code) {
+        const match = /^([0-9]{1,2})([A-Z]{3})([0-9]{2})$/.exec(code || "");
+        if (!match) return null;
+        const monthMap = {
+          JAN: 0,
+          FEB: 1,
+          MAR: 2,
+          APR: 3,
+          MAY: 4,
+          JUN: 5,
+          JUL: 6,
+          AUG: 7,
+          SEP: 8,
+          OCT: 9,
+          NOV: 10,
+          DEC: 11,
+        };
+        const day = Number(match[1]);
+        const month = monthMap[match[2]];
+        const year = 2000 + Number(match[3]);
+        if (!Number.isFinite(day) || month === undefined || !Number.isFinite(year)) {
+          return null;
+        }
+        return Date.UTC(year, month, day, 8, 0, 0, 0);
+      }
+
+      function parseDeribitInstrumentName(name) {
+        const match = /^([A-Z]+)-([0-9]{1,2}[A-Z]{3}[0-9]{2})-([0-9]+(?:\.[0-9]+)?)-([CP])$/.exec(
+          name || ""
+        );
+        if (!match) return null;
+        return {
+          asset: match[1],
+          expiryCode: match[2],
+          strike: Number(match[3]),
+          side: match[4] === "C" ? "call" : "put",
+        };
+      }
+
+      function buildFallbackSurface(asset) {
+        const now = Date.now();
+        const baseSpot = asset === "ETH" ? 3200 : 52000;
+        const expiries = [7, 14, 30, 60, 90];
+        const points = [];
+        expiries.forEach(function (days) {
+          const expiryTs = now + days * 24 * 3600 * 1000;
+          for (let k = -3; k <= 3; k += 1) {
+            const strike = baseSpot * (1 + k * 0.08);
+            const smile = 0.62 + Math.abs(k) * 0.04 + days / 1200;
+            points.push({
+              instrument: `${asset}-SYNTH-${days}D-${Math.round(strike)}`,
+              strike: strike,
+              iv: smile,
+              bid: 0,
+              ask: 0,
+              mark: 0,
+              expiryTs: expiryTs,
+              underlying: baseSpot,
+            });
+          }
+        });
+        return {
+          asset: asset,
+          source: "synthetic-fallback",
+          fetchedAt: nowIso(),
+          spot: baseSpot,
+          points: points,
+        };
+      }
+
+      function monitoringHitFactor(frequency) {
+        if (frequency === "weekly") return 0.85;
+        if (frequency === "daily") return 0.92;
+        if (frequency === "hourly") return 0.97;
+        return 1.0;
+      }
+
+      function blackScholesD1D2(spot, strike, vol, rate, carry, ttm) {
+        const sigma = Math.max(vol, 1e-8);
+        const t = Math.max(ttm, 1e-8);
+        const sqrtT = Math.sqrt(t);
+        const d1 =
+          (Math.log(Math.max(spot, 1e-8) / Math.max(strike, 1e-8)) +
+            (rate - carry + 0.5 * sigma * sigma) * t) /
+          (sigma * sqrtT);
+        const d2 = d1 - sigma * sqrtT;
+        return { d1: d1, d2: d2, sigma: sigma, t: t, sqrtT: sqrtT };
+      }
+
+      function blackScholesPrice(side, spot, strike, vol, rate, carry, ttm) {
+        const vars = blackScholesD1D2(spot, strike, vol, rate, carry, ttm);
+        const discCarry = Math.exp(-carry * vars.t);
+        const discRate = Math.exp(-rate * vars.t);
+        if (side === "call") {
+          return spot * discCarry * normalCdf(vars.d1) - strike * discRate * normalCdf(vars.d2);
+        }
+        return strike * discRate * normalCdf(-vars.d2) - spot * discCarry * normalCdf(-vars.d1);
+      }
+
+      function barrierHitProbability(spot, barrier, vol, rate, carry, ttm, direction) {
+        if (!(spot > 0) || !(barrier > 0) || !(vol > 0) || !(ttm > 0)) {
+          return 0;
+        }
+        const down = direction === "down";
+        const x0 = down ? Math.log(spot / barrier) : Math.log(barrier / spot);
+        if (x0 <= 0) {
+          return 1;
+        }
+        const sigma = Math.max(vol, 1e-8);
+        const driftBase = rate - carry - 0.5 * sigma * sigma;
+        const nu = down ? driftBase : -driftBase;
+        const denom = sigma * Math.sqrt(Math.max(ttm, 1e-8));
+        const a = (-x0 - nu * ttm) / denom;
+        const b = (-x0 + nu * ttm) / denom;
+        const expArg = clamp((-2 * nu * x0) / (sigma * sigma), -80, 80);
+        const probability = normalCdf(a) + Math.exp(expArg) * normalCdf(b);
+        return clamp(probability, 0, 1);
+      }
+
+      function inferBarrierDirection(spot, barrier, explicitDirection) {
+        if (explicitDirection === "up" || explicitDirection === "down") {
+          return explicitDirection;
+        }
+        return barrier >= spot ? "up" : "down";
+      }
+
+      function impliedVolEquivalent(side, targetPrice, spot, strike, rate, carry, ttm) {
+        if (!(targetPrice > 0) || !(spot > 0) || !(strike > 0) || !(ttm > 0)) {
+          return null;
+        }
+        let lo = 0.0001;
+        let hi = 4.0;
+        let mid = 0.4;
+        for (let i = 0; i < 80; i += 1) {
+          mid = 0.5 * (lo + hi);
+          const px = blackScholesPrice(side, spot, strike, mid, rate, carry, ttm);
+          if (!Number.isFinite(px)) {
+            return null;
+          }
+          if (px > targetPrice) {
+            hi = mid;
+          } else {
+            lo = mid;
+          }
+        }
+        return mid;
+      }
+
+      function effectiveSurface() {
+        if (otcState.freeze.surface && otcState.freeze.frozenSurface) {
+          return otcState.freeze.frozenSurface;
+        }
+        return otcState.liveSurface;
+      }
+
+      function effectiveMarket() {
+        if (otcState.freeze.market && otcState.freeze.frozenMarket) {
+          return otcState.freeze.frozenMarket;
+        }
+        return otcState.liveMarket;
+      }
+
+      function getTicketState() {
+        return {
+          product: OTC.product.value,
+          side: OTC.side.value,
+          asset: OTC.asset.value,
+          notional: Math.max(numberValue(OTC.notional, 0), 0),
+          settlementCcy: OTC.ccy.value,
+          expiry: OTC.expiry.value,
+          strike: Math.max(numberValue(OTC.strike, 0), 1e-8),
+          barrier: Math.max(numberValue(OTC.barrier, 0), 1e-8),
+          barrierDir: OTC.barrierDir.value,
+          rebate: Math.max(numberValue(OTC.rebate, 0), 0),
+          monitoring: OTC.monitoring.value,
+          linkage: OTC.linkage.value,
+          manualSpot: Math.max(numberValue(OTC.manualSpot, 0), 1e-8),
+          manualVol: Math.max(numberValue(OTC.manualVol, 0.5), 0.0001),
+          rate: numberValue(OTC.rate, 0),
+          carry: numberValue(OTC.carry, 0),
+          marketAuto: OTC.marketAuto.checked,
+        };
+      }
+
+      function surfaceInterpolatedVol(surface, strike, ttm) {
+        const defaultVol = Math.max(numberValue(OTC.manualVol, 0.65), 0.0001);
+        if (!surface || !Array.isArray(surface.points) || surface.points.length === 0) {
+          return defaultVol;
+        }
+        const now = Date.now();
+        const valid = surface.points
+          .map(function (point) {
+            const t = (point.expiryTs - now) / (365 * 24 * 3600 * 1000);
+            return {
+              iv: point.iv,
+              strike: point.strike,
+              t: Math.max(t, 1 / (365 * 24)),
+            };
+          })
+          .filter(function (point) {
+            return Number.isFinite(point.iv) && point.iv > 0 && point.strike > 0;
+          });
+        if (valid.length === 0) {
+          return defaultVol;
+        }
+        const picks = valid
+          .map(function (point) {
+            const strikeDistance = Math.abs(Math.log(point.strike / Math.max(strike, 1e-8)));
+            const timeDistance = Math.abs(point.t - Math.max(ttm, 1e-8));
+            return {
+              iv: point.iv,
+              distance: strikeDistance * 2.5 + timeDistance * 5,
+            };
+          })
+          .sort(function (a, b) {
+            return a.distance - b.distance;
+          })
+          .slice(0, 14);
+
+        let weighted = 0;
+        let weights = 0;
+        picks.forEach(function (pick) {
+          const w = 1 / (pick.distance + 1e-4);
+          weighted += pick.iv * w;
+          weights += w;
+        });
+        return clamp(weighted / Math.max(weights, 1e-12), 0.0001, 4);
+      }
+
+      function closestMarketProxy(surface, ticket) {
+        if (!surface || !Array.isArray(surface.points) || surface.points.length === 0) {
+          return null;
+        }
+        const expiryMs = Date.parse(ticket.expiry + "T08:00:00Z");
+        const candidates = surface.points
+          .filter(function (point) {
+            return Number.isFinite(point.bid) && Number.isFinite(point.ask);
+          })
+          .map(function (point) {
+            const strikeDistance = Math.abs(Math.log(point.strike / Math.max(ticket.strike, 1e-8)));
+            const timeDistance = Number.isFinite(expiryMs)
+              ? Math.abs(point.expiryTs - expiryMs) / (24 * 3600 * 1000)
+              : 0;
+            return {
+              point: point,
+              distance: strikeDistance * 2.2 + timeDistance / 12,
+            };
+          })
+          .sort(function (a, b) {
+            return a.distance - b.distance;
+          });
+
+        if (candidates.length === 0) return null;
+        const best = candidates[0].point;
+        return {
+          bid: Math.max(best.bid, 0),
+          ask: Math.max(best.ask, 0),
+          instrument: best.instrument,
+          updatedAt: nowIso(),
+        };
+      }
+
+      function modelUnitPrice(inputs) {
+        const t = Math.max(inputs.ttm, 1 / (365 * 24));
+        const spot = Math.max(inputs.spot, 1e-8);
+        const strike = Math.max(inputs.strike, 1e-8);
+        const barrier = Math.max(inputs.barrier, 1e-8);
+        const vol = Math.max(inputs.vol, 1e-8);
+        const rate = inputs.rate;
+        const carry = inputs.carry;
+        const payout = Math.max(inputs.rebate, 0);
+        const direction = inferBarrierDirection(spot, barrier, inputs.barrierDir);
+
+        if (inputs.product === "digital") {
+          const dvars = blackScholesD1D2(spot, strike, vol, rate, carry, t);
+          const prob = inputs.side === "call" ? normalCdf(dvars.d2) : normalCdf(-dvars.d2);
+          return payout * Math.exp(-rate * t) * prob;
+        }
+
+        if (inputs.product === "one_touch" || inputs.product === "no_touch") {
+          const pHit = barrierHitProbability(spot, barrier, vol, rate, carry, t, direction) *
+            monitoringHitFactor(inputs.monitoring);
+          const touchProb = clamp(pHit, 0, 1);
+          const value =
+            inputs.product === "one_touch" ? touchProb : clamp(1 - touchProb, 0, 1);
+          return payout * Math.exp(-rate * t) * value;
+        }
+
+        const vanilla = blackScholesPrice(inputs.side, spot, strike, vol, rate, carry, t);
+        const hit =
+          barrierHitProbability(spot, barrier, vol, rate, carry, t, direction) *
+          monitoringHitFactor(inputs.monitoring);
+        const pHit = clamp(hit, 0, 1);
+        const pSurvive = clamp(1 - pHit, 0, 1);
+        const rebatePv = payout * Math.exp(-rate * t);
+
+        if (inputs.product === "barrier_ko") {
+          return vanilla * pSurvive + rebatePv * pHit;
+        }
+        return vanilla * pHit + rebatePv * pSurvive;
+      }
+
+      function modelPremium(inputs) {
+        return modelUnitPrice(inputs) * Math.max(inputs.notional, 0);
+      }
+
+      function computeGreeks(inputs, basePremium) {
+        const base = basePremium;
+        const spotBump = Math.max(inputs.spot * 0.01, 0.25);
+        const volBump = 0.01;
+        const timeBump = 1 / 365;
+
+        function priceWith(overrides) {
+          const merged = Object.assign({}, inputs, overrides);
+          return modelPremium(merged);
+        }
+
+        const upSpot = priceWith({ spot: inputs.spot + spotBump });
+        const downSpot = priceWith({ spot: Math.max(inputs.spot - spotBump, 1e-8) });
+        const delta = (upSpot - downSpot) / (2 * spotBump);
+        const gamma = (upSpot - 2 * base + downSpot) / (spotBump * spotBump);
+
+        const upVol = priceWith({ vol: inputs.vol + volBump });
+        const downVol = priceWith({ vol: Math.max(inputs.vol - volBump, 0.0001) });
+        const vega = (upVol - downVol) / (2 * volBump);
+        const volga = (upVol - 2 * base + downVol) / (volBump * volBump);
+
+        const deltaVolUp =
+          (priceWith({ spot: inputs.spot + spotBump, vol: inputs.vol + volBump }) -
+            priceWith({ spot: Math.max(inputs.spot - spotBump, 1e-8), vol: inputs.vol + volBump })) /
+          (2 * spotBump);
+        const deltaVolDown =
+          (priceWith({ spot: inputs.spot + spotBump, vol: Math.max(inputs.vol - volBump, 0.0001) }) -
+            priceWith({ spot: Math.max(inputs.spot - spotBump, 1e-8), vol: Math.max(inputs.vol - volBump, 0.0001) })) /
+          (2 * spotBump);
+        const vanna = (deltaVolUp - deltaVolDown) / (2 * volBump);
+
+        const thetaTarget = Math.max(inputs.ttm - timeBump, 1 / (365 * 24));
+        const theta = (priceWith({ ttm: thetaTarget }) - base) / timeBump;
+
+        return {
+          delta: delta,
+          gamma: gamma,
+          vega: vega,
+          vanna: vanna,
+          volga: volga,
+          theta: theta,
+        };
+      }
+
+      function buildScenarioRows(inputs, basePremium) {
+        const rows = [];
+        const spotRange = Math.max(numberValue(OTC.scenSpot, 10), 0);
+        const volShiftPts = Math.max(numberValue(OTC.scenVol, 5), 0);
+        const timeRollDays = Math.max(numberValue(OTC.scenTime, 7), 0);
+        const barrierShift = Math.max(numberValue(OTC.scenBarrier, 3), 0);
+
+        const spotMoves = [-spotRange, -spotRange / 2, 0, spotRange / 2, spotRange];
+        spotMoves.forEach(function (move) {
+          const spot = inputs.spot * (1 + move / 100);
+          const px = modelPremium(Object.assign({}, inputs, { spot: spot }));
+          rows.push({
+            bucket: "Spot",
+            scenario: `${move >= 0 ? "+" : ""}${fmt(move, 1)}%`,
+            premium: px,
+            diff: px - basePremium,
+          });
+        });
+
+        const volMoves = [-volShiftPts, 0, volShiftPts];
+        volMoves.forEach(function (move) {
+          const vol = Math.max(inputs.vol + move / 100, 0.0001);
+          const px = modelPremium(Object.assign({}, inputs, { vol: vol }));
+          rows.push({
+            bucket: "Vol",
+            scenario: `${move >= 0 ? "+" : ""}${fmt(move, 1)} pts`,
+            premium: px,
+            diff: px - basePremium,
+          });
+        });
+
+        const timeMoves = [0, timeRollDays / 2, timeRollDays];
+        timeMoves.forEach(function (move) {
+          const ttm = Math.max(inputs.ttm - move / 365, 1 / (365 * 24));
+          const px = modelPremium(Object.assign({}, inputs, { ttm: ttm }));
+          rows.push({
+            bucket: "Time",
+            scenario: `roll +${fmt(move, 1)}d`,
+            premium: px,
+            diff: px - basePremium,
+          });
+        });
+
+        const barrierMoves = [-barrierShift, -barrierShift / 2, 0, barrierShift / 2, barrierShift];
+        barrierMoves.forEach(function (move) {
+          const barrier = Math.max(inputs.barrier * (1 + move / 100), 1e-8);
+          const px = modelPremium(Object.assign({}, inputs, { barrier: barrier }));
+          rows.push({
+            bucket: "Barrier",
+            scenario: `${move >= 0 ? "+" : ""}${fmt(move, 1)}%`,
+            premium: px,
+            diff: px - basePremium,
+          });
+        });
+
+        return rows;
+      }
+
+      function renderScenarioRows(rows) {
+        OTC.scenarioBody.innerHTML = rows
+          .map(function (row) {
+            return `<tr><td>${row.bucket}</td><td>${row.scenario}</td><td>${fmt(row.premium, 2)}</td><td>${fmtSigned(
+              row.diff,
+              2
+            )}</td></tr>`;
+          })
+          .join("");
+      }
+
+      function renderSparkline(values) {
+        const svg = OTC.sparkline;
+        if (!svg) return;
+        if (!Array.isArray(values) || values.length < 2) {
+          svg.innerHTML = "<line x1='0' y1='28' x2='240' y2='28' stroke='rgba(148,163,184,0.25)' stroke-width='1' />";
+          return;
+        }
+
+        const width = 240;
+        const height = 56;
+        const min = Math.min.apply(null, values);
+        const max = Math.max.apply(null, values);
+        const span = Math.max(max - min, 1e-8);
+        const points = values
+          .map(function (value, idx) {
+            const x = (idx / (values.length - 1)) * width;
+            const y = height - ((value - min) / span) * (height - 4) - 2;
+            return `${x.toFixed(2)},${y.toFixed(2)}`;
+          })
+          .join(" ");
+        const zeroY = height - ((0 - min) / span) * (height - 4) - 2;
+
+        svg.innerHTML =
+          `<line x1='0' y1='${clamp(zeroY, 1, height - 1)}' x2='${width}' y2='${clamp(
+            zeroY,
+            1,
+            height - 1
+          )}' stroke='rgba(148,163,184,0.25)' stroke-width='1' />` +
+          `<polyline fill='none' stroke='#22c55e' stroke-width='1.8' points='${points}' />`;
+      }
+
+      function writeModelOutputs(payload) {
+        OTC.outPremium.textContent = `${fmt(payload.premium, 2)} ${payload.settlementCcy}`;
+        OTC.outIve.textContent = payload.ive == null ? "-" : `${fmt(payload.ive * 100, 2)}%`;
+        OTC.outDelta.textContent = fmt(payload.greeks.delta, 6);
+        OTC.outGamma.textContent = fmt(payload.greeks.gamma, 8);
+        OTC.outVega.textContent = fmt(payload.greeks.vega, 6);
+        OTC.outVanna.textContent = fmt(payload.greeks.vanna, 8);
+        OTC.outVolga.textContent = fmt(payload.greeks.volga, 6);
+        OTC.outTheta.textContent = fmt(payload.greeks.theta, 4);
+        OTC.outTtm.textContent = fmt(payload.ttm, 6);
+        OTC.outCarry.textContent = fmt(payload.carry, 4);
+        OTC.outSurfaceVol.textContent = `${fmt(payload.vol * 100, 2)}%`;
+        OTC.outSpot.textContent = fmt(payload.spot, 2);
+      }
+
+      function writeMarketOutputs(market) {
+        OTC.outMarketMid.textContent = market.marketMid == null ? "-" : fmt(market.marketMid, 2);
+        OTC.outModelValue.textContent = fmt(market.modelValue, 2);
+        OTC.outDiffAbs.textContent = market.diffAbs == null ? "-" : fmtSigned(market.diffAbs, 2);
+        OTC.outDiffPct.textContent = market.diffPct == null ? "-" : `${fmtSigned(market.diffPct, 2)}%`;
+
+        if (market.withinSpread == null) {
+          OTC.outWithin.textContent = "-";
+        } else {
+          OTC.outWithin.textContent = market.withinSpread
+            ? "YES (inside bid/ask)"
+            : "NO (outside spread)";
+          OTC.outWithin.style.color = market.withinSpread ? "var(--accent)" : "var(--danger)";
+        }
+      }
+
+      function buildQuotePack(output) {
+        const activeSurface = effectiveSurface();
+        const activeMarket = effectiveMarket();
+        const pack = {
+          timestamp: nowIso(),
+          ticket: {
+            product: output.ticket.product,
+            side: output.ticket.side,
+            asset: output.ticket.asset,
+            notional: output.ticket.notional,
+            settlement_currency: output.ticket.settlementCcy,
+            expiry: output.ticket.expiry,
+            strike: output.ticket.strike,
+            barrier: output.ticket.barrier,
+            barrier_direction: output.barrierDirection,
+            rebate: output.ticket.rebate,
+            monitoring_frequency: output.ticket.monitoring,
+            market_linkage: output.ticket.linkage,
+            manual_spot: output.ticket.manualSpot,
+            manual_vol: output.ticket.manualVol,
+            rate: output.ticket.rate,
+            carry: output.ticket.carry,
+          },
+          freeze: {
+            market_frozen: otcState.freeze.market,
+            surface_frozen: otcState.freeze.surface,
+            captured_at: otcState.freeze.capturedAt,
+          },
+          surface_config: {
+            source: activeSurface ? activeSurface.source : "none",
+            fetched_at: activeSurface ? activeSurface.fetchedAt : null,
+            point_count: activeSurface && Array.isArray(activeSurface.points) ? activeSurface.points.length : 0,
+            spot_hint: activeSurface ? activeSurface.spot : null,
+            selected_vol: output.vol,
+          },
+          market_snapshot: {
+            bid: output.market.bid,
+            ask: output.market.ask,
+            market_mid: output.market.marketMid,
+            source_instrument: activeMarket ? activeMarket.instrument : null,
+            source_updated_at: activeMarket ? activeMarket.updatedAt : null,
+          },
+          model_outputs: {
+            premium: output.premium,
+            implied_vol_equivalent: output.ive,
+            delta: output.greeks.delta,
+            gamma: output.greeks.gamma,
+            vega: output.greeks.vega,
+            vanna: output.greeks.vanna,
+            volga: output.greeks.volga,
+            theta: output.greeks.theta,
+            time_to_expiry: output.ttm,
+            carry_used: output.carry,
+            spot_used: output.spot,
+          },
+          market_diff: {
+            model_value: output.market.modelValue,
+            diff_abs: output.market.diffAbs,
+            diff_pct: output.market.diffPct,
+            within_spread: output.market.withinSpread,
+          },
+          scenario_table: otcState.lastScenarioRows,
+        };
+        return pack;
+      }
+
+      function quotePackMarkdown(pack) {
+        const model = pack.model_outputs;
+        const diff = pack.market_diff;
+        const scenarios = Array.isArray(pack.scenario_table) ? pack.scenario_table : [];
+        const head = [
+          "# OTC Quote Pack",
+          "",
+          `- Timestamp: ${pack.timestamp}`,
+          `- Product: ${pack.ticket.product}`,
+          `- Asset: ${pack.ticket.asset}`,
+          `- Notional: ${pack.ticket.notional}`,
+          `- Settlement: ${pack.ticket.settlement_currency}`,
+          `- Expiry: ${pack.ticket.expiry}`,
+          `- Freeze: market=${pack.freeze.market_frozen}, surface=${pack.freeze.surface_frozen}`,
+          "",
+          "## Model Outputs",
+          "",
+          "| Metric | Value |",
+          "|---|---:|",
+          `| Premium | ${fmt(model.premium, 2)} |`,
+          `| Implied Vol Eq | ${model.implied_vol_equivalent == null ? "-" : fmt(model.implied_vol_equivalent * 100, 2) + "%"} |`,
+          `| Delta | ${fmt(model.delta, 6)} |`,
+          `| Gamma | ${fmt(model.gamma, 8)} |`,
+          `| Vega | ${fmt(model.vega, 6)} |`,
+          `| Vanna | ${fmt(model.vanna, 8)} |`,
+          `| Volga | ${fmt(model.volga, 6)} |`,
+          `| Theta | ${fmt(model.theta, 4)} |`,
+          `| Time to Expiry | ${fmt(model.time_to_expiry, 6)} |`,
+          `| Carry Used | ${fmt(model.carry_used, 4)} |`,
+          "",
+          "## Market Comparison",
+          "",
+          `- Bid: ${pack.market_snapshot.bid == null ? "-" : fmt(pack.market_snapshot.bid, 2)}`,
+          `- Ask: ${pack.market_snapshot.ask == null ? "-" : fmt(pack.market_snapshot.ask, 2)}`,
+          `- Mid: ${pack.market_snapshot.market_mid == null ? "-" : fmt(pack.market_snapshot.market_mid, 2)}`,
+          `- Model Value: ${fmt(diff.model_value, 2)}`,
+          `- Diff Abs: ${diff.diff_abs == null ? "-" : fmtSigned(diff.diff_abs, 2)}`,
+          `- Diff %: ${diff.diff_pct == null ? "-" : fmtSigned(diff.diff_pct, 2) + "%"}`,
+          `- Within Spread: ${diff.within_spread == null ? "-" : diff.within_spread ? "yes" : "no"}`,
+          "",
+          "## Scenario Table",
+          "",
+          "| Bucket | Scenario | Premium | Diff vs Base |",
+          "|---|---|---:|---:|",
+        ];
+        scenarios.forEach(function (row) {
+          head.push(
+            `| ${row.bucket} | ${row.scenario} | ${fmt(row.premium, 2)} | ${fmtSigned(row.diff, 2)} |`
+          );
+        });
+        return head.join("\n");
+      }
+
+      function updateExport(output) {
+        const pack = buildQuotePack(output);
+        otcState.lastQuotePack = pack;
+        OTC.exportJson.value = JSON.stringify(pack, null, 2);
+        OTC.exportMd.value = quotePackMarkdown(pack);
+      }
+
+      function markOtcDirty() {
+        otcState.dirty = true;
+      }
+
+      async function fetchSurface(asset) {
+        const endpoint =
+          asset === "ETH"
+            ? "https://test.deribit.com/api/v2/public/get_book_summary_by_currency?currency=ETH&kind=option"
+            : "https://test.deribit.com/api/v2/public/get_book_summary_by_currency?currency=BTC&kind=option";
+
+        const response = await fetch(endpoint, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`surface fetch failed: ${response.status}`);
+        }
+        const payload = await response.json();
+        const raw = Array.isArray(payload && payload.result) ? payload.result : [];
+        const points = [];
+        raw.forEach(function (item) {
+          const parsed = parseDeribitInstrumentName(item.instrument_name);
+          if (!parsed) return;
+          const expiryTs = parseDeribitExpiryCode(parsed.expiryCode);
+          if (!Number.isFinite(expiryTs)) return;
+          let iv = Number(item.mark_iv);
+          if (!Number.isFinite(iv) || iv <= 0) return;
+          if (iv > 3) iv /= 100;
+          points.push({
+            instrument: item.instrument_name,
+            strike: parsed.strike,
+            iv: iv,
+            bid: Number(item.bid_price),
+            ask: Number(item.ask_price),
+            mark: Number(item.mark_price),
+            expiryTs: expiryTs,
+            underlying: Number(item.underlying_price),
+          });
+        });
+
+        let spot = NaN;
+        for (let i = 0; i < points.length; i += 1) {
+          if (Number.isFinite(points[i].underlying) && points[i].underlying > 0) {
+            spot = points[i].underlying;
+            break;
+          }
+        }
+        if (!Number.isFinite(spot) || spot <= 0) {
+          spot = asset === "ETH" ? 3200 : 52000;
+        }
+
+        return {
+          asset: asset,
+          source: "deribit-test",
+          fetchedAt: nowIso(),
+          spot: spot,
+          points: points,
+        };
+      }
+
+      async function refreshSurface(forceStatus) {
+        if (otcState.surfaceFetchPending) {
+          return;
+        }
+        otcState.surfaceFetchPending = true;
+        const asset = OTC.asset.value;
+        if (forceStatus) setOtcStatus("refreshing surface");
+        try {
+          const surface = await fetchSurface(asset);
+          otcState.liveSurface = surface;
+          const proxy = closestMarketProxy(surface, getTicketState());
+          otcState.liveMarket = proxy;
+          OTC.surfaceSource.textContent = surface.source;
+          OTC.surfaceTime.textContent = surface.fetchedAt;
+          OTC.surfacePoints.textContent = String(surface.points.length);
+          setOtcStatus("surface live");
+          markOtcDirty();
+        } catch (err) {
+          if (!otcState.liveSurface || otcState.liveSurface.asset !== asset) {
+            otcState.liveSurface = buildFallbackSurface(asset);
+            otcState.liveMarket = closestMarketProxy(otcState.liveSurface, getTicketState());
+          }
+          OTC.surfaceSource.textContent = otcState.liveSurface.source;
+          OTC.surfaceTime.textContent = otcState.liveSurface.fetchedAt;
+          OTC.surfacePoints.textContent = String(otcState.liveSurface.points.length);
+          setOtcStatus("surface fallback");
+          console.warn("surface refresh error", err);
+          markOtcDirty();
+        } finally {
+          otcState.surfaceFetchPending = false;
+        }
+      }
+
+      function applyAutoMarket(ticket) {
+        const market = effectiveMarket();
+        if (!ticket.marketAuto || !market) {
+          return;
+        }
+        const scaledBid = Number.isFinite(market.bid) ? market.bid * ticket.notional : null;
+        const scaledAsk = Number.isFinite(market.ask) ? market.ask * ticket.notional : null;
+        if (scaledBid != null) {
+          OTC.bid.value = scaledBid.toFixed(2);
+        }
+        if (scaledAsk != null) {
+          OTC.ask.value = scaledAsk.toFixed(2);
+        }
+      }
+
+      function computeInputs(ticket) {
+        const ttm = getYearFraction(ticket.expiry);
+        const surface = effectiveSurface();
+        const liveSpot = surface && Number.isFinite(surface.spot) ? surface.spot : ticket.manualSpot;
+        const spot =
+          ticket.linkage === "manual"
+            ? ticket.manualSpot
+            : ticket.linkage === "frozen" && otcState.freeze.frozenSurface
+            ? otcState.freeze.frozenSurface.spot
+            : liveSpot;
+        const vol =
+          ticket.linkage === "manual"
+            ? ticket.manualVol
+            : surfaceInterpolatedVol(surface, ticket.strike, ttm);
+
+        return {
+          product: ticket.product,
+          side: ticket.side,
+          asset: ticket.asset,
+          notional: ticket.notional,
+          settlementCcy: ticket.settlementCcy,
+          expiry: ticket.expiry,
+          strike: ticket.strike,
+          barrier: ticket.barrier,
+          barrierDir: ticket.barrierDir,
+          rebate: ticket.rebate,
+          monitoring: ticket.monitoring,
+          linkage: ticket.linkage,
+          spot: spot,
+          vol: vol,
+          rate: ticket.rate,
+          carry: ticket.carry,
+          ttm: ttm,
+          manualSpot: ticket.manualSpot,
+          manualVol: ticket.manualVol,
+        };
+      }
+
+      function freezeSnapshot() {
+        const scope = OTC.freezeScope.value;
+        const market = effectiveMarket();
+        const surface = effectiveSurface();
+
+        otcState.freeze.market = scope === "market" || scope === "both";
+        otcState.freeze.surface = scope === "surface" || scope === "both";
+        otcState.freeze.frozenMarket = otcState.freeze.market && market ? JSON.parse(JSON.stringify(market)) : null;
+        otcState.freeze.frozenSurface =
+          otcState.freeze.surface && surface ? JSON.parse(JSON.stringify(surface)) : null;
+        otcState.freeze.capturedAt = nowIso();
+
+        const modes = [];
+        if (otcState.freeze.market) modes.push("market");
+        if (otcState.freeze.surface) modes.push("surface");
+        OTC.freezeState.textContent = modes.length ? `frozen: ${modes.join(" + ")}` : "live";
+        OTC.freezeTime.textContent = otcState.freeze.capturedAt || "-";
+        setOtcStatus("snapshot frozen");
+        markOtcDirty();
+      }
+
+      function unfreezeSnapshot() {
+        otcState.freeze.market = false;
+        otcState.freeze.surface = false;
+        otcState.freeze.frozenMarket = null;
+        otcState.freeze.frozenSurface = null;
+        otcState.freeze.capturedAt = null;
+        OTC.freezeState.textContent = "live";
+        OTC.freezeTime.textContent = "-";
+        setOtcStatus("live");
+        markOtcDirty();
+      }
+
+      function runOtcPricing() {
+        const ticket = getTicketState();
+        applyAutoMarket(ticket);
+        const inputs = computeInputs(ticket);
+
+        const premium = modelPremium(inputs);
+        const greeks = computeGreeks(inputs, premium);
+        const ive = impliedVolEquivalent(
+          ticket.side,
+          premium / Math.max(ticket.notional, 1e-8),
+          inputs.spot,
+          ticket.strike,
+          ticket.rate,
+          ticket.carry,
+          inputs.ttm
+        );
+
+        const bid = Number(OTC.bid.value);
+        const ask = Number(OTC.ask.value);
+        const hasBid = Number.isFinite(bid);
+        const hasAsk = Number.isFinite(ask);
+        const marketMid = hasBid && hasAsk ? 0.5 * (bid + ask) : null;
+        const diffAbs = marketMid == null ? null : premium - marketMid;
+        const diffPct = marketMid == null || Math.abs(marketMid) < 1e-12 ? null : (diffAbs / marketMid) * 100;
+        const withinSpread = hasBid && hasAsk ? premium >= Math.min(bid, ask) && premium <= Math.max(bid, ask) : null;
+
+        if (Number.isFinite(diffAbs)) {
+          otcState.diffHistory.push(diffAbs);
+          if (otcState.diffHistory.length > 100) {
+            otcState.diffHistory.shift();
+          }
+        }
+
+        const marketPayload = {
+          bid: hasBid ? bid : null,
+          ask: hasAsk ? ask : null,
+          marketMid: marketMid,
+          modelValue: premium,
+          diffAbs: diffAbs,
+          diffPct: diffPct,
+          withinSpread: withinSpread,
+        };
+
+        const output = {
+          ticket: ticket,
+          premium: premium,
+          ive: ive,
+          greeks: greeks,
+          ttm: inputs.ttm,
+          carry: inputs.carry,
+          vol: inputs.vol,
+          spot: inputs.spot,
+          settlementCcy: ticket.settlementCcy,
+          barrierDirection: inferBarrierDirection(inputs.spot, inputs.barrier, inputs.barrierDir),
+          market: marketPayload,
+        };
+
+        writeModelOutputs(output);
+        writeMarketOutputs(marketPayload);
+        renderSparkline(otcState.diffHistory);
+
+        const scenarioRows = buildScenarioRows(inputs, premium);
+        otcState.lastScenarioRows = scenarioRows;
+        renderScenarioRows(scenarioRows);
+
+        updateExport(output);
+        otcState.lastOutput = output;
+      }
+
+      async function copyText(text) {
+        if (!text) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          setOtcStatus("quote copied");
+        } catch (_err) {
+          setOtcStatus("clipboard blocked");
+        }
+      }
+
+      function initOtcDefaults() {
+        const base = new Date();
+        base.setUTCDate(base.getUTCDate() + 30);
+        OTC.expiry.value = base.toISOString().slice(0, 10);
+        OTC.freezeState.textContent = "live";
+        OTC.freezeTime.textContent = "-";
+      }
+
+      function initOtc() {
+        initOtcDefaults();
+
+        [
+          OTC.product,
+          OTC.side,
+          OTC.asset,
+          OTC.notional,
+          OTC.ccy,
+          OTC.expiry,
+          OTC.strike,
+          OTC.barrier,
+          OTC.barrierDir,
+          OTC.rebate,
+          OTC.monitoring,
+          OTC.linkage,
+          OTC.manualSpot,
+          OTC.manualVol,
+          OTC.rate,
+          OTC.carry,
+          OTC.marketAuto,
+          OTC.bid,
+          OTC.ask,
+          OTC.scenSpot,
+          OTC.scenVol,
+          OTC.scenTime,
+          OTC.scenBarrier,
+        ].forEach(function (element) {
+          element.addEventListener("input", markOtcDirty);
+          element.addEventListener("change", markOtcDirty);
+        });
+
+        OTC.asset.addEventListener("change", function () {
+          refreshSurface(true);
+        });
+
+        OTC.refreshSurface.addEventListener("click", function () {
+          refreshSurface(true);
+        });
+
+        OTC.freezeBtn.addEventListener("click", freezeSnapshot);
+        OTC.unfreezeBtn.addEventListener("click", unfreezeSnapshot);
+
+        OTC.copyJson.addEventListener("click", function () {
+          copyText(OTC.exportJson.value);
+        });
+        OTC.copyMd.addEventListener("click", function () {
+          copyText(OTC.exportMd.value);
+        });
+        OTC.copyPack.addEventListener("click", function () {
+          copyText(`${OTC.exportJson.value}\n\n---\n\n${OTC.exportMd.value}`);
+        });
+
+        setInterval(function () {
+          refreshSurface(false);
+        }, 5000);
+
+        setInterval(function () {
+          if (!otcState.dirty) return;
+          const now = performance.now();
+          if (now - otcState.lastRepriceAt < 125) return;
+          otcState.lastRepriceAt = now;
+          otcState.dirty = false;
+          try {
+            runOtcPricing();
+          } catch (err) {
+            setOtcStatus("pricing error");
+            console.error("otc pricing error", err);
+          }
+        }, 40);
+
+        refreshSurface(true);
+        setOtcStatus("ready");
+      }
+
+      initOtc();
     </script>
   </body>
 </html>
