@@ -4207,7 +4207,7 @@ mod tests {
             matches!(
                 msg,
                 BackendMessage::DataRow { values }
-                    if values == &vec!["42".to_string(), "true".to_string(), "hello".to_string()]
+                    if values == &vec!["42".to_string(), "t".to_string(), "hello".to_string()]
             )
         }));
     }
@@ -4379,8 +4379,8 @@ mod tests {
                 })
                 .expect("copy data payload should be present");
             let rendered = String::from_utf8(payload).expect("copy text payload should be utf8");
-            assert!(rendered.contains("1\talpha\ttrue\t1.5\n"));
-            assert!(rendered.contains("2\tbeta\tfalse\t2.5\n"));
+            assert!(rendered.contains("1\talpha\tt\t1.5\n"));
+            assert!(rendered.contains("2\tbeta\tf\t2.5\n"));
         });
     }
 

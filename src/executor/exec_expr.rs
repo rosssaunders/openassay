@@ -2148,15 +2148,24 @@ pub(crate) fn eval_cast_scalar(
             Ok(ScalarValue::Text(format_date(dt.date)))
         }
         "time" => {
-            // Parse and format time properly
-            use crate::utils::adt::datetime::{format_time, parse_datetime_scalar};
-            let dt = parse_datetime_scalar(&value)?;
-            Ok(ScalarValue::Text(format_time(
-                dt.hour,
-                dt.minute,
-                dt.second,
-                dt.microsecond,
-            )))
+            use crate::utils::adt::datetime::{format_time, parse_datetime_scalar, parse_time_text};
+            // Try parsing as a bare time string first (e.g. "12:30:45", "11:59 PM")
+            // If that fails, fall back to full datetime parsing (e.g. "2024-01-15 12:30:45")
+            let (hour, minute, second, microsecond) = match &value {
+                ScalarValue::Text(s) => {
+                    if let Ok(t) = parse_time_text(s) {
+                        t
+                    } else {
+                        let dt = parse_datetime_scalar(&value)?;
+                        (dt.hour, dt.minute, dt.second, dt.microsecond)
+                    }
+                }
+                _ => {
+                    let dt = parse_datetime_scalar(&value)?;
+                    (dt.hour, dt.minute, dt.second, dt.microsecond)
+                }
+            };
+            Ok(ScalarValue::Text(format_time(hour, minute, second, microsecond)))
         }
         "timestamp" => {
             let dt = parse_datetime_scalar(&value)?;
