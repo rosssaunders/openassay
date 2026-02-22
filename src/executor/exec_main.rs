@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::*;
+use std::arch::x86_64::{_mm256_setzero_si256, _mm256_loadu_si256, _mm256_add_epi64, _mm256_storeu_si256, _mm256_setzero_pd, _mm256_loadu_pd, _mm256_add_pd, _mm256_storeu_pd, _mm256_set1_epi64x, _mm256_cmpgt_epi64, _mm256_blendv_epi8, _mm256_set1_pd, _mm256_min_pd, _mm256_max_pd};
 
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
 use crate::executor::exec_expr::{
@@ -365,8 +365,8 @@ async fn execute_select(
     // FROM clause evaluation, applying them incrementally as tables are joined.
     // This avoids computing the full cartesian product before filtering.
     let (mut source_rows, remaining_predicate) =
-        if select.from.len() >= 2 && select.where_clause.is_some() {
-            let conjuncts = decompose_and_conjuncts(select.where_clause.as_ref().unwrap());
+        if let Some(where_clause) = select.where_clause.as_ref().filter(|_| select.from.len() >= 2) {
+            let conjuncts = decompose_and_conjuncts(where_clause);
             evaluate_from_clause_with_pushdown(&select.from, params, outer_scope, &conjuncts).await?
         } else {
             let source = if select.from.is_empty() {

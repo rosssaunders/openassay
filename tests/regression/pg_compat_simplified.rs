@@ -13,7 +13,7 @@ fn test_openassay_supported_features() {
 
     // Helper function to run a test
     let mut run_test = |name: &str, sql: &str, should_succeed: bool| {
-        print!("Testing {}: ", name);
+        print!("Testing {name}: ");
         let messages = session.run_sync([FrontendMessage::Query {
             sql: sql.to_string(),
         }]);
@@ -42,9 +42,9 @@ fn test_openassay_supported_features() {
                 })
                 .next()
                 .unwrap_or_else(|| "Unknown error".to_string());
-            println!("✗ FAIL: {}", error_msg);
+            println!("✗ FAIL: {error_msg}");
             failed += 1;
-            test_results.push((name.to_string(), format!("FAIL: {}", error_msg)));
+            test_results.push((name.to_string(), format!("FAIL: {error_msg}")));
         } else {
             println!("✗ FAIL: Expected error but succeeded");
             failed += 1;
@@ -249,16 +249,16 @@ fn test_openassay_supported_features() {
     let pass_rate = if total > 0 { (passed * 100) / total } else { 0 };
 
     println!("\n=== OpenAssay Feature Compatibility Results ===");
-    println!("Total tests: {}", total);
-    println!("Passed: {}", passed);
-    println!("Failed: {}", failed);
-    println!("Pass rate: {}%", pass_rate);
+    println!("Total tests: {total}");
+    println!("Passed: {passed}");
+    println!("Failed: {failed}");
+    println!("Pass rate: {pass_rate}%");
 
     if failed > 0 {
         println!("\nFailed tests:");
         for (name, result) in &test_results {
             if result.starts_with("FAIL") {
-                println!("  {}: {}", name, result);
+                println!("  {name}: {result}");
             }
         }
     }
@@ -270,7 +270,6 @@ fn test_openassay_supported_features() {
     // We expect some features to not be fully implemented yet
     assert!(
         passed > 10,
-        "Too few core features are working (passed: {})",
-        passed
+        "Too few core features are working (passed: {passed})"
     );
 }

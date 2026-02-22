@@ -98,7 +98,7 @@ mod tests {
     fn truncation_respects_utf8_boundaries() {
         let ident = format!("{}_{}", "a".repeat(62), "é");
         let got = downcase_truncate_identifier(&ident, false);
-        assert_eq!(got.value.as_bytes().len(), NAMEDATALEN - 1);
+        assert_eq!(got.value.len(), NAMEDATALEN - 1);
         assert!(got.truncated);
     }
 

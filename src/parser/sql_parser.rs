@@ -6619,7 +6619,7 @@ mod tests {
         match &create.constraints[0] {
             TableConstraint::PrimaryKey { name, columns } => {
                 assert!(name.is_none());
-                assert_eq!(columns, &vec!["a".to_string(), "b".to_string()])
+                assert_eq!(columns, &vec!["a".to_string(), "b".to_string()]);
             }
             other => panic!("expected primary key constraint, got {other:?}"),
         }

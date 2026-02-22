@@ -1757,6 +1757,7 @@ pub fn with_global_state_lock<T>(f: impl FnOnce() -> T) -> T {
 }
 
 #[cfg(test)]
+#[allow(clippy::await_holding_lock)]
 pub async fn with_global_state_lock_async<T, F, Fut>(f: F) -> T
 where
     F: FnOnce() -> Fut,

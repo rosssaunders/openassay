@@ -4605,17 +4605,7 @@ mod tests {
             ])
         });
 
-        let data_rows = out
-            .iter()
-            .filter_map(|message| {
-                if let BackendMessage::DataRow { values } = message {
-                    Some(values.clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        assert!(data_rows.is_empty());
+        assert!(!out.iter().any(|message| matches!(message, BackendMessage::DataRow { .. })));
     }
 
     #[test]

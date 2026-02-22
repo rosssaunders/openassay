@@ -2196,7 +2196,7 @@ $$ LANGUAGE plpgsql;";
 
     #[test]
     fn executes_do_block_with_sqlstate_exception_handler() {
-        let sql = r#"
+        let sql = r"
 DO $$
 BEGIN
   BEGIN
@@ -2211,7 +2211,7 @@ BEGIN
   END;
 END;
 $$ LANGUAGE plpgsql;
-"#;
+";
 
         let func = compile_do_block_sql(sql).expect("compile should succeed");
         let result = plpgsql_exec_function(&func, &[]).expect("execution should succeed");
@@ -2220,7 +2220,7 @@ $$ LANGUAGE plpgsql;
 
     #[test]
     fn unmatched_exception_handler_rethrows_error() {
-        let sql = r#"
+        let sql = r"
 DO $$
 BEGIN
   BEGIN
@@ -2231,7 +2231,7 @@ BEGIN
   END;
 END;
 $$ LANGUAGE plpgsql;
-"#;
+";
 
         let func = compile_do_block_sql(sql).expect("compile should succeed");
         let err = plpgsql_exec_function(&func, &[]).expect_err("execution should fail");

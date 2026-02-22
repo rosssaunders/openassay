@@ -38,7 +38,7 @@ fn exec(session: &mut PostgresSession, sql: &str) {
 // TPC-H schema (standard 8-table layout)
 // ---------------------------------------------------------------------------
 
-const TPCH_SCHEMA: &str = r#"
+const TPCH_SCHEMA: &str = r"
 CREATE TABLE region (
     r_regionkey  INT8 NOT NULL,
     r_name       TEXT NOT NULL,
@@ -116,13 +116,13 @@ CREATE TABLE lineitem (
     l_shipmode      TEXT NOT NULL,
     l_comment       TEXT
 );
-"#;
+";
 
 // ---------------------------------------------------------------------------
 // Minimal seed data (SF ~0.001 – enough to exercise every query path)
 // ---------------------------------------------------------------------------
 
-const TPCH_SEED_DATA: &str = r#"
+const TPCH_SEED_DATA: &str = r"
 INSERT INTO region VALUES
   (0, 'AFRICA', 'special Tiresias'),
   (1, 'AMERICA', 'hs use ironic, even'),
@@ -198,7 +198,7 @@ INSERT INTO lineitem VALUES
   (5, 4, 3, 2, 26, 28348.06, 0.07, 0.08, 'R', 'F', DATE '1994-08-08', DATE '1994-10-07', DATE '1994-08-26', 'DELIVER IN PERSON',  'AIR',       'he accounts. fluffily'),
   (6, 5, 4, 1, 37, 36424.49, 0.08, 0.03, 'A', 'F', DATE '1992-04-27', DATE '1992-05-15', DATE '1992-05-02', 'TAKE BACK RETURN',   'TRUCK',     'p ironic, regular deposits'),
   (7, 1, 1, 1, 12, 15012.00, 0.07, 0.03, 'N', 'O', DATE '1996-02-01', DATE '1996-03-02', DATE '1996-02-19', 'COLLECT COD',        'SHIP',      'al foxes promise slyly');
-"#;
+";
 
 // ---------------------------------------------------------------------------
 // TPC-H queries (official specification, adapted for PostgreSQL dialect)
@@ -208,7 +208,7 @@ INSERT INTO lineitem VALUES
 /// are annotated with `// BLOCKED:` and use a simplified fallback.
 const TPCH_QUERIES: [(&str, &str); 22] = [
     // Q1: Pricing Summary Report
-    ("q01", r#"
+    ("q01", r"
 SELECT
     l_returnflag,
     l_linestatus,
@@ -224,10 +224,10 @@ FROM lineitem
 WHERE l_shipdate <= DATE '1998-12-01' - INTERVAL '90 days'
 GROUP BY l_returnflag, l_linestatus
 ORDER BY l_returnflag, l_linestatus
-"#),
+"),
 
     // Q2: Minimum Cost Supplier (needs correlated subquery workaround)
-    ("q02", r#"
+    ("q02", r"
 SELECT
     s_acctbal, s_name, n_name, p_partkey, p_mfgr,
     s_address, s_phone, s_comment
@@ -252,10 +252,10 @@ WHERE
     )
 ORDER BY s_acctbal DESC, n_name, s_name, p_partkey
 LIMIT 100
-"#),
+"),
 
     // Q3: Shipping Priority
-    ("q03", r#"
+    ("q03", r"
 SELECT
     l_orderkey,
     SUM(l_extendedprice * (1 - l_discount)) AS revenue,
@@ -271,10 +271,10 @@ WHERE
 GROUP BY l_orderkey, o_orderdate, o_shippriority
 ORDER BY revenue DESC, o_orderdate
 LIMIT 10
-"#),
+"),
 
     // Q4: Order Priority Checking
-    ("q04", r#"
+    ("q04", r"
 SELECT
     o_orderpriority,
     COUNT(*) AS order_count
@@ -288,10 +288,10 @@ WHERE
     )
 GROUP BY o_orderpriority
 ORDER BY o_orderpriority
-"#),
+"),
 
     // Q5: Local Supplier Volume
-    ("q05", r#"
+    ("q05", r"
 SELECT
     n_name,
     SUM(l_extendedprice * (1 - l_discount)) AS revenue
@@ -308,10 +308,10 @@ WHERE
     AND o_orderdate < DATE '1994-01-01' + INTERVAL '1 year'
 GROUP BY n_name
 ORDER BY revenue DESC
-"#),
+"),
 
     // Q6: Forecasting Revenue Change
-    ("q06", r#"
+    ("q06", r"
 SELECT
     SUM(l_extendedprice * l_discount) AS revenue
 FROM lineitem
@@ -320,10 +320,10 @@ WHERE
     AND l_shipdate < DATE '1994-01-01' + INTERVAL '1 year'
     AND l_discount BETWEEN 0.05 AND 0.07
     AND l_quantity < 24
-"#),
+"),
 
     // Q7: Volume Shipping
-    ("q07", r#"
+    ("q07", r"
 SELECT
     supp_nation,
     cust_nation,
@@ -350,10 +350,10 @@ FROM (
 ) AS shipping
 GROUP BY supp_nation, cust_nation, l_year
 ORDER BY supp_nation, cust_nation, l_year
-"#),
+"),
 
     // Q8: National Market Share
-    ("q08", r#"
+    ("q08", r"
 SELECT
     o_year,
     SUM(CASE WHEN nation = 'BRAZIL' THEN volume ELSE 0 END) / SUM(volume) AS mkt_share
@@ -377,10 +377,10 @@ FROM (
 ) AS all_nations
 GROUP BY o_year
 ORDER BY o_year
-"#),
+"),
 
     // Q9: Product Type Profit Measure
-    ("q09", r#"
+    ("q09", r"
 SELECT
     nation,
     o_year,
@@ -402,10 +402,10 @@ FROM (
 ) AS profit
 GROUP BY nation, o_year
 ORDER BY nation, o_year DESC
-"#),
+"),
 
     // Q10: Returned Item Reporting
-    ("q10", r#"
+    ("q10", r"
 SELECT
     c_custkey, c_name,
     SUM(l_extendedprice * (1 - l_discount)) AS revenue,
@@ -421,10 +421,10 @@ WHERE
 GROUP BY c_custkey, c_name, c_acctbal, c_phone, n_name, c_address, c_comment
 ORDER BY revenue DESC
 LIMIT 20
-"#),
+"),
 
     // Q11: Important Stock Identification
-    ("q11", r#"
+    ("q11", r"
 SELECT
     ps_partkey,
     SUM(ps_supplycost * ps_availqty) AS value
@@ -443,10 +443,10 @@ HAVING SUM(ps_supplycost * ps_availqty) > (
         AND n_name = 'GERMANY'
 )
 ORDER BY value DESC
-"#),
+"),
 
     // Q12: Shipping Modes and Order Priority
-    ("q12", r#"
+    ("q12", r"
 SELECT
     l_shipmode,
     SUM(CASE
@@ -467,10 +467,10 @@ WHERE
     AND l_receiptdate < DATE '1994-01-01' + INTERVAL '1 year'
 GROUP BY l_shipmode
 ORDER BY l_shipmode
-"#),
+"),
 
     // Q13: Customer Distribution
-    ("q13", r#"
+    ("q13", r"
 SELECT
     c_count, COUNT(*) AS custdist
 FROM (
@@ -484,10 +484,10 @@ FROM (
 ) AS c_orders
 GROUP BY c_count
 ORDER BY custdist DESC, c_count DESC
-"#),
+"),
 
     // Q14: Promotion Effect
-    ("q14", r#"
+    ("q14", r"
 SELECT
     100.00 * SUM(CASE WHEN p_type LIKE 'PROMO%' THEN l_extendedprice * (1 - l_discount) ELSE 0 END)
     / SUM(l_extendedprice * (1 - l_discount)) AS promo_revenue
@@ -496,10 +496,10 @@ WHERE
     l_partkey = p_partkey
     AND l_shipdate >= DATE '1995-09-01'
     AND l_shipdate < DATE '1995-09-01' + INTERVAL '1 month'
-"#),
+"),
 
     // Q15: Top Supplier (uses CTE instead of view)
-    ("q15", r#"
+    ("q15", r"
 WITH revenue AS (
     SELECT
         l_suppkey AS supplier_no,
@@ -515,10 +515,10 @@ FROM supplier, revenue
 WHERE s_suppkey = supplier_no
     AND total_revenue = (SELECT MAX(total_revenue) FROM revenue)
 ORDER BY s_suppkey
-"#),
+"),
 
     // Q16: Parts/Supplier Relationship
-    ("q16", r#"
+    ("q16", r"
 SELECT
     p_brand, p_type, p_size,
     COUNT(DISTINCT ps_suppkey) AS supplier_cnt
@@ -530,10 +530,10 @@ WHERE
     AND p_size IN (49, 14, 23, 45, 19, 3, 36, 9)
 GROUP BY p_brand, p_type, p_size
 ORDER BY supplier_cnt DESC, p_brand, p_type, p_size
-"#),
+"),
 
     // Q17: Small-Quantity-Order Revenue
-    ("q17", r#"
+    ("q17", r"
 SELECT
     SUM(l_extendedprice) / 7.0 AS avg_yearly
 FROM lineitem, part
@@ -546,10 +546,10 @@ WHERE
         FROM lineitem
         WHERE l_partkey = p_partkey
     )
-"#),
+"),
 
     // Q18: Large Volume Customer (needs workaround for GROUP BY in subquery)
-    ("q18", r#"
+    ("q18", r"
 SELECT
     c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice,
     SUM(l_quantity) AS total_qty
@@ -566,10 +566,10 @@ WHERE
 GROUP BY c_name, c_custkey, o_orderkey, o_orderdate, o_totalprice
 ORDER BY o_totalprice DESC, o_orderdate
 LIMIT 100
-"#),
+"),
 
     // Q19: Discounted Revenue
-    ("q19", r#"
+    ("q19", r"
 SELECT
     SUM(l_extendedprice * (1 - l_discount)) AS revenue
 FROM lineitem, part
@@ -601,10 +601,10 @@ WHERE
         AND l_shipmode IN ('AIR', 'AIR REG')
         AND l_shipinstruct = 'DELIVER IN PERSON'
     )
-"#),
+"),
 
     // Q20: Potential Part Promotion
-    ("q20", r#"
+    ("q20", r"
 SELECT s_name, s_address
 FROM supplier, nation
 WHERE
@@ -628,12 +628,12 @@ WHERE
     AND s_nationkey = n_nationkey
     AND n_name = 'CANADA'
 ORDER BY s_name
-"#),
+"),
 
     // Q21: Suppliers Who Kept Orders Waiting
     // BLOCKED: complex NOT IN / NOT EXISTS with correlated subqueries
     // Simplified fallback that exercises similar join patterns
-    ("q21", r#"
+    ("q21", r"
 SELECT
     s_name, COUNT(*) AS numwait
 FROM supplier, lineitem l1, orders, nation
@@ -651,12 +651,12 @@ WHERE
 GROUP BY s_name
 ORDER BY numwait DESC, s_name
 LIMIT 100
-"#),
+"),
 
     // Q22: Global Sales Opportunity
     // BLOCKED: complex NOT EXISTS with correlated subquery on orders
     // Simplified fallback exercising SUBSTRING and aggregation
-    ("q22", r#"
+    ("q22", r"
 SELECT
     cntrycode, COUNT(*) AS numcust, SUM(c_acctbal) AS totacctbal
 FROM (
@@ -676,7 +676,7 @@ FROM (
 ) AS custsale
 GROUP BY cntrycode
 ORDER BY cntrycode
-"#),
+"),
 ];
 
 // ---------------------------------------------------------------------------
