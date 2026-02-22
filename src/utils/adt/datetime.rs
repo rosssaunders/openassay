@@ -482,22 +482,22 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
     if time_part.is_none() && date_part.contains(':') {
         let colon_pos = date_part.find(':').unwrap();
         // An hour is at most 2 digits (0-24); a 4-digit year before ':' is a date
-        if colon_pos <= 2 {
-            if let Ok((hour, minute, second, microsecond)) = parse_time_text(date_part) {
-                // Use epoch date as placeholder; callers interested in time only
-                // (EXTRACT, ::time cast, etc.) won't use the date field.
-                return Ok(DateTimeValue {
-                    date: DateValue {
-                        year: 2000,
-                        month: 1,
-                        day: 1,
-                    },
-                    hour,
-                    minute,
-                    second,
-                    microsecond,
-                });
-            }
+        if colon_pos <= 2
+            && let Ok((hour, minute, second, microsecond)) = parse_time_text(date_part)
+        {
+            // Use epoch date as placeholder; callers interested in time only
+            // (EXTRACT, ::time cast, etc.) won't use the date field.
+            return Ok(DateTimeValue {
+                date: DateValue {
+                    year: 2000,
+                    month: 1,
+                    day: 1,
+                },
+                hour,
+                minute,
+                second,
+                microsecond,
+            });
         }
     }
 

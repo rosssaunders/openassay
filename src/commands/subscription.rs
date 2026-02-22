@@ -34,7 +34,7 @@ pub async fn execute_drop_subscription(
 ) -> Result<QueryResult, EngineError> {
     match drop_subscription(&statement.name) {
         Ok(()) => {}
-        Err(err) if statement.if_exists => {}
+        Err(_err) if statement.if_exists => {}
         Err(err) => {
             return Err(EngineError {
                 message: err.message,
