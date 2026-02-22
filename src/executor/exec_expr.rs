@@ -1527,7 +1527,25 @@ async fn window_frame_rows(
     params: &[Option<String>],
 ) -> Result<Vec<usize>, EngineError> {
     let Some(frame) = window.frame.as_ref() else {
-        return Ok(partition.to_vec());
+        // PostgreSQL default frame:
+        // - With ORDER BY: RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW (cumulative)
+        // - Without ORDER BY: entire partition (ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+        if window.order_by.is_empty() {
+            return Ok(partition.to_vec());
+        }
+        // Apply RANGE UNBOUNDED PRECEDING TO CURRENT ROW: include all rows with
+        // order keys <= current row's order keys (peers included).
+        let current_keys = &order_keys[current_pos];
+        let frame_indices: Vec<usize> = partition
+            .iter()
+            .enumerate()
+            .filter(|(pos, _)| {
+                compare_order_keys(&order_keys[*pos], current_keys, &window.order_by)
+                    != Ordering::Greater
+            })
+            .map(|(_, &row_idx)| row_idx)
+            .collect();
+        return Ok(frame_indices);
     };
 
     match frame.units {

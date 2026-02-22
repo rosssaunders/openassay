@@ -1703,7 +1703,7 @@ fn virtual_relation_rows(
                 for schema in catalog.schemas() {
                     for table in schema.tables() {
                         let has_index = !table.indexes().is_empty()
-                            || table.key_constraints().iter().any(|k| k.primary);
+                            || !table.key_constraints().is_empty();
                         out.push((
                             table.oid(),
                             table.name().to_string(),
@@ -2096,18 +2096,16 @@ fn virtual_relation_rows(
                                 )
                             });
                             let contype = if kc.primary { "p" } else { "u" };
-                            let conkey = format!(
-                                "{{{}}}",
-                                kc.columns
-                                    .iter()
-                                    .map(|c| col_ordinals
-                                        .get(c)
-                                        .copied()
-                                        .unwrap_or(0)
-                                        .to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(",")
-                            );
+                            let conkey_parts = kc.columns
+                                .iter()
+                                .map(|c| col_ordinals
+                                    .get(c)
+                                    .copied()
+                                    .ok_or_else(|| EngineError {
+                                        message: format!("Column '{}' not found in table '{}'", c, table.name()),
+                                    }))
+                                .collect::<Result<Vec<i64>, _>>()?;
+                            let conkey = format!("{{{}}}", conkey_parts.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(","));
                             rows.push(vec![
                                 ScalarValue::Int(con_oid),
                                 ScalarValue::Text(con_name),
@@ -2126,18 +2124,16 @@ fn virtual_relation_rows(
                             let con_name = fk.name.clone().unwrap_or_else(|| {
                                 format!("{}_fkey", table.name())
                             });
-                            let conkey = format!(
-                                "{{{}}}",
-                                fk.columns
-                                    .iter()
-                                    .map(|c| col_ordinals
-                                        .get(c)
-                                        .copied()
-                                        .unwrap_or(0)
-                                        .to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(",")
-                            );
+                            let fk_conkey_parts = fk.columns
+                                .iter()
+                                .map(|c| col_ordinals
+                                    .get(c)
+                                    .copied()
+                                    .ok_or_else(|| EngineError {
+                                        message: format!("FK column '{}' not found in table '{}'", c, table.name()),
+                                    }))
+                                .collect::<Result<Vec<i64>, _>>()?;
+                            let conkey = format!("{{{}}}", fk_conkey_parts.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(","));
                             // Resolve referenced table OID
                             let ref_table_oid = catalog
                                 .schema(fk.referenced_table.first().map(String::as_str).unwrap_or("public"))
@@ -2202,17 +2198,22 @@ fn virtual_relation_rows(
                             .collect();
                         // Key constraints (PK / UNIQUE) produce implicit indexes
                         for kc in table.key_constraints() {
-                            let indkey = kc
+                            let indkey_parts = kc
                                 .columns
                                 .iter()
-                                .map(|c| col_ordinals.get(c).copied().unwrap_or(0).to_string())
-                                .collect::<Vec<_>>()
-                                .join(" ");
+                                .map(|c| col_ordinals
+                                    .get(c)
+                                    .copied()
+                                    .ok_or_else(|| EngineError {
+                                        message: format!("Column '{}' not found in table '{}'", c, table.name()),
+                                    }))
+                                .collect::<Result<Vec<i64>, _>>()?;
+                            let indkey = indkey_parts.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(" ");
                             rows.push(vec![
                                 ScalarValue::Int(index_oid),
                                 ScalarValue::Int(table.oid() as i64),
                                 ScalarValue::Int(kc.columns.len() as i64),
-                                ScalarValue::Bool(kc.primary || kc.columns.len() > 0), // indisunique
+                                ScalarValue::Bool(true), // indisunique: all key constraints (PK and UNIQUE) create unique indexes
                                 ScalarValue::Bool(kc.primary), // indisprimary
                                 ScalarValue::Text(indkey),
                             ]);
@@ -2220,12 +2221,17 @@ fn virtual_relation_rows(
                         }
                         // Explicit indexes
                         for idx in table.indexes() {
-                            let indkey = idx
+                            let indkey_parts = idx
                                 .columns
                                 .iter()
-                                .map(|c| col_ordinals.get(c).copied().unwrap_or(0).to_string())
-                                .collect::<Vec<_>>()
-                                .join(" ");
+                                .map(|c| col_ordinals
+                                    .get(c)
+                                    .copied()
+                                    .ok_or_else(|| EngineError {
+                                        message: format!("Column '{}' not found in table '{}'", c, table.name()),
+                                    }))
+                                .collect::<Result<Vec<i64>, _>>()?;
+                            let indkey = indkey_parts.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(" ");
                             rows.push(vec![
                                 ScalarValue::Int(index_oid),
                                 ScalarValue::Int(table.oid() as i64),
