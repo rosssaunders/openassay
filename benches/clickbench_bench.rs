@@ -145,6 +145,10 @@ CREATE TABLE hits (
 );
 ";
 
+const CLICKBENCH_DROP_TABLES: &str = r"
+DROP TABLE IF EXISTS hits;
+";
+
 // ---------------------------------------------------------------------------
 // Seed data (minimal rows to exercise all 43 queries)
 // ---------------------------------------------------------------------------
@@ -259,6 +263,7 @@ const CLICKBENCH_QUERIES: [(&str, &str, &str); 43] = [
 
 fn create_clickbench_session() -> PostgresSession {
     let mut session = PostgresSession::new();
+    exec(&mut session, CLICKBENCH_DROP_TABLES);
     exec(&mut session, CLICKBENCH_SCHEMA);
     exec(&mut session, CLICKBENCH_SEED_DATA);
     session

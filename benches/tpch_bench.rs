@@ -118,6 +118,17 @@ CREATE TABLE lineitem (
 );
 ";
 
+const TPCH_DROP_TABLES: &str = r"
+DROP TABLE IF EXISTS lineitem;
+DROP TABLE IF EXISTS orders;
+DROP TABLE IF EXISTS customer;
+DROP TABLE IF EXISTS partsupp;
+DROP TABLE IF EXISTS supplier;
+DROP TABLE IF EXISTS part;
+DROP TABLE IF EXISTS nation;
+DROP TABLE IF EXISTS region;
+";
+
 // ---------------------------------------------------------------------------
 // Minimal seed data (SF ~0.001 – enough to exercise every query path)
 // ---------------------------------------------------------------------------
@@ -685,6 +696,7 @@ ORDER BY cntrycode
 
 fn create_tpch_session() -> PostgresSession {
     let mut session = PostgresSession::new();
+    exec(&mut session, TPCH_DROP_TABLES);
     exec(&mut session, TPCH_SCHEMA);
     exec(&mut session, TPCH_SEED_DATA);
     session
