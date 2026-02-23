@@ -510,6 +510,30 @@ impl<'a> Lexer<'a> {
                 end: self.pos,
             });
         }
+        if self.starts_with("<->") {
+            self.pos += 3;
+            return Ok(Token {
+                kind: TokenKind::Operator("<->".to_string()),
+                start,
+                end: self.pos,
+            });
+        }
+        if self.starts_with("<#>") {
+            self.pos += 3;
+            return Ok(Token {
+                kind: TokenKind::Operator("<#>".to_string()),
+                start,
+                end: self.pos,
+            });
+        }
+        if self.starts_with("<=>") {
+            self.pos += 3;
+            return Ok(Token {
+                kind: TokenKind::Operator("<=>".to_string()),
+                start,
+                end: self.pos,
+            });
+        }
         if self.starts_with("<@") {
             self.pos += 2;
             return Ok(Token {

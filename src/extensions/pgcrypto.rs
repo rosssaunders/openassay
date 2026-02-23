@@ -162,16 +162,26 @@ fn eval_crypt(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     let password = args[0].render();
     let salt = args[1].render();
     if salt.starts_with("$2") {
+        // Extract cost from bcrypt salt/hash: "$2b$XX$..."
+        let cost = salt
+            .split('$')
+            .nth(2)
+            .and_then(|c| c.parse::<u32>().ok())
+            .unwrap_or(4);
         if salt.len() >= 60 {
-            let hashed = bcrypt::hash(&password, bcrypt::DEFAULT_COST).map_err(|e| EngineError {
-                message: format!("crypt() bcrypt error: {e}"),
-            })?;
+            // Salt is a full bcrypt hash — verify by re-hashing with same params.
+            // bcrypt::verify handles extracting the salt internally.
             if matches!(bcrypt::verify(&password, &salt), Ok(true)) {
                 return Ok(ScalarValue::Text(salt));
             }
+            // Password doesn't match — hash with extracted cost (new salt).
+            let hashed = bcrypt::hash(&password, cost).map_err(|e| EngineError {
+                message: format!("crypt() bcrypt error: {e}"),
+            })?;
             return Ok(ScalarValue::Text(hashed));
         }
-        let hashed = bcrypt::hash(&password, bcrypt::DEFAULT_COST).map_err(|e| EngineError {
+        // Salt is a raw bcrypt salt prefix — hash with extracted cost.
+        let hashed = bcrypt::hash(&password, cost).map_err(|e| EngineError {
             message: format!("crypt() bcrypt error: {e}"),
         })?;
         return Ok(ScalarValue::Text(hashed));
@@ -196,7 +206,7 @@ fn eval_gen_salt(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
             let _ = getrandom::getrandom(&mut salt_bytes);
             let encoded = STANDARD_NO_PAD.encode(salt_bytes);
             // bcrypt salts are 22 characters
-            let salt = format!("$2b$12${}", &encoded[..22.min(encoded.len())]);
+            let salt = format!("$2b$04${}", &encoded[..22.min(encoded.len())]);
             Ok(ScalarValue::Text(salt))
         }
         "md5" => {

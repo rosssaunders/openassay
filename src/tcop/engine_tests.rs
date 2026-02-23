@@ -5421,8 +5421,8 @@ fn test_gen_random_uuid() {
 #[test]
 fn test_uuid_ossp_extension() {
     with_isolated_state(|| {
-        run("CREATE EXTENSION \"uuid-ossp\"");
-        let result = run("SELECT uuid_nil(), uuid_generate_v4()");
+        run_statement("CREATE EXTENSION \"uuid-ossp\"", &[]);
+        let result = run_statement("SELECT uuid_nil(), uuid_generate_v4()", &[]);
         assert_eq!(result.rows.len(), 1);
         assert_eq!(
             result.rows[0][0],
@@ -5430,7 +5430,7 @@ fn test_uuid_ossp_extension() {
         );
         assert_eq!(result.rows[0][1].render().len(), 36);
 
-        let v5 = run("SELECT uuid_generate_v5('dns', 'example.com')");
+        let v5 = run_statement("SELECT uuid_generate_v5('dns', 'example.com')", &[]);
         assert_eq!(
             v5.rows[0][0],
             ScalarValue::Text("cfbff0d1-9375-5685-968c-48ce8b15ae17".to_string())
@@ -5441,8 +5441,8 @@ fn test_uuid_ossp_extension() {
 #[test]
 fn test_pgcrypto_functions() {
     with_isolated_state(|| {
-        run("CREATE EXTENSION pgcrypto");
-        let digest = run("SELECT digest('hello', 'sha256')");
+        run_statement("CREATE EXTENSION pgcrypto", &[]);
+        let digest = run_statement("SELECT digest('hello', 'sha256')", &[]);
         assert_eq!(
             digest.rows[0][0],
             ScalarValue::Text(
@@ -5450,17 +5450,17 @@ fn test_pgcrypto_functions() {
             )
         );
 
-        let hmac = run("SELECT hmac('data', 'key', 'sha1')");
+        let hmac = run_statement("SELECT hmac('data', 'key', 'sha1')", &[]);
         assert_eq!(
             hmac.rows[0][0],
             ScalarValue::Text("104152c5bfdca07bc633eebd46199f0255c9f49d".to_string())
         );
 
-        let bytes = run("SELECT gen_random_bytes(4)");
+        let bytes = run_statement("SELECT gen_random_bytes(4)", &[]);
         assert_eq!(bytes.rows.len(), 1);
         assert_eq!(bytes.rows[0][0].render().len(), 8);
 
-        let crypt = run("SELECT crypt('secret', gen_salt('bf'))");
+        let crypt = run_statement("SELECT crypt('secret', gen_salt('bf'))", &[]);
         let crypt_text = crypt.rows[0][0].render();
         assert!(crypt_text.starts_with("$2"), "expected bcrypt hash");
     });
@@ -5469,21 +5469,24 @@ fn test_pgcrypto_functions() {
 #[test]
 fn test_pgvector_functions_and_operators() {
     with_isolated_state(|| {
-        run("CREATE EXTENSION vector");
-        let distances = run(
+        run_statement("CREATE EXTENSION vector", &[]);
+        let distances = run_statement(
             "SELECT l2_distance('[1,2]', '[4,6]'), l1_distance('[1,2]', '[4,6]'), cosine_distance('[1,0]', '[0,1]')",
+            &[],
         );
         assert_eq!(distances.rows[0][0], ScalarValue::Float(5.0));
         assert_eq!(distances.rows[0][1], ScalarValue::Float(7.0));
         assert_eq!(distances.rows[0][2], ScalarValue::Float(1.0));
 
-        let extras =
-            run("SELECT inner_product('[1,2,3]', '[4,5,6]'), vector_dims('[1,2,3]'), vector_norm('[3,4]')");
+        let extras = run_statement(
+            "SELECT inner_product('[1,2,3]', '[4,5,6]'), vector_dims('[1,2,3]'), vector_norm('[3,4]')",
+            &[],
+        );
         assert_eq!(extras.rows[0][0], ScalarValue::Float(32.0));
         assert_eq!(extras.rows[0][1], ScalarValue::Int(3));
         assert_eq!(extras.rows[0][2], ScalarValue::Float(5.0));
 
-        let op_result = run("SELECT '[1,2]' <-> '[4,6]' AS dist");
+        let op_result = run_statement("SELECT '[1,2]' <-> '[4,6]' AS dist", &[]);
         assert_eq!(op_result.rows[0][0], ScalarValue::Float(5.0));
     });
 }
