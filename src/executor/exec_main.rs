@@ -371,6 +371,24 @@ async fn execute_select(
         } else {
             let source = if select.from.is_empty() {
                 vec![outer_scope.cloned().unwrap_or_default()]
+            } else if select.from.len() == 1 {
+                match &select.from[0] {
+                    TableExpression::Relation(rel) => {
+                        let relation_predicates = select
+                            .where_clause
+                            .as_ref()
+                            .map_or_else(Vec::new, decompose_and_conjuncts);
+                        evaluate_relation_with_predicates(
+                            rel,
+                            params,
+                            outer_scope,
+                            &relation_predicates,
+                        )
+                        .await?
+                        .rows
+                    }
+                    _ => evaluate_from_clause(&select.from, params, outer_scope).await?,
+                }
             } else {
                 evaluate_from_clause(&select.from, params, outer_scope).await?
             };
@@ -744,6 +762,150 @@ fn predicate_columns_available(predicate: &Expr, scope: &EvalScope) -> bool {
         }
     }
     true
+}
+
+async fn relation_index_offsets_for_predicates(
+    table: &crate::catalog::Table,
+    qualifiers: &[String],
+    relation_predicates: &[Expr],
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+) -> Result<Option<Vec<usize>>, EngineError> {
+    let mut index_descriptors = with_storage_read(|storage| {
+        storage.index_descriptors_for_table(table.oid())
+    });
+    if index_descriptors.is_empty() {
+        return Ok(None);
+    }
+    index_descriptors.sort_by(|left, right| {
+        right
+            .column_names
+            .len()
+            .cmp(&left.column_names.len())
+            .then(left.name.cmp(&right.name))
+    });
+    let table_columns = table
+        .columns()
+        .iter()
+        .map(|column| column.name().to_string())
+        .collect::<HashSet<_>>();
+    let mut equality_values: HashMap<String, ScalarValue> = HashMap::new();
+
+    for predicate in relation_predicates {
+        let Some((column_name, value)) = extract_relation_equality_constraint(
+            predicate,
+            qualifiers,
+            &table_columns,
+            params,
+            outer_scope,
+        )
+        .await?
+        else {
+            continue;
+        };
+        if let Some(existing) = equality_values.get(&column_name) {
+            if scalar_cmp(existing, &value) != Ordering::Equal {
+                return Ok(None);
+            }
+            continue;
+        }
+        equality_values.insert(column_name, value);
+    }
+
+    if equality_values.is_empty() {
+        return Ok(None);
+    }
+
+    for descriptor in index_descriptors {
+        if !descriptor
+            .column_names
+            .iter()
+            .all(|column| equality_values.contains_key(column))
+        {
+            continue;
+        }
+        let key = descriptor
+            .column_names
+            .iter()
+            .filter_map(|column| equality_values.get(column).cloned())
+            .collect::<Vec<_>>();
+        if key.len() != descriptor.column_names.len() {
+            continue;
+        }
+        let offsets = with_storage_read(|storage| {
+            storage.index_offsets_for_key(table.oid(), &descriptor.name, &key)
+        });
+        return Ok(Some(offsets));
+    }
+    Ok(None)
+}
+
+async fn extract_relation_equality_constraint(
+    predicate: &Expr,
+    qualifiers: &[String],
+    table_columns: &HashSet<String>,
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+) -> Result<Option<(String, ScalarValue)>, EngineError> {
+    let Expr::Binary {
+        left,
+        op: crate::parser::ast::BinaryOp::Eq,
+        right,
+    } = predicate
+    else {
+        return Ok(None);
+    };
+
+    if let Some(column_name) = relation_column_from_identifier(left, qualifiers, table_columns) {
+        if !expr_is_index_lookup_constant(right) {
+            return Ok(None);
+        }
+        let scope = outer_scope.cloned().unwrap_or_default();
+        let value = eval_expr(right, &scope, params).await?;
+        return Ok(Some((column_name, value)));
+    }
+    if let Some(column_name) = relation_column_from_identifier(right, qualifiers, table_columns) {
+        if !expr_is_index_lookup_constant(left) {
+            return Ok(None);
+        }
+        let scope = outer_scope.cloned().unwrap_or_default();
+        let value = eval_expr(left, &scope, params).await?;
+        return Ok(Some((column_name, value)));
+    }
+    Ok(None)
+}
+
+fn relation_column_from_identifier(
+    expr: &Expr,
+    qualifiers: &[String],
+    table_columns: &HashSet<String>,
+) -> Option<String> {
+    let Expr::Identifier(parts) = expr else {
+        return None;
+    };
+    let normalized_parts = parts
+        .iter()
+        .map(|part| part.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let column_name = normalized_parts.last()?.clone();
+    if !table_columns.contains(&column_name) {
+        return None;
+    }
+    if normalized_parts.len() == 1 {
+        return Some(column_name);
+    }
+    let qualifier = normalized_parts[..normalized_parts.len() - 1].join(".");
+    if qualifiers.iter().any(|candidate| candidate == &qualifier) {
+        Some(column_name)
+    } else {
+        None
+    }
+}
+
+fn expr_is_index_lookup_constant(expr: &Expr) -> bool {
+    let mut referenced = HashSet::new();
+    collect_referenced_columns(expr, &mut referenced);
+    referenced.is_empty()
 }
 
 /// Evaluate the FROM clause with predicate pushdown.
@@ -1505,6 +1667,15 @@ async fn evaluate_relation(
     params: &[Option<String>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<TableEval, EngineError> {
+    evaluate_relation_with_predicates(rel, params, outer_scope, &[]).await
+}
+
+async fn evaluate_relation_with_predicates(
+    rel: &TableRef,
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+    relation_predicates: &[Expr],
+) -> Result<TableEval, EngineError> {
     if rel.name.len() == 1
         && let Some(cte) = current_cte_binding(&rel.name[0])
     {
@@ -1569,6 +1740,24 @@ async fn evaluate_relation(
         message: err.message,
     })?;
 
+    let qualifiers = if let Some(alias) = &rel.alias {
+        vec![alias.to_ascii_lowercase()]
+    } else {
+        vec![table.name().to_string(), table.qualified_name()]
+    };
+    let index_offsets = if relation_predicates.is_empty() {
+        None
+    } else {
+        relation_index_offsets_for_predicates(
+            &table,
+            &qualifiers,
+            relation_predicates,
+            params,
+            outer_scope,
+        )
+        .await?
+    };
+
     let (columns, mut rows) = match table.kind() {
         TableKind::VirtualDual => (Vec::new(), vec![Vec::new()]),
         TableKind::Heap | TableKind::MaterializedView => {
@@ -1578,11 +1767,19 @@ async fn evaluate_relation(
                 .map(|column| column.name().to_string())
                 .collect::<Vec<_>>();
             let rows = with_storage_read(|storage| {
-                storage
+                let all_rows = storage
                     .rows_by_table
                     .get(&table.oid())
                     .cloned()
-                    .unwrap_or_default()
+                    .unwrap_or_default();
+                if let Some(offsets) = &index_offsets {
+                    offsets
+                        .iter()
+                        .filter_map(|offset| all_rows.get(*offset).cloned())
+                        .collect::<Vec<_>>()
+                } else {
+                    all_rows
+                }
             });
             (columns, rows)
         }
@@ -1620,12 +1817,6 @@ async fn evaluate_relation(
         }
         rows = visible_rows;
     }
-
-    let qualifiers = if let Some(alias) = &rel.alias {
-        vec![alias.to_ascii_lowercase()]
-    } else {
-        vec![table.name().to_string(), table.qualified_name()]
-    };
 
     let mut scoped_rows = Vec::with_capacity(rows.len());
     for row in &rows {
