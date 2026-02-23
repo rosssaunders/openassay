@@ -1,7 +1,8 @@
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::EngineError;
 use crate::utils::adt::vector::{
-    coerce_scalar_to_vector, cosine_distance, inner_product, l1_distance, l2_distance, vector_norm,
+    coerce_scalar_to_vector, cosine_distance, inner_product, l1_distance, l2_distance, vector_dims,
+    vector_norm,
 };
 
 fn vector_pair(
@@ -52,7 +53,7 @@ pub(crate) fn eval_pgvector_function(
                 return Ok(ScalarValue::Null);
             }
             let vec = coerce_scalar_to_vector(&args[0], None, "vector_dims()")?;
-            Ok(ScalarValue::Int(vec.len() as i64))
+            Ok(ScalarValue::Int(vector_dims(&vec) as i64))
         }
         "vector_norm" if args.len() == 1 => {
             if matches!(args[0], ScalarValue::Null) {

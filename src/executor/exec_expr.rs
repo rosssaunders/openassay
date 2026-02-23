@@ -2345,11 +2345,15 @@ pub(crate) fn eval_binary(
             // interval * numeric or numeric * interval
             let left_is_interval = matches!(&left, ScalarValue::Text(t) if is_interval_text(t));
             let right_is_interval = matches!(&right, ScalarValue::Text(t) if is_interval_text(t));
-            if left_is_interval && let Some(iv) = parse_interval_operand(&left) {
+            if left_is_interval
+                && let Some(iv) = parse_interval_operand(&left)
+            {
                 let factor = parse_f64_scalar(&right, "interval multiplication expects numeric")?;
                 return Ok(ScalarValue::Text(format_interval_value(interval_mul(iv, factor))));
             }
-            if right_is_interval && let Some(iv) = parse_interval_operand(&right) {
+            if right_is_interval
+                && let Some(iv) = parse_interval_operand(&right)
+            {
                 let factor = parse_f64_scalar(&left, "interval multiplication expects numeric")?;
                 return Ok(ScalarValue::Text(format_interval_value(interval_mul(iv, factor))));
             }
@@ -2456,7 +2460,8 @@ fn eval_add(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
     let right_is_interval = matches!(&right, ScalarValue::Text(t) if is_interval_text(t));
 
     // interval + interval
-    if left_is_interval && right_is_interval
+    if left_is_interval
+        && right_is_interval
         && let (Some(a), Some(b)) = (parse_interval_operand(&left), parse_interval_operand(&right))
     {
         return Ok(ScalarValue::Text(format_interval_value(interval_add(a, b))));
@@ -2464,14 +2469,18 @@ fn eval_add(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
 
     // temporal + interval  or  interval + temporal
     if let Some(lhs) = parse_temporal_operand(&left) {
-        if right_is_interval && let Some(iv) = parse_interval_operand(&right) {
+        if right_is_interval
+            && let Some(iv) = parse_interval_operand(&right)
+        {
             return Ok(temporal_add_interval(lhs, iv));
         }
         let days = parse_i64_scalar(&right, "date/time arithmetic expects integer day value")?;
         return Ok(temporal_add_days(lhs, days));
     }
     if let Some(rhs) = parse_temporal_operand(&right) {
-        if left_is_interval && let Some(iv) = parse_interval_operand(&left) {
+        if left_is_interval
+            && let Some(iv) = parse_interval_operand(&left)
+        {
             return Ok(temporal_add_interval(rhs, iv));
         }
         let days = parse_i64_scalar(&left, "date/time arithmetic expects integer day value")?;
@@ -2503,7 +2512,8 @@ fn eval_sub(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
     let right_is_interval = matches!(&right, ScalarValue::Text(t) if is_interval_text(t));
 
     // interval - interval
-    if left_is_interval && right_is_interval
+    if left_is_interval
+        && right_is_interval
         && let (Some(a), Some(b)) = (parse_interval_operand(&left), parse_interval_operand(&right))
     {
         return Ok(ScalarValue::Text(format_interval_value(interval_add(
@@ -2514,7 +2524,9 @@ fn eval_sub(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
 
     // temporal - interval
     if let Some(lhs) = parse_temporal_operand(&left) {
-        if right_is_interval && let Some(iv) = parse_interval_operand(&right) {
+        if right_is_interval
+            && let Some(iv) = parse_interval_operand(&right)
+        {
             return Ok(temporal_add_interval(lhs, interval_negate(iv)));
         }
         if let Some(rhs) = parse_temporal_operand(&right) {
@@ -2823,8 +2835,8 @@ async fn eval_function(
         // it as a column reference.
         if i == 0
             && matches!(fn_name.as_str(), "extract" | "date_part" | "date_trunc")
-            && matches!(arg, Expr::Identifier(parts) if parts.len() == 1)
             && let Expr::Identifier(parts) = arg
+            && parts.len() == 1
         {
             values.push(ScalarValue::Text(parts[0].clone()));
             continue;

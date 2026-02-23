@@ -166,7 +166,7 @@ fn eval_crypt(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
             let hashed = bcrypt::hash(&password, bcrypt::DEFAULT_COST).map_err(|e| EngineError {
                 message: format!("crypt() bcrypt error: {e}"),
             })?;
-            if let Ok(true) = bcrypt::verify(&password, &salt) {
+            if matches!(bcrypt::verify(&password, &salt), Ok(true)) {
                 return Ok(ScalarValue::Text(salt));
             }
             return Ok(ScalarValue::Text(hashed));

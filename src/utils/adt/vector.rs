@@ -57,12 +57,12 @@ pub(crate) fn coerce_scalar_to_vector(
         }
     };
 
-    if let Some(dim) = expected_dim {
-        if vector.len() != dim {
-            return Err(EngineError {
-                message: format!("{context} expects vector dimension {dim}, got {}", vector.len()),
-            });
-        }
+    if let Some(dim) = expected_dim
+        && vector.len() != dim
+    {
+        return Err(EngineError {
+            message: format!("{context} expects vector dimension {dim}, got {}", vector.len()),
+        });
     }
     Ok(vector)
 }
