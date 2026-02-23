@@ -2069,6 +2069,8 @@ fn type_name_to_decl_string(type_name: &TypeName) -> String {
         TypeName::Serial => "serial".to_string(),
         TypeName::BigSerial => "bigserial".to_string(),
         TypeName::Numeric => "numeric".to_string(),
+        TypeName::Vector(dim) => dim
+            .map_or_else(|| "vector".to_string(), |d| format!("vector({d})")),
         TypeName::Array(inner) => format!("{}[]", type_name_to_decl_string(inner)),
         TypeName::Name => "name".to_string(),
     }

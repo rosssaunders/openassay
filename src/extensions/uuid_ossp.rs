@@ -6,7 +6,6 @@ use uuid::Uuid;
 
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::EngineError;
-use crate::utils::adt::misc::gen_random_uuid;
 
 static V1_CONTEXT: OnceLock<Context> = OnceLock::new();
 static NODE_ID: OnceLock<[u8; 6]> = OnceLock::new();
@@ -31,9 +30,7 @@ fn uuid_generate_v1() -> Result<ScalarValue, EngineError> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     let ts = Timestamp::from_unix(v1_context(), now.as_secs(), now.subsec_nanos());
-    let uuid = Uuid::new_v1(ts, &node_id()).map_err(|err| EngineError {
-        message: format!("uuid_generate_v1() failed: {err}"),
-    })?;
+    let uuid = Uuid::new_v1(ts, &node_id());
     Ok(ScalarValue::Text(uuid.to_string()))
 }
 

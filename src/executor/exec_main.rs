@@ -4724,6 +4724,10 @@ pub(crate) fn row_key(row: &[ScalarValue]) -> String {
                 key.push_str("R:");
                 key.push_str(&value.render());
             }
+            ScalarValue::Vector(_) => {
+                key.push_str("V:");
+                key.push_str(&value.render());
+            }
         }
     }
     key

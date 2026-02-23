@@ -1255,6 +1255,9 @@ fn binary_op_to_sql(op: &crate::parser::ast::BinaryOp) -> &'static str {
         BinaryOp::ArrayContainedBy => "<@",
         BinaryOp::ArrayOverlap => "&&",
         BinaryOp::ArrayConcat => "||",
+        BinaryOp::VectorL2Distance => "<->",
+        BinaryOp::VectorInnerProduct => "<#>",
+        BinaryOp::VectorCosineDistance => "<=>",
     }
 }
 

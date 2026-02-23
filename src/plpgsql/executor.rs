@@ -1755,7 +1755,9 @@ fn scalar_to_plpgsql_value(value: &ScalarValue) -> PlPgSqlValue {
         ScalarValue::Numeric(v) => PlPgSqlValue::Numeric(v.to_string()),
         ScalarValue::Float(v) => PlPgSqlValue::Numeric(v.to_string()),
         ScalarValue::Text(v) => PlPgSqlValue::Text(v.clone()),
-        ScalarValue::Array(_) | ScalarValue::Record(_) => PlPgSqlValue::Text(value.render()),
+        ScalarValue::Array(_) | ScalarValue::Record(_) | ScalarValue::Vector(_) => {
+            PlPgSqlValue::Text(value.render())
+        }
     }
 }
 
