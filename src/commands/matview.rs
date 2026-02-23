@@ -144,7 +144,7 @@ pub async fn execute_refresh_materialized_view(
         }
     }
     with_storage_write(|storage| {
-        storage.rows_by_table.insert(relation.oid(), rows);
+        let _ = storage.replace_rows_for_table(relation.oid(), rows);
     });
     Ok(QueryResult {
         columns: Vec::new(),

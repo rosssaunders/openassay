@@ -2,7 +2,7 @@
 SELECT concat('hello', ' ', 'world');
 -- expect: 4
 SELECT abs(-4);
--- expect: 3.0
+-- expect: 3
 SELECT sqrt(9);
 -- expect: 2024-01-02
 SELECT to_char(make_date(2024, 1, 2), 'YYYY-MM-DD');

@@ -114,7 +114,7 @@ pub(crate) async fn execute_create_view_internal(
     }
     if create.materialized {
         with_storage_write(|storage| {
-            storage.rows_by_table.insert(oid, rows);
+            let _ = storage.replace_rows_for_table(oid, rows);
         });
     }
     crate::security::set_relation_owner(oid, &crate::security::current_role());

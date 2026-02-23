@@ -1,3 +1,4 @@
+pub mod btree;
 pub mod heap;
 pub mod tuple;
 

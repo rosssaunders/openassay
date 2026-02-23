@@ -21,6 +21,7 @@ pub fn drop_relations_by_oid_order(
             })?;
         with_storage_write(|storage| {
             storage.rows_by_table.remove(table_oid);
+            storage.drop_all_indexes_for_table(*table_oid);
         });
         crate::security::clear_relation_security(*table_oid);
     }
@@ -154,7 +155,7 @@ pub async fn execute_truncate(truncate: &TruncateStatement) -> Result<QueryResul
     }
     with_storage_write(|storage| {
         for table_oid in &targets {
-            storage.rows_by_table.insert(*table_oid, Vec::new());
+            let _ = storage.replace_rows_for_table(*table_oid, Vec::new());
         }
     });
 

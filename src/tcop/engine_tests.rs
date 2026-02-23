@@ -2889,6 +2889,101 @@ fn create_unique_index_failure_is_atomic() {
 }
 
 #[test]
+fn create_index_populates_storage_btree_for_existing_rows() {
+    with_isolated_state(|| {
+        run_statement("CREATE TABLE users (id int8, email text)", &[]);
+        run_statement(
+            "INSERT INTO users VALUES (1, 'a@example.com'), (2, 'b@example.com')",
+            &[],
+        );
+        run_statement("CREATE INDEX idx_users_email ON users (email)", &[]);
+
+        let table_oid = crate::catalog::with_catalog_read(|catalog| {
+            catalog
+                .resolve_table(&["users".to_string()], &crate::catalog::SearchPath::default())
+                .map(|table| table.oid())
+        })
+        .expect("table should resolve");
+        let offsets = with_storage_read(|storage| {
+            storage.index_offsets_for_key(
+                table_oid,
+                "idx_users_email",
+                &[ScalarValue::Text("b@example.com".to_string())],
+            )
+        });
+        assert_eq!(offsets, vec![1]);
+
+        let result = run_statement("SELECT id FROM users WHERE email = 'b@example.com'", &[]);
+        assert_eq!(result.rows, vec![vec![ScalarValue::Int(2)]]);
+    });
+}
+
+#[test]
+fn update_and_delete_maintain_index_offsets() {
+    with_isolated_state(|| {
+        run_statement("CREATE TABLE users (id int8, email text)", &[]);
+        run_statement(
+            "INSERT INTO users VALUES (1, 'a@example.com'), (2, 'b@example.com'), (3, 'c@example.com')",
+            &[],
+        );
+        run_statement("CREATE INDEX idx_users_email ON users (email)", &[]);
+        run_statement(
+            "UPDATE users SET email = 'bb@example.com' WHERE id = 2",
+            &[],
+        );
+
+        let table_oid = crate::catalog::with_catalog_read(|catalog| {
+            catalog
+                .resolve_table(&["users".to_string()], &crate::catalog::SearchPath::default())
+                .map(|table| table.oid())
+        })
+        .expect("table should resolve");
+        let old_offsets = with_storage_read(|storage| {
+            storage.index_offsets_for_key(
+                table_oid,
+                "idx_users_email",
+                &[ScalarValue::Text("b@example.com".to_string())],
+            )
+        });
+        assert!(old_offsets.is_empty());
+        let new_offsets = with_storage_read(|storage| {
+            storage.index_offsets_for_key(
+                table_oid,
+                "idx_users_email",
+                &[ScalarValue::Text("bb@example.com".to_string())],
+            )
+        });
+        assert_eq!(new_offsets, vec![1]);
+
+        run_statement("DELETE FROM users WHERE id = 1", &[]);
+        let shifted_offsets = with_storage_read(|storage| {
+            storage.index_offsets_for_key(
+                table_oid,
+                "idx_users_email",
+                &[ScalarValue::Text("bb@example.com".to_string())],
+            )
+        });
+        assert_eq!(shifted_offsets, vec![0]);
+    });
+}
+
+#[test]
+fn unique_index_detects_duplicate_before_insert() {
+    with_isolated_state(|| {
+        run_statement("CREATE TABLE users (id int8, email text)", &[]);
+        run_statement("CREATE UNIQUE INDEX uq_users_email ON users (email)", &[]);
+        run_statement("INSERT INTO users VALUES (1, 'dup@example.com')", &[]);
+
+        let duplicate = parse_statement("INSERT INTO users VALUES (2, 'dup@example.com')")
+            .expect("statement should parse");
+        let plan = plan_statement(duplicate).expect("statement should plan");
+        let err = block_on(execute_planned_query(&plan, &[]))
+            .expect_err("duplicate insert should fail");
+        assert!(err.message.contains("unique constraint"));
+    });
+}
+
+#[test]
 fn insert_on_conflict_do_nothing_skips_conflicting_rows() {
     let results = run_batch(&[
         "CREATE TABLE users (id int8 PRIMARY KEY, email text)",

@@ -2,7 +2,7 @@ use crate::catalog::dependency::index_backing_constraint_name as index_backing_c
 use crate::catalog::{IndexSpec, SearchPath, TableKind, with_catalog_read, with_catalog_write};
 use crate::parser::ast::{CreateIndexStatement, DropBehavior, DropIndexStatement};
 use crate::tcop::engine::{
-    EngineError, QueryResult, validate_table_constraints, with_storage_read,
+    EngineError, QueryResult, validate_table_constraints, with_storage_read, with_storage_write,
 };
 
 #[derive(Debug, Clone)]
@@ -40,6 +40,7 @@ pub async fn execute_create_index(
         .iter()
         .map(|column| column.to_ascii_lowercase())
         .collect::<Vec<_>>();
+    let index_column_indexes = resolve_index_column_indexes(&table, &index_columns)?;
 
     if create.unique {
         let key_spec = crate::catalog::KeyConstraintSpec {
@@ -98,8 +99,8 @@ pub async fn execute_create_index(
         }
     } else {
         let index = IndexSpec {
-            name: index_name,
-            columns: index_columns,
+            name: index_name.clone(),
+            columns: index_columns.clone(),
             unique: false,
         };
         let result = with_catalog_write(|catalog| {
@@ -121,6 +122,32 @@ pub async fn execute_create_index(
                 });
             }
         }
+    }
+
+    let register_result = with_storage_write(|storage| {
+        storage.register_index(
+            table.oid(),
+            index_name.clone(),
+            index_columns.clone(),
+            index_column_indexes.clone(),
+            create.unique,
+        )?;
+        storage.rebuild_index(table.oid(), &index_name)?;
+        Ok::<(), String>(())
+    });
+    if let Err(err) = register_result {
+        with_storage_write(|storage| {
+            storage.drop_index(table.oid(), &index_name);
+        });
+        let _ = with_catalog_write(|catalog| {
+            catalog.drop_index(
+                table.schema_name(),
+                table.name(),
+                &index_name,
+                true,
+            )
+        });
+        return Err(EngineError { message: err });
     }
 
     Ok(QueryResult {
@@ -191,6 +218,9 @@ pub async fn execute_drop_index(
     .map_err(|err| EngineError {
         message: err.message,
     })?;
+    with_storage_write(|storage| {
+        storage.drop_index(relation.oid(), &target.index_name);
+    });
 
     Ok(QueryResult {
         columns: Vec::new(),
@@ -198,6 +228,30 @@ pub async fn execute_drop_index(
         command_tag: "DROP INDEX".to_string(),
         rows_affected: 0,
     })
+}
+
+fn resolve_index_column_indexes(
+    table: &crate::catalog::Table,
+    index_columns: &[String],
+) -> Result<Vec<usize>, EngineError> {
+    let mut out = Vec::with_capacity(index_columns.len());
+    for column_name in index_columns {
+        let Some((idx, _)) = table
+            .columns()
+            .iter()
+            .enumerate()
+            .find(|(_, column)| column.name() == column_name)
+        else {
+            return Err(EngineError {
+                message: format!(
+                    "column \"{column_name}\" does not exist in relation \"{}\"",
+                    table.qualified_name()
+                ),
+            });
+        };
+        out.push(idx);
+    }
+    Ok(out)
 }
 
 fn resolve_index_target(index_name: &[String]) -> Result<Option<IndexTarget>, EngineError> {
