@@ -41,7 +41,7 @@ fn differential_fixture_suite() {
         },
         Fixture {
             sql: "SELECT length('openassay')",
-            expected_rows: vec![vec!["8"]],
+            expected_rows: vec![vec!["9"]],
         },
         Fixture {
             sql: "SELECT abs(-12)",
