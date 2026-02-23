@@ -35,6 +35,7 @@ use crate::tcop::pquery::{
 use crate::utils::adt::datetime::{
     datetime_from_epoch_seconds, format_date, format_timestamp, parse_datetime_text,
 };
+use crate::utils::adt::vector::coerce_scalar_to_vector;
 pub(crate) use crate::utils::adt::misc::truthy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3443,6 +3444,7 @@ fn scalar_key(value: &ScalarValue) -> String {
         ScalarValue::Text(v) => format!("T:{v}"),
         ScalarValue::Array(_) => format!("A:{}", value.render()),
         ScalarValue::Record(_) => format!("R:{}", value.render()),
+        ScalarValue::Vector(_) => format!("V:{}", value.render()),
     }
 }
 
@@ -3563,6 +3565,11 @@ fn coerce_value_for_column(
         (TypeSignature::Timestamp, ScalarValue::Float(v)) => {
             let dt = datetime_from_epoch_seconds(v as i64);
             Ok(ScalarValue::Text(format_timestamp(dt)))
+        }
+        (TypeSignature::Vector(expected_dim), v) => {
+            let parsed =
+                coerce_scalar_to_vector(&v, expected_dim, &format!("column \"{}\"", column.name()))?;
+            Ok(ScalarValue::Vector(parsed))
         }
         _ => Err(EngineError {
             message: format!("type mismatch for column \"{}\"", column.name()),

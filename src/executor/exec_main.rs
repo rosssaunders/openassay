@@ -2,7 +2,11 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::{_mm256_setzero_si256, _mm256_loadu_si256, _mm256_add_epi64, _mm256_storeu_si256, _mm256_setzero_pd, _mm256_loadu_pd, _mm256_add_pd, _mm256_storeu_pd, _mm256_set1_epi64x, _mm256_cmpgt_epi64, _mm256_blendv_epi8, _mm256_set1_pd, _mm256_min_pd, _mm256_max_pd};
+use std::arch::x86_64::{
+    _mm256_add_epi64, _mm256_add_pd, _mm256_blendv_epi8, _mm256_cmpgt_epi64, _mm256_loadu_pd,
+    _mm256_loadu_si256, _mm256_max_pd, _mm256_min_pd, _mm256_set1_epi64x, _mm256_set1_pd,
+    _mm256_setzero_pd, _mm256_setzero_si256, _mm256_storeu_pd, _mm256_storeu_si256,
+};
 
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
 use crate::executor::exec_expr::{
@@ -364,8 +368,9 @@ async fn execute_select(
     // decompose the WHERE into conjuncts and push applicable predicates into the
     // FROM clause evaluation, applying them incrementally as tables are joined.
     // This avoids computing the full cartesian product before filtering.
-    let (mut source_rows, remaining_predicate) =
-        if let Some(where_clause) = select.where_clause.as_ref().filter(|_| select.from.len() >= 2) {
+    let (mut source_rows, remaining_predicate) = if select.from.len() >= 2
+        && let Some(where_clause) = select.where_clause.as_ref()
+    {
             let conjuncts = decompose_and_conjuncts(where_clause);
             evaluate_from_clause_with_pushdown(&select.from, params, outer_scope, &conjuncts).await?
         } else {
@@ -2499,6 +2504,7 @@ fn information_schema_data_type(signature: TypeSignature) -> &'static str {
         TypeSignature::Text => "text",
         TypeSignature::Date => "date",
         TypeSignature::Timestamp => "timestamp without time zone",
+        TypeSignature::Vector(_) => "vector",
     }
 }
 
@@ -3416,7 +3422,7 @@ fn sort_aggregate_rows(rows: &mut [AggregateInputRow], order_by: &[OrderByExpr])
 fn sum_i64_fast(values: &[i64]) -> i64 {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
+        if std::arch::is_x86_feature_detected!("avx2") {
             // SAFETY: We check CPU support with is_x86_feature_detected!("avx2") before calling.
             return unsafe { sum_i64_avx2(values) };
         }
@@ -3427,7 +3433,7 @@ fn sum_i64_fast(values: &[i64]) -> i64 {
 fn sum_f64_fast(values: &[f64]) -> f64 {
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx") {
+        if std::arch::is_x86_feature_detected!("avx") {
             // SAFETY: We check CPU support with is_x86_feature_detected!("avx") before calling.
             return unsafe { sum_f64_avx(values) };
         }
@@ -3477,7 +3483,7 @@ fn min_i64_fast(values: &[i64]) -> Option<i64> {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
+        if std::arch::is_x86_feature_detected!("avx2") {
             // SAFETY: We check CPU support with is_x86_feature_detected!("avx2") before calling.
             return Some(unsafe { min_i64_avx2(values) });
         }
@@ -3491,7 +3497,7 @@ fn max_i64_fast(values: &[i64]) -> Option<i64> {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
+        if std::arch::is_x86_feature_detected!("avx2") {
             // SAFETY: We check CPU support with is_x86_feature_detected!("avx2") before calling.
             return Some(unsafe { max_i64_avx2(values) });
         }
@@ -3505,7 +3511,7 @@ fn min_f64_fast(values: &[f64]) -> Option<f64> {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx") {
+        if std::arch::is_x86_feature_detected!("avx") {
             // SAFETY: We check CPU support with is_x86_feature_detected!("avx") before calling.
             return Some(unsafe { min_f64_avx(values) });
         }
@@ -3519,7 +3525,7 @@ fn max_f64_fast(values: &[f64]) -> Option<f64> {
     }
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx") {
+        if std::arch::is_x86_feature_detected!("avx") {
             // SAFETY: We check CPU support with is_x86_feature_detected!("avx") before calling.
             return Some(unsafe { max_f64_avx(values) });
         }
@@ -4716,6 +4722,10 @@ pub(crate) fn row_key(row: &[ScalarValue]) -> String {
             }
             ScalarValue::Record(_) => {
                 key.push_str("R:");
+                key.push_str(&value.render());
+            }
+            ScalarValue::Vector(_) => {
+                key.push_str("V:");
                 key.push_str(&value.render());
             }
         }

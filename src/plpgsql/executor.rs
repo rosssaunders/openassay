@@ -1725,7 +1725,7 @@ fn scalar_to_sql_literal(value: &ScalarValue) -> String {
         ScalarValue::Float(v) => v.to_string(),
         ScalarValue::Numeric(v) => v.to_string(),
         ScalarValue::Text(v) => format!("'{}'", v.replace('\'', "''")),
-        ScalarValue::Array(_) | ScalarValue::Record(_) => {
+        ScalarValue::Array(_) | ScalarValue::Record(_) | ScalarValue::Vector(_) => {
             format!("'{}'", value.render().replace('\'', "''"))
         }
     }
@@ -1755,7 +1755,9 @@ fn scalar_to_plpgsql_value(value: &ScalarValue) -> PlPgSqlValue {
         ScalarValue::Numeric(v) => PlPgSqlValue::Numeric(v.to_string()),
         ScalarValue::Float(v) => PlPgSqlValue::Numeric(v.to_string()),
         ScalarValue::Text(v) => PlPgSqlValue::Text(v.clone()),
-        ScalarValue::Array(_) | ScalarValue::Record(_) => PlPgSqlValue::Text(value.render()),
+        ScalarValue::Array(_) | ScalarValue::Record(_) | ScalarValue::Vector(_) => {
+            PlPgSqlValue::Text(value.render())
+        }
     }
 }
 

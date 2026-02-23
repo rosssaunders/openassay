@@ -42,6 +42,18 @@ pub(crate) fn scalar_to_json_value(value: &ScalarValue) -> Result<JsonValue, Eng
             }
             Ok(JsonValue::Array(items))
         }
+        ScalarValue::Vector(values) => {
+            let mut items = Vec::with_capacity(values.len());
+            for value in values {
+                let Some(num) = JsonNumber::from_f64(*value as f64) else {
+                    return Err(EngineError {
+                        message: "cannot convert non-finite numeric to JSON value".to_string(),
+                    });
+                };
+                items.push(JsonValue::Number(num));
+            }
+            Ok(JsonValue::Array(items))
+        }
     }
 }
 
@@ -299,7 +311,7 @@ fn parse_json_path_segments(
             ScalarValue::Float(v) => out.push(v.to_string()),
             ScalarValue::Numeric(v) => out.push(v.to_string()),
             ScalarValue::Bool(v) => out.push(v.to_string()),
-            ScalarValue::Record(_) | ScalarValue::Array(_) => {
+            ScalarValue::Record(_) | ScalarValue::Array(_) | ScalarValue::Vector(_) => {
                 return Err(EngineError {
                     message: format!("{fn_name}() path arguments must be scalar values"),
                 });
@@ -836,7 +848,7 @@ fn scalar_to_json_path_segment(
         ScalarValue::Float(v) => Ok(v.to_string()),
         ScalarValue::Numeric(v) => Ok(v.to_string()),
         ScalarValue::Bool(v) => Ok(v.to_string()),
-        ScalarValue::Array(_) | ScalarValue::Record(_) => Err(EngineError {
+        ScalarValue::Array(_) | ScalarValue::Record(_) | ScalarValue::Vector(_) => Err(EngineError {
             message: format!("{operator_name} operator path operand must be scalar"),
         }),
     }
@@ -906,7 +918,7 @@ fn parse_json_path_operand(
             }
             Ok(out)
         }
-        ScalarValue::Record(_) => Err(EngineError {
+        ScalarValue::Record(_) | ScalarValue::Vector(_) => Err(EngineError {
             message: format!("{operator_name} operator path operand must be text[] or scalar"),
         }),
     }
