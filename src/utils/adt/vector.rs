@@ -61,7 +61,10 @@ pub(crate) fn coerce_scalar_to_vector(
         && vector.len() != dim
     {
         return Err(EngineError {
-            message: format!("{context} expects vector dimension {dim}, got {}", vector.len()),
+            message: format!(
+                "{context} expects vector dimension {dim}, got {}",
+                vector.len()
+            ),
         });
     }
     Ok(vector)

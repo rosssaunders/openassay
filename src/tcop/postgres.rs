@@ -1449,10 +1449,7 @@ impl PostgresSession {
                         "TEMP" | "TEMPORARY" => DiscardTarget::Temp,
                         _ => {
                             return Err(SessionError {
-                                message: format!(
-                                    "unrecognized DISCARD target: {}",
-                                    discard.target
-                                ),
+                                message: format!("unrecognized DISCARD target: {}", discard.target),
                             });
                         }
                     };
@@ -4606,7 +4603,10 @@ mod tests {
             ])
         });
 
-        assert!(!out.iter().any(|message| matches!(message, BackendMessage::DataRow { .. })));
+        assert!(
+            !out.iter()
+                .any(|message| matches!(message, BackendMessage::DataRow { .. }))
+        );
     }
 
     #[test]

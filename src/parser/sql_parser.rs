@@ -9,20 +9,20 @@ use crate::parser::ast::{
     CreateSchemaStatement, CreateSequenceStatement, CreateSubscriptionStatement,
     CreateTableStatement, CreateTriggerStatement, CreateTypeStatement, CreateViewStatement,
     CycleClause, DeleteStatement, DiscardStatement, DoStatement, DropBehavior, DropDomainStatement,
-    DropExtensionStatement, DropFunctionStatement, DropIndexStatement, DropRoleStatement, DropSchemaStatement,
-    DropSequenceStatement, DropSubscriptionStatement, DropTableStatement, DropTypeStatement,
-    DropViewStatement, ExplainStatement, Expr, ForeignKeyAction, ForeignKeyReference,
-    FunctionParam, FunctionParamMode, FunctionReturnType, GrantRoleStatement, GrantStatement,
-    GrantTablePrivilegesStatement, GroupByExpr, InsertSource, InsertStatement, JoinCondition,
-    JoinExpr, JoinType, ListenStatement, MergeStatement, MergeWhenClause, NotifyStatement,
-    OnConflictClause, OrderByExpr, Query, QueryExpr, RefreshMaterializedViewStatement,
-    RevokeRoleStatement, RevokeStatement, RevokeTablePrivilegesStatement, RoleOption, SearchClause,
-    SelectItem, SelectQuantifier, SelectStatement, SetOperator, SetQuantifier, SetStatement,
-    ShowStatement, Statement, SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression,
-    TableFunctionRef, TablePrivilegeKind, TableRef, TransactionStatement, TriggerEvent,
-    TriggerTiming, TruncateStatement, TypeName, UnaryOp, UnlistenStatement, UpdateStatement,
-    WindowDefinition, WindowFrame, WindowFrameBound, WindowFrameExclusion, WindowFrameUnits,
-    WindowSpec, WithClause,
+    DropExtensionStatement, DropFunctionStatement, DropIndexStatement, DropRoleStatement,
+    DropSchemaStatement, DropSequenceStatement, DropSubscriptionStatement, DropTableStatement,
+    DropTypeStatement, DropViewStatement, ExplainStatement, Expr, ForeignKeyAction,
+    ForeignKeyReference, FunctionParam, FunctionParamMode, FunctionReturnType, GrantRoleStatement,
+    GrantStatement, GrantTablePrivilegesStatement, GroupByExpr, InsertSource, InsertStatement,
+    JoinCondition, JoinExpr, JoinType, ListenStatement, MergeStatement, MergeWhenClause,
+    NotifyStatement, OnConflictClause, OrderByExpr, Query, QueryExpr,
+    RefreshMaterializedViewStatement, RevokeRoleStatement, RevokeStatement,
+    RevokeTablePrivilegesStatement, RoleOption, SearchClause, SelectItem, SelectQuantifier,
+    SelectStatement, SetOperator, SetQuantifier, SetStatement, ShowStatement, Statement,
+    SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression, TableFunctionRef,
+    TablePrivilegeKind, TableRef, TransactionStatement, TriggerEvent, TriggerTiming,
+    TruncateStatement, TypeName, UnaryOp, UnlistenStatement, UpdateStatement, WindowDefinition,
+    WindowFrame, WindowFrameBound, WindowFrameExclusion, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::parser::lexer::{Keyword, LexError, Token, TokenKind, lex_sql};
 
@@ -2415,9 +2415,9 @@ impl Parser {
                         Some(value as usize)
                     }
                     _ => {
-                        return Err(self.error_at_current(
-                            "expected integer dimension in vector(...)",
-                        ));
+                        return Err(
+                            self.error_at_current("expected integer dimension in vector(...)")
+                        );
                     }
                 };
                 self.expect_token(
@@ -4915,15 +4915,9 @@ impl Parser {
             TokenKind::Operator(op) if op == "?&" => Some((BinaryOp::JsonHasAll, 5, 6)),
             TokenKind::Operator(op) if op == "#-" => Some((BinaryOp::JsonDeletePath, 11, 12)),
             TokenKind::Operator(op) if op == "&&" => Some((BinaryOp::ArrayOverlap, 5, 6)),
-            TokenKind::Operator(op) if op == "<->" => {
-                Some((BinaryOp::VectorL2Distance, 7, 8))
-            }
-            TokenKind::Operator(op) if op == "<#>" => {
-                Some((BinaryOp::VectorInnerProduct, 7, 8))
-            }
-            TokenKind::Operator(op) if op == "<=>" => {
-                Some((BinaryOp::VectorCosineDistance, 7, 8))
-            }
+            TokenKind::Operator(op) if op == "<->" => Some((BinaryOp::VectorL2Distance, 7, 8)),
+            TokenKind::Operator(op) if op == "<#>" => Some((BinaryOp::VectorInnerProduct, 7, 8)),
+            TokenKind::Operator(op) if op == "<=>" => Some((BinaryOp::VectorCosineDistance, 7, 8)),
             _ => None,
         }
     }

@@ -14,10 +14,10 @@ use crate::executor::exec_main::{
     scope_for_table_row_with_qualifiers,
 };
 use crate::parser::ast::{
-    ConflictTarget, CreateFunctionStatement, DeleteStatement, Expr,
-    ForeignKeyAction, FunctionParam, FunctionParamMode, FunctionReturnType, InsertSource,
-    InsertStatement, MergeStatement, MergeWhenClause, OnConflictClause, Statement, TableConstraint,
-    TriggerEvent, TriggerTiming, UpdateStatement,
+    ConflictTarget, CreateFunctionStatement, DeleteStatement, Expr, ForeignKeyAction,
+    FunctionParam, FunctionParamMode, FunctionReturnType, InsertSource, InsertStatement,
+    MergeStatement, MergeWhenClause, OnConflictClause, Statement, TableConstraint, TriggerEvent,
+    TriggerTiming, UpdateStatement,
 };
 use crate::planner::{self, PlanNode};
 use crate::security::{self, RlsCommand, TablePrivilege};
@@ -35,8 +35,8 @@ use crate::tcop::pquery::{
 use crate::utils::adt::datetime::{
     datetime_from_epoch_seconds, format_date, format_timestamp, parse_datetime_text,
 };
-use crate::utils::adt::vector::coerce_scalar_to_vector;
 pub(crate) use crate::utils::adt::misc::truthy;
+use crate::utils::adt::vector::coerce_scalar_to_vector;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineError {
@@ -233,9 +233,7 @@ pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError>
         Statement::CreateFunction(_) => {
             (Vec::new(), Vec::new(), false, "CREATE FUNCTION".to_string())
         }
-        Statement::DropFunction(_) => {
-            (Vec::new(), Vec::new(), false, "DROP FUNCTION".to_string())
-        }
+        Statement::DropFunction(_) => (Vec::new(), Vec::new(), false, "DROP FUNCTION".to_string()),
         Statement::CreateTrigger(_) => {
             (Vec::new(), Vec::new(), false, "CREATE TRIGGER".to_string())
         }
@@ -305,7 +303,6 @@ pub fn execute_planned_query<'a>(
         Ok(result)
     })
 }
-
 
 fn triggers_for_table_event(
     table: &crate::catalog::Table,
@@ -1303,12 +1300,7 @@ async fn execute_insert(
     match &insert.on_conflict {
         None => {
             for row in &materialized {
-                ensure_unique_index_preinsert(
-                    &table,
-                    row,
-                    &mut pending_unique_keys,
-                    None,
-                )?;
+                ensure_unique_index_preinsert(&table, row, &mut pending_unique_keys, None)?;
                 index_mutations.push(IndexMutationAction::Insert { row: row.clone() });
             }
             candidate_rows.extend(materialized.iter().cloned());
@@ -1324,7 +1316,12 @@ async fn execute_insert(
             };
             for row in &materialized {
                 if let Some(target_indexes) = conflict_target_indexes.as_ref()
-                    && row_conflicts_on_columns_with_index(&table, &candidate_rows, row, target_indexes)
+                    && row_conflicts_on_columns_with_index(
+                        &table,
+                        &candidate_rows,
+                        row,
+                        target_indexes,
+                    )
                 {
                     continue;
                 }
@@ -1333,12 +1330,7 @@ async fn execute_insert(
                 match validate_table_constraints(&table, &trial).await {
                     Ok(()) => {
                         candidate_rows = trial;
-                        ensure_unique_index_preinsert(
-                            &table,
-                            row,
-                            &mut pending_unique_keys,
-                            None,
-                        )?;
+                        ensure_unique_index_preinsert(&table, row, &mut pending_unique_keys, None)?;
                         accepted_rows.push(row.clone());
                         index_mutations.push(IndexMutationAction::Insert { row: row.clone() });
                     }
@@ -1375,24 +1367,17 @@ async fn execute_insert(
                 .unwrap_or_else(|| vec![table.name().to_string(), table.qualified_name()]);
 
             for row in &materialized {
-                let Some(conflicting_row_idx) =
-                    find_conflict_row_index_with_index(
-                        &table,
-                        &candidate_rows,
-                        row,
-                        &conflict_target_indexes,
-                    )
-                else {
+                let Some(conflicting_row_idx) = find_conflict_row_index_with_index(
+                    &table,
+                    &candidate_rows,
+                    row,
+                    &conflict_target_indexes,
+                ) else {
                     let mut trial = candidate_rows.clone();
                     trial.push(row.clone());
                     validate_table_constraints(&table, &trial).await?;
                     candidate_rows = trial;
-                    ensure_unique_index_preinsert(
-                        &table,
-                        row,
-                        &mut pending_unique_keys,
-                        None,
-                    )?;
+                    ensure_unique_index_preinsert(&table, row, &mut pending_unique_keys, None)?;
                     accepted_rows.push(row.clone());
                     index_mutations.push(IndexMutationAction::Insert { row: row.clone() });
                     continue;
@@ -1679,7 +1664,8 @@ async fn execute_update(
     }
 
     validate_table_constraints(&table, &next_rows).await?;
-    let mut staged_updates = apply_on_update_actions(&table, &current_rows, next_rows.clone()).await?;
+    let mut staged_updates =
+        apply_on_update_actions(&table, &current_rows, next_rows.clone()).await?;
     let parent_rows_after = staged_updates
         .remove(&table.oid())
         .unwrap_or_else(|| next_rows.clone());
@@ -1823,10 +1809,9 @@ async fn execute_delete(
         }
     }
 
-    let mut staged_updates = apply_on_delete_actions(&table, retained, removed_rows.clone()).await?;
-    let parent_rows_after = staged_updates
-        .remove(&table.oid())
-        .unwrap_or_else(Vec::new);
+    let mut staged_updates =
+        apply_on_delete_actions(&table, retained, removed_rows.clone()).await?;
+    let parent_rows_after = staged_updates.remove(&table.oid()).unwrap_or_else(Vec::new);
     let write_result = with_storage_write(|storage| {
         storage.delete_rows_by_offsets(table.oid(), &removed_row_offsets)?;
         for (table_oid, rows) in &staged_updates {
@@ -2837,7 +2822,10 @@ fn ensure_unique_index_preinsert(
         let Some(values) = values_at_indexes(row, &descriptor.column_indexes) else {
             continue;
         };
-        if values.iter().any(|value| matches!(value, ScalarValue::Null)) {
+        if values
+            .iter()
+            .any(|value| matches!(value, ScalarValue::Null))
+        {
             continue;
         }
         let key = values.iter().map(scalar_key).collect::<Vec<_>>().join("|");
@@ -3567,8 +3555,11 @@ fn coerce_value_for_column(
             Ok(ScalarValue::Text(format_timestamp(dt)))
         }
         (TypeSignature::Vector(expected_dim), v) => {
-            let parsed =
-                coerce_scalar_to_vector(&v, expected_dim, &format!("column \"{}\"", column.name()))?;
+            let parsed = coerce_scalar_to_vector(
+                &v,
+                expected_dim,
+                &format!("column \"{}\"", column.name()),
+            )?;
             Ok(ScalarValue::Vector(parsed))
         }
         _ => Err(EngineError {

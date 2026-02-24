@@ -172,89 +172,249 @@ const CLICKBENCH_QUERIES: [(&str, &str, &str); 43] = [
     // Q0
     ("q00", "Ready", "SELECT COUNT(*) FROM hits"),
     // Q1
-    ("q01", "Ready", "SELECT COUNT(*) FROM hits WHERE AdvEngineID <> 0"),
+    (
+        "q01",
+        "Ready",
+        "SELECT COUNT(*) FROM hits WHERE AdvEngineID <> 0",
+    ),
     // Q2
-    ("q02", "Ready", "SELECT SUM(AdvEngineID), COUNT(*), AVG(ResolutionWidth) FROM hits"),
+    (
+        "q02",
+        "Ready",
+        "SELECT SUM(AdvEngineID), COUNT(*), AVG(ResolutionWidth) FROM hits",
+    ),
     // Q3
     ("q03", "Ready", "SELECT AVG(UserID) FROM hits"),
     // Q4
     ("q04", "Ready", "SELECT COUNT(DISTINCT UserID) FROM hits"),
     // Q5
-    ("q05", "Ready", "SELECT COUNT(DISTINCT SearchPhrase) FROM hits"),
+    (
+        "q05",
+        "Ready",
+        "SELECT COUNT(DISTINCT SearchPhrase) FROM hits",
+    ),
     // Q6
-    ("q06", "Ready", "SELECT MIN(EventDate), MAX(EventDate) FROM hits"),
+    (
+        "q06",
+        "Ready",
+        "SELECT MIN(EventDate), MAX(EventDate) FROM hits",
+    ),
     // Q7
-    ("q07", "Ready", "SELECT AdvEngineID, COUNT(*) FROM hits WHERE AdvEngineID <> 0 GROUP BY AdvEngineID ORDER BY COUNT(*) DESC"),
+    (
+        "q07",
+        "Ready",
+        "SELECT AdvEngineID, COUNT(*) FROM hits WHERE AdvEngineID <> 0 GROUP BY AdvEngineID ORDER BY COUNT(*) DESC",
+    ),
     // Q8
-    ("q08", "Ready", "SELECT RegionID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY RegionID ORDER BY u DESC LIMIT 10"),
+    (
+        "q08",
+        "Ready",
+        "SELECT RegionID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY RegionID ORDER BY u DESC LIMIT 10",
+    ),
     // Q9
-    ("q09", "Ready", "SELECT RegionID, SUM(AdvEngineID), COUNT(*) AS c, AVG(ResolutionWidth), COUNT(DISTINCT UserID) FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 10"),
+    (
+        "q09",
+        "Ready",
+        "SELECT RegionID, SUM(AdvEngineID), COUNT(*) AS c, AVG(ResolutionWidth), COUNT(DISTINCT UserID) FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 10",
+    ),
     // Q10
-    ("q10", "Ready", "SELECT MobilePhoneModel, COUNT(DISTINCT UserID) AS u FROM hits WHERE MobilePhoneModel <> 0 GROUP BY MobilePhoneModel ORDER BY u DESC LIMIT 10"),
+    (
+        "q10",
+        "Ready",
+        "SELECT MobilePhoneModel, COUNT(DISTINCT UserID) AS u FROM hits WHERE MobilePhoneModel <> 0 GROUP BY MobilePhoneModel ORDER BY u DESC LIMIT 10",
+    ),
     // Q11
-    ("q11", "Ready", "SELECT MobilePhone, MobilePhoneModel, COUNT(DISTINCT UserID) AS u FROM hits WHERE MobilePhoneModel <> 0 GROUP BY MobilePhone, MobilePhoneModel ORDER BY u DESC LIMIT 10"),
+    (
+        "q11",
+        "Ready",
+        "SELECT MobilePhone, MobilePhoneModel, COUNT(DISTINCT UserID) AS u FROM hits WHERE MobilePhoneModel <> 0 GROUP BY MobilePhone, MobilePhoneModel ORDER BY u DESC LIMIT 10",
+    ),
     // Q12
-    ("q12", "Ready", "SELECT SearchPhrase, COUNT(*) AS c FROM hits WHERE SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10"),
+    (
+        "q12",
+        "Ready",
+        "SELECT SearchPhrase, COUNT(*) AS c FROM hits WHERE SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10",
+    ),
     // Q13
-    ("q13", "Ready", "SELECT SearchPhrase, COUNT(DISTINCT UserID) AS u FROM hits WHERE SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY u DESC LIMIT 10"),
+    (
+        "q13",
+        "Ready",
+        "SELECT SearchPhrase, COUNT(DISTINCT UserID) AS u FROM hits WHERE SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY u DESC LIMIT 10",
+    ),
     // Q14
-    ("q14", "Ready", "SELECT SearchEngineID, SearchPhrase, COUNT(*) AS c FROM hits WHERE SearchPhrase <> '' GROUP BY SearchEngineID, SearchPhrase ORDER BY c DESC LIMIT 10"),
+    (
+        "q14",
+        "Ready",
+        "SELECT SearchEngineID, SearchPhrase, COUNT(*) AS c FROM hits WHERE SearchPhrase <> '' GROUP BY SearchEngineID, SearchPhrase ORDER BY c DESC LIMIT 10",
+    ),
     // Q15
-    ("q15", "Ready", "SELECT UserID, COUNT(*) FROM hits GROUP BY UserID ORDER BY COUNT(*) DESC LIMIT 10"),
+    (
+        "q15",
+        "Ready",
+        "SELECT UserID, COUNT(*) FROM hits GROUP BY UserID ORDER BY COUNT(*) DESC LIMIT 10",
+    ),
     // Q16
-    ("q16", "Ready", "SELECT UserID, SearchPhrase, COUNT(*) FROM hits GROUP BY UserID, SearchPhrase ORDER BY COUNT(*) DESC LIMIT 10"),
+    (
+        "q16",
+        "Ready",
+        "SELECT UserID, SearchPhrase, COUNT(*) FROM hits GROUP BY UserID, SearchPhrase ORDER BY COUNT(*) DESC LIMIT 10",
+    ),
     // Q17
-    ("q17", "Ready", "SELECT UserID, SearchPhrase, COUNT(*) FROM hits GROUP BY UserID, SearchPhrase LIMIT 10"),
+    (
+        "q17",
+        "Ready",
+        "SELECT UserID, SearchPhrase, COUNT(*) FROM hits GROUP BY UserID, SearchPhrase LIMIT 10",
+    ),
     // Q18
-    ("q18", "Ready", "SELECT UserID, EventTime, SearchPhrase, COUNT(*) FROM hits GROUP BY UserID, EventTime, SearchPhrase ORDER BY COUNT(*) DESC LIMIT 10"),
+    (
+        "q18",
+        "Ready",
+        "SELECT UserID, EventTime, SearchPhrase, COUNT(*) FROM hits GROUP BY UserID, EventTime, SearchPhrase ORDER BY COUNT(*) DESC LIMIT 10",
+    ),
     // Q19
-    ("q19", "Ready", "SELECT UserID FROM hits WHERE UserID = 1001"),
+    (
+        "q19",
+        "Ready",
+        "SELECT UserID FROM hits WHERE UserID = 1001",
+    ),
     // Q20
-    ("q20", "Ready", "SELECT COUNT(*) FROM hits WHERE URL LIKE '%example%'"),
+    (
+        "q20",
+        "Ready",
+        "SELECT COUNT(*) FROM hits WHERE URL LIKE '%example%'",
+    ),
     // Q21
-    ("q21", "Ready", "SELECT SearchPhrase, MIN(URL), COUNT(*) AS c FROM hits WHERE URL LIKE '%example%' AND SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10"),
+    (
+        "q21",
+        "Ready",
+        "SELECT SearchPhrase, MIN(URL), COUNT(*) AS c FROM hits WHERE URL LIKE '%example%' AND SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10",
+    ),
     // Q22
-    ("q22", "Ready", "SELECT SearchPhrase, MIN(URL), MIN(Title), COUNT(*) AS c, COUNT(DISTINCT UserID) FROM hits WHERE Title LIKE '%Analytics%' AND URL NOT LIKE '%.internal%' AND SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10"),
+    (
+        "q22",
+        "Ready",
+        "SELECT SearchPhrase, MIN(URL), MIN(Title), COUNT(*) AS c, COUNT(DISTINCT UserID) FROM hits WHERE Title LIKE '%Analytics%' AND URL NOT LIKE '%.internal%' AND SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY c DESC LIMIT 10",
+    ),
     // Q23
-    ("q23", "Ready", "SELECT * FROM hits WHERE URL LIKE '%widget%' ORDER BY EventTime LIMIT 10"),
+    (
+        "q23",
+        "Ready",
+        "SELECT * FROM hits WHERE URL LIKE '%widget%' ORDER BY EventTime LIMIT 10",
+    ),
     // Q24
-    ("q24", "Ready", "SELECT SearchPhrase FROM hits WHERE SearchPhrase <> '' ORDER BY EventTime LIMIT 10"),
+    (
+        "q24",
+        "Ready",
+        "SELECT SearchPhrase FROM hits WHERE SearchPhrase <> '' ORDER BY EventTime LIMIT 10",
+    ),
     // Q25
-    ("q25", "Ready", "SELECT SearchPhrase FROM hits WHERE SearchPhrase <> '' ORDER BY SearchPhrase LIMIT 10"),
+    (
+        "q25",
+        "Ready",
+        "SELECT SearchPhrase FROM hits WHERE SearchPhrase <> '' ORDER BY SearchPhrase LIMIT 10",
+    ),
     // Q26
-    ("q26", "Ready", "SELECT SearchPhrase FROM hits WHERE SearchPhrase <> '' ORDER BY EventTime, SearchPhrase LIMIT 10"),
+    (
+        "q26",
+        "Ready",
+        "SELECT SearchPhrase FROM hits WHERE SearchPhrase <> '' ORDER BY EventTime, SearchPhrase LIMIT 10",
+    ),
     // Q27
-    ("q27", "Ready", "SELECT CounterID, AVG(CAST(ResolutionWidth AS NUMERIC)) + 100 FROM hits GROUP BY CounterID ORDER BY AVG(CAST(ResolutionWidth AS NUMERIC)) + 100 DESC LIMIT 10"),
+    (
+        "q27",
+        "Ready",
+        "SELECT CounterID, AVG(CAST(ResolutionWidth AS NUMERIC)) + 100 FROM hits GROUP BY CounterID ORDER BY AVG(CAST(ResolutionWidth AS NUMERIC)) + 100 DESC LIMIT 10",
+    ),
     // Q28
-    ("q28", "Ready", "SELECT RegionID, SUM(AdvEngineID), COUNT(*) AS c, AVG(ResolutionWidth), COUNT(DISTINCT UserID) FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 10"),
+    (
+        "q28",
+        "Ready",
+        "SELECT RegionID, SUM(AdvEngineID), COUNT(*) AS c, AVG(ResolutionWidth), COUNT(DISTINCT UserID) FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 10",
+    ),
     // Q29
-    ("q29", "Ready", "SELECT RegionID, SearchPhrase, COUNT(*) AS c FROM hits GROUP BY RegionID, SearchPhrase ORDER BY c DESC LIMIT 10"),
+    (
+        "q29",
+        "Ready",
+        "SELECT RegionID, SearchPhrase, COUNT(*) AS c FROM hits GROUP BY RegionID, SearchPhrase ORDER BY c DESC LIMIT 10",
+    ),
     // Q30
-    ("q30", "Ready", "SELECT RegionID, CounterID, COUNT(*) AS c FROM hits GROUP BY RegionID, CounterID ORDER BY c DESC LIMIT 10"),
+    (
+        "q30",
+        "Ready",
+        "SELECT RegionID, CounterID, COUNT(*) AS c FROM hits GROUP BY RegionID, CounterID ORDER BY c DESC LIMIT 10",
+    ),
     // Q31
-    ("q31", "Ready", "SELECT CounterID, RegionID, UserID, COUNT(*) AS c FROM hits GROUP BY CounterID, RegionID, UserID ORDER BY c DESC LIMIT 10"),
+    (
+        "q31",
+        "Ready",
+        "SELECT CounterID, RegionID, UserID, COUNT(*) AS c FROM hits GROUP BY CounterID, RegionID, UserID ORDER BY c DESC LIMIT 10",
+    ),
     // Q32
-    ("q32", "Ready", "SELECT EventDate, RegionID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY EventDate, RegionID ORDER BY EventDate, RegionID"),
+    (
+        "q32",
+        "Ready",
+        "SELECT EventDate, RegionID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY EventDate, RegionID ORDER BY EventDate, RegionID",
+    ),
     // Q33
-    ("q33", "Ready", "SELECT EventDate, RegionID, CounterID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY EventDate, RegionID, CounterID ORDER BY EventDate, RegionID, CounterID"),
+    (
+        "q33",
+        "Ready",
+        "SELECT EventDate, RegionID, CounterID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY EventDate, RegionID, CounterID ORDER BY EventDate, RegionID, CounterID",
+    ),
     // Q34
-    ("q34", "Ready", "SELECT OS, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY OS ORDER BY u DESC LIMIT 10"),
+    (
+        "q34",
+        "Ready",
+        "SELECT OS, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY OS ORDER BY u DESC LIMIT 10",
+    ),
     // Q35
-    ("q35", "Ready", "SELECT UserAgent, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY UserAgent ORDER BY u DESC LIMIT 10"),
+    (
+        "q35",
+        "Ready",
+        "SELECT UserAgent, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY UserAgent ORDER BY u DESC LIMIT 10",
+    ),
     // Q36
-    ("q36", "Ready", "SELECT UserAgent, RegionID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY UserAgent, RegionID ORDER BY u DESC LIMIT 10"),
+    (
+        "q36",
+        "Ready",
+        "SELECT UserAgent, RegionID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY UserAgent, RegionID ORDER BY u DESC LIMIT 10",
+    ),
     // Q37
-    ("q37", "Ready", "SELECT RegionID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY RegionID ORDER BY u DESC LIMIT 10"),
+    (
+        "q37",
+        "Ready",
+        "SELECT RegionID, COUNT(DISTINCT UserID) AS u FROM hits GROUP BY RegionID ORDER BY u DESC LIMIT 10",
+    ),
     // Q38 - Uses window functions (may need workaround)
-    ("q38", "NeedsWorkaround", "SELECT CounterID, COUNT(*) AS cnt FROM hits GROUP BY CounterID ORDER BY cnt DESC LIMIT 20"),
+    (
+        "q38",
+        "NeedsWorkaround",
+        "SELECT CounterID, COUNT(*) AS cnt FROM hits GROUP BY CounterID ORDER BY cnt DESC LIMIT 20",
+    ),
     // Q39 - Uses window functions (may need workaround)
-    ("q39", "NeedsWorkaround", "SELECT SearchPhrase, COUNT(*) AS cnt FROM hits WHERE SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY cnt DESC LIMIT 20"),
+    (
+        "q39",
+        "NeedsWorkaround",
+        "SELECT SearchPhrase, COUNT(*) AS cnt FROM hits WHERE SearchPhrase <> '' GROUP BY SearchPhrase ORDER BY cnt DESC LIMIT 20",
+    ),
     // Q40
-    ("q40", "Ready", "SELECT TraficSourceID, SearchEngineID, AdvEngineID, CASE WHEN SearchEngineID = 0 AND AdvEngineID = 0 THEN Referer ELSE '' END AS src, URL, COUNT(*) AS c FROM hits WHERE SearchPhrase <> '' GROUP BY TraficSourceID, SearchEngineID, AdvEngineID, src, URL ORDER BY c DESC LIMIT 10"),
+    (
+        "q40",
+        "Ready",
+        "SELECT TraficSourceID, SearchEngineID, AdvEngineID, CASE WHEN SearchEngineID = 0 AND AdvEngineID = 0 THEN Referer ELSE '' END AS src, URL, COUNT(*) AS c FROM hits WHERE SearchPhrase <> '' GROUP BY TraficSourceID, SearchEngineID, AdvEngineID, src, URL ORDER BY c DESC LIMIT 10",
+    ),
     // Q41 - Blocked: requires array operations (arrayStringConcat / arrayEnumerate)
-    ("q41", "Blocked", "SELECT URLHash, EventDate, COUNT(*) AS c FROM hits GROUP BY URLHash, EventDate ORDER BY c DESC LIMIT 10"),
+    (
+        "q41",
+        "Blocked",
+        "SELECT URLHash, EventDate, COUNT(*) AS c FROM hits GROUP BY URLHash, EventDate ORDER BY c DESC LIMIT 10",
+    ),
     // Q42 - Blocked: requires array operations
-    ("q42", "Blocked", "SELECT WindowClientWidth, WindowClientHeight, COUNT(*) AS c FROM hits WHERE WindowClientWidth > 0 AND WindowClientHeight > 0 GROUP BY WindowClientWidth, WindowClientHeight ORDER BY c DESC LIMIT 10"),
+    (
+        "q42",
+        "Blocked",
+        "SELECT WindowClientWidth, WindowClientHeight, COUNT(*) AS c FROM hits WHERE WindowClientWidth > 0 AND WindowClientHeight > 0 GROUP BY WindowClientWidth, WindowClientHeight ORDER BY c DESC LIMIT 10",
+    ),
 ];
 
 // ---------------------------------------------------------------------------

@@ -14,7 +14,10 @@ pub fn can_coerce_implicit(from: &TypeSignature, to: &TypeSignature) -> bool {
     if from == to {
         return true;
     }
-    if matches!((from, to), (TypeSignature::Vector(_), TypeSignature::Vector(_))) {
+    if matches!(
+        (from, to),
+        (TypeSignature::Vector(_), TypeSignature::Vector(_))
+    ) {
         return true;
     }
     matches!(
@@ -128,7 +131,11 @@ fn common_supertype(a: &TypeSignature, b: &TypeSignature) -> Option<TypeSignatur
         (TypeSignature::Date, TypeSignature::Timestamp)
         | (TypeSignature::Timestamp, TypeSignature::Date) => Some(TypeSignature::Timestamp),
         (TypeSignature::Vector(a_dim), TypeSignature::Vector(b_dim)) => {
-            Some(TypeSignature::Vector(if a_dim == b_dim { *a_dim } else { None }))
+            Some(TypeSignature::Vector(if a_dim == b_dim {
+                *a_dim
+            } else {
+                None
+            }))
         }
         // Text is the universal fallback
         (TypeSignature::Text, _) | (_, TypeSignature::Text) => Some(TypeSignature::Text),

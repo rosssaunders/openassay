@@ -2900,7 +2900,10 @@ fn create_index_populates_storage_btree_for_existing_rows() {
 
         let table_oid = crate::catalog::with_catalog_read(|catalog| {
             catalog
-                .resolve_table(&["users".to_string()], &crate::catalog::SearchPath::default())
+                .resolve_table(
+                    &["users".to_string()],
+                    &crate::catalog::SearchPath::default(),
+                )
                 .map(|table| table.oid())
         })
         .expect("table should resolve");
@@ -2934,7 +2937,10 @@ fn update_and_delete_maintain_index_offsets() {
 
         let table_oid = crate::catalog::with_catalog_read(|catalog| {
             catalog
-                .resolve_table(&["users".to_string()], &crate::catalog::SearchPath::default())
+                .resolve_table(
+                    &["users".to_string()],
+                    &crate::catalog::SearchPath::default(),
+                )
                 .map(|table| table.oid())
         })
         .expect("table should resolve");
@@ -2977,8 +2983,8 @@ fn unique_index_detects_duplicate_before_insert() {
         let duplicate = parse_statement("INSERT INTO users VALUES (2, 'dup@example.com')")
             .expect("statement should parse");
         let plan = plan_statement(duplicate).expect("statement should plan");
-        let err = block_on(execute_planned_query(&plan, &[]))
-            .expect_err("duplicate insert should fail");
+        let err =
+            block_on(execute_planned_query(&plan, &[])).expect_err("duplicate insert should fail");
         assert!(err.message.contains("unique constraint"));
     });
 }
@@ -5814,7 +5820,10 @@ fn test_named_window_definition() {
     with_isolated_state(|| {
         run_statement("CREATE TEMP TABLE t (x int)", &[]);
         run_statement("INSERT INTO t VALUES (1), (2), (3)", &[]);
-        let result = run_statement("SELECT x, sum(x) OVER w FROM t WINDOW w AS (ORDER BY x) ORDER BY x", &[]);
+        let result = run_statement(
+            "SELECT x, sum(x) OVER w FROM t WINDOW w AS (ORDER BY x) ORDER BY x",
+            &[],
+        );
         assert_eq!(result.rows.len(), 3);
         assert_eq!(result.rows[0][1], ScalarValue::Int(1));
         assert_eq!(result.rows[1][1], ScalarValue::Int(3));

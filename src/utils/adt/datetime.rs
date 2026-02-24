@@ -12,10 +12,7 @@ pub(crate) struct TemporalOperand {
 #[allow(dead_code)]
 pub(crate) fn is_infinity_datetime(text: &str) -> bool {
     let lower = text.trim().to_ascii_lowercase();
-    matches!(
-        lower.as_str(),
-        "infinity" | "inf" | "-infinity" | "-inf"
-    )
+    matches!(lower.as_str(), "infinity" | "inf" | "-infinity" | "-inf")
 }
 
 pub(crate) fn parse_temporal_operand(value: &ScalarValue) -> Option<TemporalOperand> {
@@ -36,7 +33,10 @@ pub(crate) fn temporal_add_days(temporal: TemporalOperand, days: i64) -> ScalarV
     if temporal.datetime.date.year == 294276 && temporal.datetime.date.month == 12 {
         return ScalarValue::Text("infinity".to_string());
     }
-    if temporal.datetime.date.year == -4713 && temporal.datetime.date.month == 1 && temporal.datetime.date.day == 1 {
+    if temporal.datetime.date.year == -4713
+        && temporal.datetime.date.month == 1
+        && temporal.datetime.date.day == 1
+    {
         return ScalarValue::Text("-infinity".to_string());
     }
     let mut datetime = temporal.datetime;

@@ -112,16 +112,13 @@ impl BTreeIndex {
         }
     }
 
-    fn insert_non_full(
-        node: &mut BTreeNode,
-        key: CompositeKey,
-        offset: usize,
-        max_entries: usize,
-    ) {
+    fn insert_non_full(node: &mut BTreeNode, key: CompositeKey, offset: usize, max_entries: usize) {
         match node {
             BTreeNode::Leaf { entries } => {
                 let idx = find_key_index(entries, &key);
-                if idx < entries.len() && composite_key_cmp(&entries[idx].key, &key) == Ordering::Equal {
+                if idx < entries.len()
+                    && composite_key_cmp(&entries[idx].key, &key) == Ordering::Equal
+                {
                     if !entries[idx].offsets.contains(&offset) {
                         entries[idx].offsets.push(offset);
                     }
@@ -137,7 +134,9 @@ impl BTreeIndex {
             }
             BTreeNode::Internal { entries, children } => {
                 let mut idx = find_key_index(entries, &key);
-                if idx < entries.len() && composite_key_cmp(&entries[idx].key, &key) == Ordering::Equal {
+                if idx < entries.len()
+                    && composite_key_cmp(&entries[idx].key, &key) == Ordering::Equal
+                {
                     if !entries[idx].offsets.contains(&offset) {
                         entries[idx].offsets.push(offset);
                     }
@@ -246,12 +245,22 @@ impl BTreeIndex {
             if children[idx].entry_count() > min_entries {
                 let predecessor = max_entry(&children[idx]);
                 entries[idx] = predecessor.clone();
-                return Self::delete_internal(&mut children[idx], &predecessor.key, None, min_entries);
+                return Self::delete_internal(
+                    &mut children[idx],
+                    &predecessor.key,
+                    None,
+                    min_entries,
+                );
             }
             if children[idx + 1].entry_count() > min_entries {
                 let successor = min_entry(&children[idx + 1]);
                 entries[idx] = successor.clone();
-                return Self::delete_internal(&mut children[idx + 1], &successor.key, None, min_entries);
+                return Self::delete_internal(
+                    &mut children[idx + 1],
+                    &successor.key,
+                    None,
+                    min_entries,
+                );
             }
             Self::merge_children(entries, children, idx);
             return Self::delete_internal(&mut children[idx], key, None, min_entries);
@@ -287,11 +296,7 @@ impl BTreeIndex {
         }
     }
 
-    fn borrow_from_prev(
-        entries: &mut [BTreeEntry],
-        children: &mut [BTreeNode],
-        idx: usize,
-    ) {
+    fn borrow_from_prev(entries: &mut [BTreeEntry], children: &mut [BTreeNode], idx: usize) {
         let (left_slice, right_slice) = children.split_at_mut(idx);
         let left = left_slice
             .last_mut()
@@ -301,7 +306,14 @@ impl BTreeIndex {
             .expect("child must exist for borrow_from_prev");
 
         match (left, child) {
-            (BTreeNode::Leaf { entries: left_entries }, BTreeNode::Leaf { entries: child_entries }) => {
+            (
+                BTreeNode::Leaf {
+                    entries: left_entries,
+                },
+                BTreeNode::Leaf {
+                    entries: child_entries,
+                },
+            ) => {
                 let borrowed = left_entries
                     .pop()
                     .expect("left sibling must have an entry to borrow");
@@ -332,11 +344,7 @@ impl BTreeIndex {
         }
     }
 
-    fn borrow_from_next(
-        entries: &mut [BTreeEntry],
-        children: &mut [BTreeNode],
-        idx: usize,
-    ) {
+    fn borrow_from_next(entries: &mut [BTreeEntry], children: &mut [BTreeNode], idx: usize) {
         let (left_slice, right_slice) = children.split_at_mut(idx + 1);
         let child = left_slice
             .last_mut()
@@ -346,7 +354,14 @@ impl BTreeIndex {
             .expect("right sibling must exist for borrow_from_next");
 
         match (child, right) {
-            (BTreeNode::Leaf { entries: child_entries }, BTreeNode::Leaf { entries: right_entries }) => {
+            (
+                BTreeNode::Leaf {
+                    entries: child_entries,
+                },
+                BTreeNode::Leaf {
+                    entries: right_entries,
+                },
+            ) => {
                 let borrowed = right_entries.remove(0);
                 let old_parent = std::mem::replace(&mut entries[idx], borrowed);
                 child_entries.push(old_parent);
@@ -371,11 +386,7 @@ impl BTreeIndex {
         }
     }
 
-    fn merge_children(
-        entries: &mut Vec<BTreeEntry>,
-        children: &mut Vec<BTreeNode>,
-        idx: usize,
-    ) {
+    fn merge_children(entries: &mut Vec<BTreeEntry>, children: &mut Vec<BTreeNode>, idx: usize) {
         let separator = entries.remove(idx);
         let right = children.remove(idx + 1);
         let left = children
@@ -383,7 +394,14 @@ impl BTreeIndex {
             .expect("left child must exist for merge");
 
         match (left, right) {
-            (BTreeNode::Leaf { entries: left_entries }, BTreeNode::Leaf { entries: right_entries }) => {
+            (
+                BTreeNode::Leaf {
+                    entries: left_entries,
+                },
+                BTreeNode::Leaf {
+                    entries: right_entries,
+                },
+            ) => {
                 left_entries.push(separator);
                 left_entries.extend(right_entries);
             }
@@ -500,7 +518,11 @@ fn range_scan_node(
 }
 
 #[allow(dead_code)]
-fn within_bounds(key: &[ScalarValue], start: Option<&[ScalarValue]>, end: Option<&[ScalarValue]>) -> bool {
+fn within_bounds(
+    key: &[ScalarValue],
+    start: Option<&[ScalarValue]>,
+    end: Option<&[ScalarValue]>,
+) -> bool {
     if let Some(start_key) = start
         && composite_key_cmp(key, start_key) == Ordering::Less
     {
@@ -520,9 +542,11 @@ fn min_entry(node: &BTreeNode) -> BTreeEntry {
             .first()
             .expect("leaf node must contain entries")
             .clone(),
-        BTreeNode::Internal { children, .. } => {
-            min_entry(children.first().expect("internal node must contain children"))
-        }
+        BTreeNode::Internal { children, .. } => min_entry(
+            children
+                .first()
+                .expect("internal node must contain children"),
+        ),
     }
 }
 
@@ -532,9 +556,11 @@ fn max_entry(node: &BTreeNode) -> BTreeEntry {
             .last()
             .expect("leaf node must contain entries")
             .clone(),
-        BTreeNode::Internal { children, .. } => {
-            max_entry(children.last().expect("internal node must contain children"))
-        }
+        BTreeNode::Internal { children, .. } => max_entry(
+            children
+                .last()
+                .expect("internal node must contain children"),
+        ),
     }
 }
 
@@ -557,7 +583,9 @@ fn remap_offsets_in_node(node: &mut BTreeNode, removed_offsets: &[usize]) {
 }
 
 fn remap_offsets(entry: &mut BTreeEntry, removed_offsets: &[usize]) {
-    entry.offsets.retain(|offset| removed_offsets.binary_search(offset).is_err());
+    entry
+        .offsets
+        .retain(|offset| removed_offsets.binary_search(offset).is_err());
     for offset in &mut entry.offsets {
         let removed_before = removed_offsets.partition_point(|removed| *removed < *offset);
         *offset -= removed_before;
