@@ -4125,8 +4125,8 @@ fn math_functions_abs_bigint_overflow_errors() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT abs('-9223372036854775808'::int8)").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[]))
-            .expect_err("abs(int8 min) should fail");
+        let err =
+            block_on(execute_planned_query(&planned, &[])).expect_err("abs(int8 min) should fail");
         assert!(err.message.contains("bigint out of range"));
     });
 }
@@ -4136,8 +4136,8 @@ fn math_functions_lcm_overflow_errors() {
     with_isolated_state(|| {
         let statement = parse_statement("SELECT lcm(9223372036854775807::int8, 2::int8)").unwrap();
         let planned = plan_statement(statement).unwrap();
-        let err = block_on(execute_planned_query(&planned, &[]))
-            .expect_err("lcm overflow should fail");
+        let err =
+            block_on(execute_planned_query(&planned, &[])).expect_err("lcm overflow should fail");
         assert!(err.message.contains("out of range"));
     });
 }
@@ -5834,10 +5834,7 @@ fn test_unary_minus_bigint_overflow() {
 #[test]
 fn test_timestamp_positive_infinity_literal() {
     let result = run("SELECT TIMESTAMP '+infinity'");
-    assert_eq!(
-        result.rows[0][0],
-        ScalarValue::Text("infinity".to_string())
-    );
+    assert_eq!(result.rows[0][0], ScalarValue::Text("infinity".to_string()));
 }
 
 #[test]

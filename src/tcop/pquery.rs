@@ -328,9 +328,11 @@ fn infer_expr_type_oid(
                         infer_numeric_result_oid(left_oid, right_oid)
                     }
                 }
-                BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
-                    infer_numeric_result_oid(left_oid, right_oid)
-                }
+                BinaryOp::Mul
+                | BinaryOp::Div
+                | BinaryOp::Mod
+                | BinaryOp::ShiftLeft
+                | BinaryOp::ShiftRight => infer_numeric_result_oid(left_oid, right_oid),
             }
         }
         Expr::AnyAll { .. } => PG_BOOL_OID,

@@ -1625,8 +1625,7 @@ async fn execute_update(
 
         let mut new_row = row.clone();
         for (col_idx, column, expr) in &assignment_targets {
-            new_row[*col_idx] =
-                eval_update_assignment_value(expr, column, &scope, params).await?;
+            new_row[*col_idx] = eval_update_assignment_value(expr, column, &scope, params).await?;
         }
         for trigger in &before_update_triggers {
             let result = execute_row_trigger(trigger, &table, "UPDATE", Some(row), Some(&new_row))?;
@@ -3502,9 +3501,10 @@ fn coerce_value_for_column(
         },
         (TypeSignature::Int8, ScalarValue::Int(v)) => Ok(ScalarValue::Int(v)),
         (TypeSignature::Int8, ScalarValue::Text(v)) => {
-            let parsed = v.trim().parse::<i64>().map_err(|_| EngineError {
-                message: format!("invalid integer literal for column \"{}\"", column.name()),
-            })?;
+            let parsed =
+                crate::utils::adt::misc::parse_pg_int_literal(&v).map_err(|_| EngineError {
+                    message: format!("invalid integer literal for column \"{}\"", column.name()),
+                })?;
             Ok(ScalarValue::Int(parsed))
         }
         (TypeSignature::Float8, ScalarValue::Int(v)) => Ok(ScalarValue::Float(v as f64)),

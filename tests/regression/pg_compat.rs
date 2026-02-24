@@ -7,6 +7,79 @@ use std::time::Duration;
 
 const STATEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RECORDED_ERRORS: usize = 200;
+const SHARED_REGRESSION_FIXTURE_SQL: &str = r#"
+CREATE TABLE CHAR_TBL (f1 char(4));
+INSERT INTO CHAR_TBL (f1) VALUES ('a'), ('ab'), ('abcd'), ('abcd    ');
+
+CREATE TABLE TEXT_TBL (f1 text);
+INSERT INTO TEXT_TBL VALUES ('doh!'), ('hi de ho neighbor');
+
+CREATE TABLE VARCHAR_TBL (f1 varchar(4));
+INSERT INTO VARCHAR_TBL (f1) VALUES ('a'), ('ab'), ('abcd'), ('abcd    ');
+
+CREATE TABLE INT2_TBL (f1 int2);
+INSERT INTO INT2_TBL (f1) VALUES ('0'), ('1234'), ('-1234'), ('123'), ('-123');
+
+CREATE TABLE INT4_TBL (f1 int4);
+INSERT INTO INT4_TBL (f1) VALUES ('0'), ('123456'), ('-123456'), ('1000'), ('-1000');
+
+CREATE TABLE INT8_TBL (q1 int8, q2 int8);
+INSERT INTO INT8_TBL VALUES
+  ('123', '456'),
+  ('123', '456789'),
+  ('456789', '123'),
+  ('456789', '456789'),
+  ('456789', '-456789');
+
+CREATE TABLE POINT_TBL (f1 text);
+INSERT INTO POINT_TBL (f1) VALUES ('(0,0)'), ('(1,1)'), ('(-5,-12)');
+
+CREATE TABLE onek (
+  unique1 int4,
+  unique2 int4,
+  two int4,
+  four int4,
+  ten int4,
+  twenty int4,
+  hundred int4,
+  thousand int4,
+  twothousand int4,
+  fivethous int4,
+  tenthous int4,
+  odd int4,
+  even int4,
+  stringu1 name,
+  stringu2 name,
+  string4 name
+);
+
+CREATE TABLE onek2 AS SELECT * FROM onek;
+
+CREATE TABLE tenk1 (
+  unique1 int4,
+  unique2 int4,
+  two int4,
+  four int4,
+  ten int4,
+  twenty int4,
+  hundred int4,
+  thousand int4,
+  twothousand int4,
+  fivethous int4,
+  tenthous int4,
+  odd int4,
+  even int4,
+  stringu1 name,
+  stringu2 name,
+  string4 name
+);
+
+CREATE TABLE tenk2 AS SELECT * FROM tenk1;
+
+CREATE TABLE road (name text);
+CREATE TABLE ihighway (name text);
+CREATE TABLE shighway (name text);
+"#;
 
 enum StatementExecution {
     Completed {
@@ -78,7 +151,14 @@ fn parse_dollar_tag(bytes: &[u8], start: usize) -> Option<usize> {
 }
 
 fn split_sql_statements(sql: &str) -> Vec<String> {
-    let bytes = sql.as_bytes();
+    // psql meta-commands (`\set`, `\getenv`, etc.) are not SQL statements.
+    let filtered = sql
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('\\'))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let bytes = filtered.as_bytes();
     let mut statements = Vec::new();
     let mut statement_start = 0usize;
     let mut i = 0usize;
@@ -183,7 +263,7 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
         }
 
         if bytes[i] == b';' {
-            let statement = sql[statement_start..i].trim();
+            let statement = filtered[statement_start..i].trim();
             if !statement.is_empty() {
                 statements.push(statement.to_string());
             }
@@ -193,12 +273,41 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
         i += 1;
     }
 
-    let trailing_statement = sql[statement_start..].trim();
+    let trailing_statement = filtered[statement_start..].trim();
     if !trailing_statement.is_empty() {
         statements.push(trailing_statement.to_string());
     }
 
     statements
+}
+
+fn setup_fixture_sql_for_test(test_name: &str) -> Option<&'static str> {
+    match test_name {
+        "arrays" | "create_index" | "int2" | "int4" | "int8" | "strings" => {
+            Some(SHARED_REGRESSION_FIXTURE_SQL)
+        }
+        _ => None,
+    }
+}
+
+fn run_setup_statements(mut session: PostgresSession, setup_sql: &str) -> PostgresSession {
+    let setup_statements = split_sql_statements(setup_sql);
+    for statement in &setup_statements {
+        let run_result = run_sql_statement_with_timeout(session, statement);
+        match run_result {
+            StatementExecution::Completed {
+                session: next_session,
+                ..
+            } => {
+                session = next_session;
+            }
+            StatementExecution::Panicked | StatementExecution::TimedOut => {
+                // Keep setup best-effort; recover with a fresh session.
+                session = PostgresSession::new();
+            }
+        }
+    }
+    session
 }
 
 /// Run a single SQL statement and return the formatted result
@@ -381,6 +490,9 @@ fn postgresql_compatibility_suite() {
         print!("Testing {test_name}... ");
 
         let mut session = PostgresSession::new();
+        if let Some(setup_sql) = setup_fixture_sql_for_test(&test_name) {
+            session = run_setup_statements(session, setup_sql);
+        }
 
         // Split SQL while respecting quotes/comments/dollar-quoted PL/pgSQL bodies.
         let statements = split_sql_statements(&sql);
