@@ -34,7 +34,10 @@ pub async fn execute_create_index(
     }
     crate::tcop::engine::require_relation_owner(&table)?;
 
-    let index_name = create.name.to_ascii_lowercase();
+    let mut index_name = create.name.to_ascii_lowercase();
+    if create.generated_name {
+        index_name = choose_generated_index_name(&table, &index_name);
+    }
     let index_columns = create
         .columns
         .iter()
@@ -247,6 +250,25 @@ fn resolve_index_column_indexes(
         out.push(idx);
     }
     Ok(out)
+}
+
+fn choose_generated_index_name(table: &crate::catalog::Table, base_name: &str) -> String {
+    let mut candidate = base_name.to_string();
+    let mut suffix = 1usize;
+    while index_name_in_use(table, &candidate) {
+        candidate = format!("{base_name}_{suffix}");
+        suffix += 1;
+    }
+    candidate
+}
+
+fn index_name_in_use(table: &crate::catalog::Table, candidate: &str) -> bool {
+    table.indexes().iter().any(|index| index.name == candidate)
+        || table
+            .key_constraints()
+            .iter()
+            .filter_map(|constraint| constraint.name.as_deref())
+            .any(|name| name == candidate)
 }
 
 fn resolve_index_target(index_name: &[String]) -> Result<Option<IndexTarget>, EngineError> {

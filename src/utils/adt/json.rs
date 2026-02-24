@@ -1822,23 +1822,15 @@ pub(crate) fn eval_json_concat_operator(
             right_items.insert(0, other);
             Ok(ScalarValue::Array(right_items))
         }
-        (ScalarValue::Text(left_str), ScalarValue::Text(right_str)) => {
-            // Try to parse as JSON first, if both parse successfully, do JSON concat
+        (left, right) => {
             if let (Ok(lhs), Ok(rhs)) = (
                 parse_json_document_arg(&left, "json operator ||", 1),
                 parse_json_document_arg(&right, "json operator ||", 2),
             ) {
                 Ok(ScalarValue::Text(json_concat(lhs, rhs).to_string()))
             } else {
-                // Otherwise, do string concatenation
-                Ok(ScalarValue::Text(format!("{left_str}{right_str}")))
+                Ok(ScalarValue::Text(format!("{}{}", left.render(), right.render())))
             }
-        }
-        (left, right) => {
-            // Try JSON concat for non-text types
-            let lhs = parse_json_document_arg(&left, "json operator ||", 1)?;
-            let rhs = parse_json_document_arg(&right, "json operator ||", 2)?;
-            Ok(ScalarValue::Text(json_concat(lhs, rhs).to_string()))
         }
     }
 }

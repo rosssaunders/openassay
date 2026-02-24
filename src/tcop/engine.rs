@@ -3506,6 +3506,16 @@ fn coerce_value_for_column(
             ))
         }
         (TypeSignature::Numeric, ScalarValue::Text(v)) => {
+            let normalized = v.trim().to_ascii_lowercase();
+            if normalized == "nan" {
+                return Ok(ScalarValue::Float(f64::NAN));
+            }
+            if normalized == "inf" || normalized == "infinity" {
+                return Ok(ScalarValue::Float(f64::INFINITY));
+            }
+            if normalized == "-inf" || normalized == "-infinity" {
+                return Ok(ScalarValue::Float(f64::NEG_INFINITY));
+            }
             let parsed = v
                 .trim()
                 .parse::<rust_decimal::Decimal>()

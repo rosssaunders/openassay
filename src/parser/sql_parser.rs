@@ -257,23 +257,50 @@ impl Parser {
             } else {
                 false
             };
-            let name = self.parse_identifier()?;
+            let (mut name, generated_name) = if self.peek_keyword(Keyword::On) {
+                (String::new(), true)
+            } else {
+                (self.parse_identifier()?, false)
+            };
             self.expect_keyword(Keyword::On, "expected ON after CREATE INDEX name")?;
             let table_name = self.parse_qualified_name()?;
+            if self.consume_keyword(Keyword::Using) {
+                let _access_method = self.parse_identifier()?;
+            }
             self.expect_token(
                 |k| matches!(k, TokenKind::LParen),
                 "expected '(' after CREATE INDEX table name",
             )?;
             let mut columns = vec![self.parse_identifier()?];
+            let _ = self.consume_keyword(Keyword::Asc) || self.consume_keyword(Keyword::Desc);
+            if self.consume_ident("nulls")
+                && !(self.consume_keyword(Keyword::First) || self.consume_keyword(Keyword::Last))
+            {
+                return Err(self.error_at_current("expected FIRST or LAST after NULLS"));
+            }
             while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                 columns.push(self.parse_identifier()?);
+                let _ = self.consume_keyword(Keyword::Asc) || self.consume_keyword(Keyword::Desc);
+                if self.consume_ident("nulls")
+                    && !(self.consume_keyword(Keyword::First)
+                        || self.consume_keyword(Keyword::Last))
+                {
+                    return Err(self.error_at_current("expected FIRST or LAST after NULLS"));
+                }
             }
             self.expect_token(
                 |k| matches!(k, TokenKind::RParen),
                 "expected ')' after CREATE INDEX column list",
             )?;
+            if generated_name {
+                name = Self::default_index_name(&table_name, &columns);
+            }
+            if self.consume_keyword(Keyword::Where) {
+                let _ = self.parse_expr()?;
+            }
             return Ok(Statement::CreateIndex(CreateIndexStatement {
                 name,
+                generated_name,
                 table_name,
                 columns,
                 unique,
@@ -570,26 +597,27 @@ impl Parser {
 
         let mut columns = Vec::new();
         let mut constraints = Vec::new();
-        loop {
-            if self.peek_keyword(Keyword::Primary)
-                || self.peek_keyword(Keyword::Unique)
-                || self.peek_keyword(Keyword::Foreign)
-                || self.peek_keyword(Keyword::Constraint)
-            {
-                constraints.push(self.parse_table_constraint()?);
-            } else {
-                columns.push(self.parse_column_definition()?);
-            }
+        if !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+            loop {
+                if self.peek_keyword(Keyword::Primary)
+                    || self.peek_keyword(Keyword::Unique)
+                    || self.peek_keyword(Keyword::Foreign)
+                    || self.peek_keyword(Keyword::Constraint)
+                {
+                    constraints.push(self.parse_table_constraint()?);
+                } else {
+                    columns.push(self.parse_column_definition()?);
+                }
 
-            if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
-                break;
+                if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    break;
+                }
             }
+            self.expect_token(
+                |k| matches!(k, TokenKind::RParen),
+                "expected ')' after column definitions",
+            )?;
         }
-
-        self.expect_token(
-            |k| matches!(k, TokenKind::RParen),
-            "expected ')' after column definitions",
-        )?;
 
         // Parse optional WITH (...) storage parameters — ignore
         if self.consume_keyword(Keyword::With)
@@ -616,6 +644,17 @@ impl Parser {
             unlogged,
             as_select: None,
         }))
+    }
+
+    fn default_index_name(table_name: &[String], columns: &[String]) -> String {
+        let relation = table_name
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "index".to_string());
+        if columns.is_empty() {
+            return format!("{relation}_idx");
+        }
+        format!("{relation}_{}_idx", columns.join("_"))
     }
 
     fn parse_table_constraint(&mut self) -> Result<TableConstraint, ParseError> {
@@ -694,7 +733,13 @@ impl Parser {
             Vec::new()
         };
 
-        let source = if self.consume_keyword(Keyword::Values) {
+        let source = if self.consume_keyword(Keyword::Default) {
+            self.expect_keyword(
+                Keyword::Values,
+                "expected VALUES after DEFAULT in INSERT statement",
+            )?;
+            InsertSource::Values(vec![Vec::new()])
+        } else if self.consume_keyword(Keyword::Values) {
             let mut values = vec![self.parse_insert_values_row()?];
             while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                 values.push(self.parse_insert_values_row()?);
@@ -2357,16 +2402,7 @@ impl Parser {
             "jsonb" => TypeName::Jsonb,
             "date" => TypeName::Date,
             "time" => TypeName::Time,
-            "timestamp" => {
-                // Check for WITH TIME ZONE / WITHOUT TIME ZONE
-                if matches!(self.current_kind(), TokenKind::Keyword(Keyword::With)) {
-                    // peek ahead for TIME ZONE
-                    // For now, just treat as TimestampTz if WITH follows
-                    TypeName::Timestamp
-                } else {
-                    TypeName::Timestamp
-                }
-            }
+            "timestamp" => TypeName::Timestamp,
             "timestamptz" => TypeName::TimestampTz,
             "interval" => TypeName::Interval,
             "serial" => TypeName::Serial,
@@ -2443,6 +2479,43 @@ impl Parser {
                     }
                     _ => self.advance(),
                 }
+            }
+        }
+
+        if matches!(ty, TypeName::Timestamp | TypeName::Time) {
+            if self.consume_keyword(Keyword::With) || self.consume_ident("with") {
+                self.expect_token(
+                    |k| {
+                        matches!(k, TokenKind::Keyword(Keyword::Time))
+                            || matches!(
+                                k,
+                                TokenKind::Identifier(word) if word.eq_ignore_ascii_case("time")
+                            )
+                    },
+                    "expected TIME after WITH",
+                )?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::Identifier(word) if word.eq_ignore_ascii_case("zone")),
+                    "expected ZONE after WITH TIME",
+                )?;
+                if matches!(ty, TypeName::Timestamp) {
+                    ty = TypeName::TimestampTz;
+                }
+            } else if self.consume_ident("without") {
+                self.expect_token(
+                    |k| {
+                        matches!(k, TokenKind::Keyword(Keyword::Time))
+                            || matches!(
+                                k,
+                                TokenKind::Identifier(word) if word.eq_ignore_ascii_case("time")
+                            )
+                    },
+                    "expected TIME after WITHOUT",
+                )?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::Identifier(word) if word.eq_ignore_ascii_case("zone")),
+                    "expected ZONE after WITHOUT TIME",
+                )?;
             }
         }
 
@@ -2894,6 +2967,7 @@ impl Parser {
                     "expected ')' to close subquery in FROM",
                 )?;
                 let alias = self.parse_optional_alias()?;
+                let _ = self.parse_optional_column_aliases()?;
                 return Ok(TableExpression::Subquery(SubqueryRef {
                     query,
                     alias,
@@ -2913,11 +2987,14 @@ impl Parser {
         }
 
         let name = self.parse_qualified_name()?;
+        let _inherit = self.consume_if(|k| matches!(k, TokenKind::Star));
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
             let mut args = Vec::new();
             if !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+                self.consume_ident("variadic");
                 args.push(self.parse_expr()?);
                 while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    self.consume_ident("variadic");
                     args.push(self.parse_expr()?);
                 }
                 self.expect_token(
@@ -3056,6 +3133,11 @@ impl Parser {
             } else {
                 (None, None)
             };
+            if self.consume_ident("nulls")
+                && !(self.consume_keyword(Keyword::First) || self.consume_keyword(Keyword::Last))
+            {
+                return Err(self.error_at_current("expected FIRST or LAST after NULLS"));
+            }
 
             out.push(OrderByExpr {
                 expr,
@@ -3510,6 +3592,87 @@ impl Parser {
             )?;
             return Ok(Expr::RowConstructor(fields));
         }
+        // Typed literals with optional precision/timezone modifiers.
+        if self.peek_keyword(Keyword::Timestamp) || self.peek_keyword(Keyword::Time) {
+            let save = self.idx;
+            let type_name = if self.consume_keyword(Keyword::Timestamp) {
+                "timestamp".to_string()
+            } else {
+                self.advance(); // TIME keyword
+                "time".to_string()
+            };
+            if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+                let mut depth = 1usize;
+                while depth > 0 {
+                    match self.current_kind() {
+                        TokenKind::LParen => {
+                            depth += 1;
+                            self.advance();
+                        }
+                        TokenKind::RParen => {
+                            depth -= 1;
+                            self.advance();
+                        }
+                        TokenKind::Eof => {
+                            return Err(self.error_at_current(
+                                "unterminated type modifier list in typed literal",
+                            ));
+                        }
+                        _ => self.advance(),
+                    }
+                }
+            }
+            if self.consume_keyword(Keyword::With) || self.consume_ident("with") {
+                self.expect_token(
+                    |k| {
+                        matches!(k, TokenKind::Keyword(Keyword::Time))
+                            || matches!(
+                                k,
+                                TokenKind::Identifier(word) if word.eq_ignore_ascii_case("time")
+                            )
+                    },
+                    "expected TIME after WITH",
+                )?;
+                self.expect_token(
+                    |k| {
+                        matches!(
+                            k,
+                            TokenKind::Identifier(word) if word.eq_ignore_ascii_case("zone")
+                        )
+                    },
+                    "expected ZONE after WITH TIME",
+                )?;
+            } else if self.consume_ident("without") {
+                self.expect_token(
+                    |k| {
+                        matches!(k, TokenKind::Keyword(Keyword::Time))
+                            || matches!(
+                                k,
+                                TokenKind::Identifier(word) if word.eq_ignore_ascii_case("time")
+                            )
+                    },
+                    "expected TIME after WITHOUT",
+                )?;
+                self.expect_token(
+                    |k| {
+                        matches!(
+                            k,
+                            TokenKind::Identifier(word) if word.eq_ignore_ascii_case("zone")
+                        )
+                    },
+                    "expected ZONE after WITHOUT TIME",
+                )?;
+            }
+            if let Some(TokenKind::String(value)) = self.peek_nth_kind(0) {
+                let value_str = value.clone();
+                self.advance();
+                return Ok(Expr::TypedLiteral {
+                    type_name,
+                    value: value_str,
+                });
+            }
+            self.idx = save;
+        }
         // Typed literals: DATE 'literal', TIME 'literal', TIMESTAMP 'literal', INTERVAL 'literal'
         // Only match if followed by a string literal (not a parenthesis for function calls)
         if (self.peek_keyword(Keyword::Date)
@@ -3526,13 +3689,11 @@ impl Parser {
                 "time"
             } else if self.consume_keyword(Keyword::Timestamp) {
                 "timestamp"
-            } else if self.consume_keyword(Keyword::Interval) {
-                "interval"
             } else {
-                unreachable!()
+                self.advance();
+                "interval"
             };
 
-            // Get the string literal
             if let Some(TokenKind::String(value)) = self.peek_nth_kind(0) {
                 let value_str = value.clone();
                 self.advance();
@@ -3541,7 +3702,7 @@ impl Parser {
                     value: value_str,
                 });
             }
-            unreachable!() // We already checked for string literal above
+            unreachable!()
         }
         if self.consume_keyword(Keyword::Cast) {
             self.expect_token(
@@ -3677,6 +3838,9 @@ impl Parser {
                 | Keyword::Timestamp
                 | Keyword::Interval,
             ) => self.parse_identifier_expr(),
+            TokenKind::Keyword(kw) if Self::is_unreserved_keyword(kw) => {
+                self.parse_identifier_expr()
+            }
             _ => Err(self.error_at_current("expected expression")),
         }
     }
@@ -3915,8 +4079,10 @@ impl Parser {
                     self.idx = args_start;
                 }
 
+                self.consume_ident("variadic");
                 args.push(self.parse_expr()?);
                 while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    self.consume_ident("variadic");
                     args.push(self.parse_expr()?);
                 }
                 if self.consume_keyword(Keyword::Order) {
@@ -4441,6 +4607,18 @@ impl Parser {
                 self.advance();
                 Ok("interval".to_string())
             }
+            TokenKind::Keyword(Keyword::True) => {
+                self.advance();
+                Ok("true".to_string())
+            }
+            TokenKind::Keyword(Keyword::False) => {
+                self.advance();
+                Ok("false".to_string())
+            }
+            TokenKind::Keyword(Keyword::Null) => {
+                self.advance();
+                Ok("null".to_string())
+            }
             TokenKind::Keyword(kw) if Self::is_unreserved_keyword(kw) => {
                 let name = format!("{kw:?}").to_ascii_lowercase();
                 self.advance();
@@ -4635,6 +4813,18 @@ impl Parser {
             TokenKind::Keyword(Keyword::Interval) => {
                 self.advance();
                 Ok("interval".to_string())
+            }
+            TokenKind::Keyword(Keyword::True) => {
+                self.advance();
+                Ok("true".to_string())
+            }
+            TokenKind::Keyword(Keyword::False) => {
+                self.advance();
+                Ok("false".to_string())
+            }
+            TokenKind::Keyword(Keyword::Null) => {
+                self.advance();
+                Ok("null".to_string())
             }
             TokenKind::Keyword(kw) if Self::is_unreserved_keyword(kw) => {
                 let name = format!("{kw:?}").to_ascii_lowercase();
@@ -4905,7 +5095,7 @@ impl Parser {
             TokenKind::Operator(op) if op == "->>" => Some((BinaryOp::JsonGetText, 11, 12)),
             TokenKind::Operator(op) if op == "#>" => Some((BinaryOp::JsonPath, 11, 12)),
             TokenKind::Operator(op) if op == "#>>" => Some((BinaryOp::JsonPathText, 11, 12)),
-            TokenKind::Operator(op) if op == "||" => Some((BinaryOp::JsonConcat, 7, 8)),
+            TokenKind::Operator(op) if op == "||" => Some((BinaryOp::JsonConcat, 6, 7)),
             TokenKind::Operator(op) if op == "@>" => Some((BinaryOp::JsonContains, 5, 6)),
             TokenKind::Operator(op) if op == "<@" => Some((BinaryOp::JsonContainedBy, 5, 6)),
             TokenKind::Operator(op) if op == "@?" => Some((BinaryOp::JsonPathExists, 5, 6)),

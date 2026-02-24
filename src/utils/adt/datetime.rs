@@ -365,6 +365,43 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
 
     // Handle special values
     let normalized = raw.to_ascii_lowercase();
+    let first_token = normalized.split_whitespace().next().unwrap_or_default();
+    match first_token {
+        "now" | "current" => return current_utc_datetime(),
+        "today" => {
+            let dt = current_utc_datetime()?;
+            return Ok(DateTimeValue {
+                date: dt.date,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                microsecond: 0,
+            });
+        }
+        "yesterday" => {
+            let dt = current_utc_datetime()?;
+            let date = add_days(dt.date, -1);
+            return Ok(DateTimeValue {
+                date,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                microsecond: 0,
+            });
+        }
+        "tomorrow" => {
+            let dt = current_utc_datetime()?;
+            let date = add_days(dt.date, 1);
+            return Ok(DateTimeValue {
+                date,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                microsecond: 0,
+            });
+        }
+        _ => {}
+    }
     match normalized.as_str() {
         "infinity" | "inf" => {
             // Return a sentinel max date to represent +infinity
@@ -401,41 +438,6 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
                     month: 1,
                     day: 1,
                 },
-                hour: 0,
-                minute: 0,
-                second: 0,
-                microsecond: 0,
-            });
-        }
-        "now" | "current" => {
-            return current_utc_datetime();
-        }
-        "today" => {
-            let dt = current_utc_datetime()?;
-            return Ok(DateTimeValue {
-                date: dt.date,
-                hour: 0,
-                minute: 0,
-                second: 0,
-                microsecond: 0,
-            });
-        }
-        "yesterday" => {
-            let dt = current_utc_datetime()?;
-            let date = add_days(dt.date, -1);
-            return Ok(DateTimeValue {
-                date,
-                hour: 0,
-                minute: 0,
-                second: 0,
-                microsecond: 0,
-            });
-        }
-        "tomorrow" => {
-            let dt = current_utc_datetime()?;
-            let date = add_days(dt.date, 1);
-            return Ok(DateTimeValue {
-                date,
                 hour: 0,
                 minute: 0,
                 second: 0,
@@ -1265,7 +1267,10 @@ fn interval_from_seconds(seconds: i64) -> IntervalValue {
 ///
 /// Modelled after PostgreSQL's `DecodeInterval()` in `datetime.c`.
 pub(crate) fn parse_interval_text(text: &str) -> Result<IntervalValue, EngineError> {
-    let trimmed = text.trim();
+    let mut trimmed = text.trim();
+    if let Some(rest) = trimmed.strip_prefix('@') {
+        trimmed = rest.trim_start();
+    }
     if trimmed.is_empty() {
         return Err(EngineError {
             message: "invalid interval value".to_string(),
@@ -1324,9 +1329,12 @@ fn try_parse_canonical_interval(text: &str) -> Result<IntervalValue, EngineError
     let second = time_parts[2].parse::<i64>().map_err(|_| EngineError {
         message: "invalid interval second".to_string(),
     })?;
-    let mut total_seconds = hour * 3_600 + minute * 60 + second;
+    let mut total_seconds = hour
+        .saturating_mul(3_600)
+        .saturating_add(minute.saturating_mul(60))
+        .saturating_add(second);
     if negative {
-        total_seconds = -total_seconds;
+        total_seconds = total_seconds.saturating_neg();
     }
     Ok(IntervalValue {
         months,
@@ -1340,7 +1348,10 @@ fn try_parse_canonical_interval(text: &str) -> Result<IntervalValue, EngineError
 /// Also handles ISO 8601 duration format (`P1Y2M3DT4H5M6S`) and PostgreSQL's
 /// shorthand for plain numbers (`'90'` treated as seconds per PG default).
 fn parse_interval_literal(text: &str) -> Result<IntervalValue, EngineError> {
-    let trimmed = text.trim();
+    let mut trimmed = text.trim();
+    if let Some(rest) = trimmed.strip_prefix('@') {
+        trimmed = rest.trim_start();
+    }
 
     // Handle ISO 8601 duration: P1Y2M3DT4H5M6S
     if trimmed.starts_with('P') || trimmed.starts_with('p') {
@@ -1367,11 +1378,20 @@ fn parse_interval_literal(text: &str) -> Result<IntervalValue, EngineError> {
     let mut months: i64 = 0;
     let mut days: i64 = 0;
     let mut seconds: i64 = 0;
+    let mut negate = false;
 
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
     let mut i = 0;
     while i < tokens.len() {
         let token = tokens[i];
+        let normalized_token = token.to_ascii_lowercase();
+        let normalized_token = normalized_token.trim_end_matches(',');
+
+        if normalized_token == "ago" {
+            negate = true;
+            i += 1;
+            continue;
+        }
 
         // Check if this is a time component (HH:MM:SS)
         if token.contains(':') {
@@ -1394,6 +1414,18 @@ fn parse_interval_literal(text: &str) -> Result<IntervalValue, EngineError> {
                 "year" | "years" | "yr" | "yrs" | "y" => {
                     i += 2;
                     "year"
+                }
+                "decade" | "decades" => {
+                    i += 2;
+                    "decade"
+                }
+                "century" | "centuries" => {
+                    i += 2;
+                    "century"
+                }
+                "millennium" | "millennia" | "millenniums" => {
+                    i += 2;
+                    "millennium"
                 }
                 "month" | "months" | "mon" | "mons" => {
                     i += 2;
@@ -1419,9 +1451,13 @@ fn parse_interval_literal(text: &str) -> Result<IntervalValue, EngineError> {
                     i += 2;
                     "second"
                 }
-                "millisecond" | "milliseconds" | "ms" => {
+                "millisecond" | "milliseconds" | "ms" | "msec" => {
                     i += 2;
                     "millisecond"
+                }
+                "microsecond" | "microseconds" | "us" | "usec" => {
+                    i += 2;
+                    "microsecond"
                 }
                 _ => {
                     // No recognized unit — treat as seconds (PostgreSQL default)
@@ -1436,16 +1472,26 @@ fn parse_interval_literal(text: &str) -> Result<IntervalValue, EngineError> {
         };
 
         match unit {
-            "year" => months += (value * 12.0) as i64,
-            "month" => months += value as i64,
-            "week" => days += (value * 7.0) as i64,
-            "day" => days += value as i64,
-            "hour" => seconds += (value * 3_600.0) as i64,
-            "minute" => seconds += (value * 60.0) as i64,
-            "second" => seconds += value as i64,
-            "millisecond" => seconds += (value / 1000.0) as i64,
+            "year" => months = months.saturating_add((value * 12.0) as i64),
+            "decade" => months = months.saturating_add((value * 120.0) as i64),
+            "century" => months = months.saturating_add((value * 1_200.0) as i64),
+            "millennium" => months = months.saturating_add((value * 12_000.0) as i64),
+            "month" => months = months.saturating_add(value as i64),
+            "week" => days = days.saturating_add((value * 7.0) as i64),
+            "day" => days = days.saturating_add(value as i64),
+            "hour" => seconds = seconds.saturating_add((value * 3_600.0) as i64),
+            "minute" => seconds = seconds.saturating_add((value * 60.0) as i64),
+            "second" => seconds = seconds.saturating_add(value as i64),
+            "millisecond" => seconds = seconds.saturating_add((value / 1000.0) as i64),
+            "microsecond" => seconds = seconds.saturating_add((value / 1_000_000.0) as i64),
             _ => {}
         }
+    }
+
+    if negate {
+        months = months.saturating_neg();
+        days = days.saturating_neg();
+        seconds = seconds.saturating_neg();
     }
 
     Ok(IntervalValue {
@@ -1480,9 +1526,12 @@ fn parse_interval_time_only(text: &str) -> Result<IntervalValue, EngineError> {
     } else {
         0
     };
-    let mut total = hour * 3_600 + minute * 60 + second;
+    let mut total = hour
+        .saturating_mul(3_600)
+        .saturating_add(minute.saturating_mul(60))
+        .saturating_add(second);
     if negative {
-        total = -total;
+        total = total.saturating_neg();
     }
     Ok(IntervalValue {
         months: 0,
@@ -1517,13 +1566,15 @@ fn parse_iso_8601_interval(text: &str) -> Result<IntervalValue, EngineError> {
                 message: format!("invalid ISO 8601 interval number: \"{num_str}\""),
             })?;
             match (in_time, c) {
-                (false, 'Y' | 'y') => months += (value * 12.0) as i64,
-                (false, 'M' | 'm') => months += value as i64,
-                (false, 'W' | 'w') => days += (value * 7.0) as i64,
-                (false, 'D' | 'd') => days += value as i64,
-                (true, 'H' | 'h') => seconds += (value * 3_600.0) as i64,
-                (true, 'M' | 'm') => seconds += (value * 60.0) as i64,
-                (true, 'S' | 's') => seconds += value as i64,
+                (false, 'Y' | 'y') => months = months.saturating_add((value * 12.0) as i64),
+                (false, 'M' | 'm') => months = months.saturating_add(value as i64),
+                (false, 'W' | 'w') => days = days.saturating_add((value * 7.0) as i64),
+                (false, 'D' | 'd') => days = days.saturating_add(value as i64),
+                (true, 'H' | 'h') => {
+                    seconds = seconds.saturating_add((value * 3_600.0) as i64);
+                }
+                (true, 'M' | 'm') => seconds = seconds.saturating_add((value * 60.0) as i64),
+                (true, 'S' | 's') => seconds = seconds.saturating_add(value as i64),
                 _ => {
                     return Err(EngineError {
                         message: format!("invalid ISO 8601 interval designator: '{c}'"),
@@ -1553,15 +1604,46 @@ pub(crate) fn parse_interval_operand(value: &ScalarValue) -> Option<IntervalValu
 /// Check whether a text value looks like it could be an interval (as opposed to a date/timestamp).
 /// This is a heuristic used to disambiguate `Text` values in arithmetic operators.
 pub(crate) fn is_interval_text(text: &str) -> bool {
-    let trimmed = text.trim().to_ascii_lowercase();
+    let mut trimmed = text.trim().to_ascii_lowercase();
+    if let Some(rest) = trimmed.strip_prefix('@') {
+        trimmed = rest.trim_start().to_string();
+    }
     // Canonical format: starts with a number followed by "mons" or "mon"
     if trimmed.contains(" mons ") || trimmed.contains(" mon ") {
         return true;
     }
     // Keyword-style: contains interval unit keywords
     let units = [
-        "year", "years", "month", "months", "day", "days", "hour", "hours", "minute", "minutes",
-        "second", "seconds", "week", "weeks",
+        "year",
+        "years",
+        "decade",
+        "decades",
+        "century",
+        "centuries",
+        "millennium",
+        "millennia",
+        "millenniums",
+        "month",
+        "months",
+        "day",
+        "days",
+        "hour",
+        "hours",
+        "minute",
+        "minutes",
+        "second",
+        "seconds",
+        "millisecond",
+        "milliseconds",
+        "msec",
+        "ms",
+        "microsecond",
+        "microseconds",
+        "usec",
+        "us",
+        "week",
+        "weeks",
+        "ago",
     ];
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
     for part in &parts {
@@ -1608,7 +1690,7 @@ pub(crate) fn temporal_add_interval(
 
     // Step 3: Add seconds (including time component)
     if interval.seconds != 0 {
-        let epoch = datetime_to_epoch_seconds(dt) + interval.seconds;
+        let epoch = datetime_to_epoch_seconds(dt).saturating_add(interval.seconds);
         dt = datetime_from_epoch_seconds(epoch);
     }
 
@@ -1622,18 +1704,18 @@ pub(crate) fn temporal_add_interval(
 /// Negate an interval value (used for subtraction).
 pub(crate) fn interval_negate(iv: IntervalValue) -> IntervalValue {
     IntervalValue {
-        months: -iv.months,
-        days: -iv.days,
-        seconds: -iv.seconds,
+        months: iv.months.saturating_neg(),
+        days: iv.days.saturating_neg(),
+        seconds: iv.seconds.saturating_neg(),
     }
 }
 
 /// Add two intervals together.
 pub(crate) fn interval_add(a: IntervalValue, b: IntervalValue) -> IntervalValue {
     IntervalValue {
-        months: a.months + b.months,
-        days: a.days + b.days,
-        seconds: a.seconds + b.seconds,
+        months: a.months.saturating_add(b.months),
+        days: a.days.saturating_add(b.days),
+        seconds: a.seconds.saturating_add(b.seconds),
     }
 }
 
@@ -1680,7 +1762,7 @@ pub(crate) fn eval_interval_cast(value: &ScalarValue) -> Result<ScalarValue, Eng
 
 fn format_interval(interval: IntervalValue) -> String {
     let sign = if interval.seconds < 0 { "-" } else { "" };
-    let seconds = interval.seconds.abs();
+    let seconds = interval.seconds.unsigned_abs();
     let hours = seconds / 3_600;
     let minutes = (seconds % 3_600) / 60;
     let secs = seconds % 60;

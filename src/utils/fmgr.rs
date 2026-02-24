@@ -31,8 +31,8 @@ use crate::utils::adt::misc::{
     array_value_matches, compare_values_for_predicate, count_nonnulls, count_nulls, eval_extremum,
     eval_regexp_count, eval_regexp_instr, eval_regexp_like, eval_regexp_match, eval_regexp_replace,
     eval_regexp_split_to_array, eval_regexp_substr, eval_unistr, gen_random_uuid,
-    parse_bool_scalar, parse_i64_scalar, pg_get_viewdef, pg_input_is_valid, quote_ident,
-    quote_literal, quote_nullable, rand_f64,
+    parse_bool_scalar, parse_f64_numeric_scalar, parse_i64_scalar, pg_get_viewdef,
+    pg_input_is_valid, quote_ident, quote_literal, quote_nullable, rand_f64,
 };
 use crate::utils::adt::string_functions::{
     TrimMode, ascii_code, chr_from_code, decode_bytes, encode_bytes, eval_format,
@@ -428,6 +428,23 @@ pub(crate) async fn eval_scalar_function(
             Ok(ScalarValue::Text(current_timestamp_string()?))
         }
         "clock_timestamp" if args.is_empty() => Ok(ScalarValue::Text(current_timestamp_string()?)),
+        "pg_sleep" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let seconds =
+                parse_f64_numeric_scalar(&args[0], "pg_sleep() expects numeric seconds")?;
+            if !seconds.is_finite() {
+                return Err(EngineError {
+                    message: "pg_sleep() expects finite numeric seconds".to_string(),
+                });
+            }
+            if seconds > 0.0 {
+                let sleep_for = std::time::Duration::from_secs_f64(seconds.min(60.0));
+                tokio::time::sleep(sleep_for).await;
+            }
+            Ok(ScalarValue::Null)
+        }
         "current_date" if args.is_empty() => Ok(ScalarValue::Text(current_date_string()?)),
         "age" if args.len() == 1 || args.len() == 2 => eval_age(args),
         "extract" | "date_part" if args.len() == 2 => eval_extract_or_date_part(&args[0], &args[1]),
