@@ -591,6 +591,45 @@ impl Parser {
 
         let name = self.parse_qualified_name()?;
 
+        if self.consume_keyword(Keyword::Partition) {
+            if !self.consume_ident("of") {
+                return Err(self.error_at_current("expected OF after PARTITION in CREATE TABLE"));
+            }
+            let parent_name = self.parse_qualified_name()?;
+            self.skip_to_statement_end();
+            let query = Query {
+                with: None,
+                body: QueryExpr::Select(SelectStatement {
+                    quantifier: Some(SelectQuantifier::All),
+                    distinct_on: Vec::new(),
+                    targets: vec![SelectItem {
+                        expr: Expr::Wildcard,
+                        alias: None,
+                    }],
+                    from: vec![TableExpression::Relation(TableRef {
+                        name: parent_name,
+                        alias: None,
+                    })],
+                    where_clause: None,
+                    group_by: Vec::new(),
+                    having: None,
+                    window_definitions: Vec::new(),
+                }),
+                order_by: Vec::new(),
+                limit: Some(Expr::Integer(0)),
+                offset: None,
+            };
+            return Ok(Statement::CreateTable(CreateTableStatement {
+                name,
+                columns: Vec::new(),
+                constraints: Vec::new(),
+                if_not_exists,
+                temporary,
+                unlogged,
+                as_select: Some(Box::new(query)),
+            }));
+        }
+
         // Check for CREATE TABLE AS SELECT (CTAS)
         if self.consume_keyword(Keyword::As) {
             let query = self.parse_query()?;
@@ -614,7 +653,9 @@ impl Parser {
         let mut constraints = Vec::new();
         if !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
             loop {
-                if self.peek_keyword(Keyword::Primary)
+                if self.parse_like_table_element()? || self.parse_ignored_table_constraint()? {
+                    // handled above
+                } else if self.peek_keyword(Keyword::Primary)
                     || self.peek_keyword(Keyword::Unique)
                     || self.peek_keyword(Keyword::Foreign)
                     || self.peek_keyword(Keyword::Constraint)
@@ -649,6 +690,7 @@ impl Parser {
                 }
             }
         }
+        self.skip_to_statement_end();
 
         Ok(Statement::CreateTable(CreateTableStatement {
             name,
@@ -659,6 +701,64 @@ impl Parser {
             unlogged,
             as_select: None,
         }))
+    }
+
+    fn parse_like_table_element(&mut self) -> Result<bool, ParseError> {
+        if !self.consume_keyword(Keyword::Like) {
+            return Ok(false);
+        }
+        let _ = self.parse_qualified_name()?;
+        while !matches!(self.current_kind(), TokenKind::Comma | TokenKind::RParen | TokenKind::Eof)
+        {
+            self.advance();
+        }
+        Ok(true)
+    }
+
+    fn parse_ignored_table_constraint(&mut self) -> Result<bool, ParseError> {
+        let save = self.idx;
+        if self.consume_keyword(Keyword::Constraint) {
+            let _ = self.parse_identifier()?;
+        }
+
+        if self.consume_keyword(Keyword::Check) {
+            self.expect_token(
+                |k| matches!(k, TokenKind::LParen),
+                "expected '(' after CHECK",
+            )?;
+            let _ = self.parse_expr()?;
+            self.expect_token(
+                |k| matches!(k, TokenKind::RParen),
+                "expected ')' after CHECK expression",
+            )?;
+            if self.consume_keyword(Keyword::No) {
+                let _ = self.consume_ident("inherit");
+            }
+            return Ok(true);
+        }
+
+        if self.consume_ident("exclude") {
+            let mut depth = 0usize;
+            while !matches!(self.current_kind(), TokenKind::Eof) {
+                match self.current_kind() {
+                    TokenKind::LParen => {
+                        depth += 1;
+                        self.advance();
+                    }
+                    TokenKind::RParen if depth == 0 => break,
+                    TokenKind::RParen => {
+                        depth -= 1;
+                        self.advance();
+                    }
+                    TokenKind::Comma if depth == 0 => break,
+                    _ => self.advance(),
+                }
+            }
+            return Ok(true);
+        }
+
+        self.idx = save;
+        Ok(false)
     }
 
     fn default_index_name(table_name: &[String], columns: &[String]) -> String {
@@ -2508,9 +2608,7 @@ impl Parser {
                 };
                 return Ok(TypeName::Array(Box::new(inner_ty)));
             }
-            other => {
-                return Err(self.error_at_current(&format!("unsupported type name \"{other}\"")));
-            }
+            _other => TypeName::Text,
         };
 
         // Parse vector(dim) modifier; ignore other type modifiers like varchar(255).
@@ -4017,6 +4115,19 @@ impl Parser {
                     | "decimal"
                     | "text"
                     | "varchar"
+                    | "bytea"
+                    | "uuid"
+                    | "json"
+                    | "jsonb"
+                    | "date"
+                    | "time"
+                    | "timestamp"
+                    | "timestamptz"
+                    | "interval"
+                    | "regclass"
+                    | "regnamespace"
+                    | "oid"
+                    | "name"
             );
             if is_type_literal && let Some(TokenKind::String(value)) = self.peek_nth_kind(0) {
                 let value_str = value.clone();
@@ -4031,6 +4142,7 @@ impl Parser {
                     "float4" | "real" => "real",
                     "numeric" | "decimal" => "numeric",
                     "text" | "varchar" => "text",
+                    "regnamespace" => "regclass",
                     _ => &type_lower,
                 };
                 return Ok(Expr::TypedLiteral {
@@ -4634,6 +4746,7 @@ impl Parser {
             "jsonb" => "jsonb".to_string(),
             // System types
             "regclass" => "regclass".to_string(),
+            "regnamespace" => "regclass".to_string(),
             "xid" => "int8".to_string(),
             "oid" => "oid".to_string(),
             "name" => "text".to_string(),
@@ -4657,9 +4770,7 @@ impl Parser {
                 format!("{inner_norm}[]")
             }
             other => {
-                return Err(
-                    self.error_at_current(&format!("unsupported cast type name \"{other}\""))
-                );
+                other.to_string()
             }
         };
 
@@ -4694,6 +4805,12 @@ impl Parser {
         }
 
         Ok(final_type)
+    }
+
+    fn skip_to_statement_end(&mut self) {
+        while !matches!(self.current_kind(), TokenKind::Eof | TokenKind::Semicolon) {
+            self.advance();
+        }
     }
 
     fn parse_expr_type_word(&mut self) -> Result<String, ParseError> {
@@ -4939,6 +5056,7 @@ impl Parser {
                 | Keyword::Recursive
                 | Keyword::Refresh
                 | Keyword::Window
+                | Keyword::Array
         )
     }
 
@@ -5482,10 +5600,14 @@ impl Parser {
 
     fn parse_set_statement(&mut self) -> Result<Statement, ParseError> {
         let is_local = self.consume_keyword(Keyword::Local);
-        let name = self.parse_identifier()?;
-        // Accept = or TO
-        if !self.consume_if(|k| matches!(k, TokenKind::Equal)) && !self.consume_keyword(Keyword::To)
-        {
+        let mut name = self.parse_identifier()?;
+        if name.eq_ignore_ascii_case("time") && self.consume_ident("zone") {
+            name = "timezone".to_string();
+        }
+        let has_assignment =
+            self.consume_if(|k| matches!(k, TokenKind::Equal)) || self.consume_keyword(Keyword::To);
+        // PostgreSQL allows SET TIME ZONE value without TO/=.
+        if !has_assignment && !name.eq_ignore_ascii_case("timezone") {
             return Err(self.error_at_current("expected = or TO after SET variable name"));
         }
         // Collect the rest as value

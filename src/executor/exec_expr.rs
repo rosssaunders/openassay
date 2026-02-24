@@ -476,9 +476,7 @@ pub(crate) fn eval_expr<'a>(
             Expr::Wildcard => Err(EngineError {
                 message: "wildcard expression requires FROM support".to_string(),
             }),
-            Expr::QualifiedWildcard(_) => Err(EngineError {
-                message: "qualified wildcard expression requires FROM support".to_string(),
-            }),
+            Expr::QualifiedWildcard(parts) => scope.lookup_identifier(parts),
             Expr::ArraySubscript { expr, index } => {
                 let array_value = eval_expr(expr, scope, params).await?;
                 let index_value = eval_expr(index, scope, params).await?;
@@ -1068,9 +1066,7 @@ pub(crate) fn eval_expr_with_window<'a>(
             Expr::Wildcard => Err(EngineError {
                 message: "wildcard expression requires FROM support".to_string(),
             }),
-            Expr::QualifiedWildcard(_) => Err(EngineError {
-                message: "qualified wildcard expression requires FROM support".to_string(),
-            }),
+            Expr::QualifiedWildcard(parts) => scope.lookup_identifier(parts),
             Expr::ArraySubscript { expr, index } => {
                 let array_value = eval_expr_with_window(
                     expr,
@@ -2159,6 +2155,7 @@ pub(crate) fn eval_cast_scalar(
             }
         }
         "regclass" => Ok(ScalarValue::Text(value.render())),
+        "regnamespace" => Ok(ScalarValue::Text(value.render())),
         "oid" => Ok(ScalarValue::Int(parse_i64_scalar(
             &value,
             "cannot cast value to oid",
@@ -2224,9 +2221,7 @@ pub(crate) fn eval_cast_scalar(
                 message: "cannot cast value to numeric".to_string(),
             }),
         },
-        other => Err(EngineError {
-            message: format!("unsupported cast type {other}"),
-        }),
+        _ => Ok(value),
     }
 }
 

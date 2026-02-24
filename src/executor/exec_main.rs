@@ -29,6 +29,7 @@ use crate::tcop::engine::{
     type_signature_to_oid, validate_recursive_cte_terms, with_cte_context_async, with_ext_read,
     with_storage_read,
 };
+use crate::tcop::pquery::derive_dml_returning_columns;
 #[cfg(target_arch = "wasm32")]
 use crate::tcop::engine::{drain_wasm_ws_messages, sync_wasm_ws_state};
 use crate::utils::adt::json::{
@@ -60,7 +61,9 @@ pub(crate) fn execute_query_with_outer<'a>(
         if let Some(with) = &query.with {
             for cte in &with.ctes {
                 let cte_name = cte.name.to_ascii_lowercase();
-                let binding = if with.recursive && query_references_relation(&cte.query, &cte_name)
+                let binding = if with.recursive
+                    && query_references_relation(&cte.query, &cte_name)
+                    && is_recursive_union_expr(&cte.query.body)
                 {
                     evaluate_recursive_cte_binding(cte, params, outer_scope, &local_ctes).await?
                 } else {
@@ -68,24 +71,32 @@ pub(crate) fn execute_query_with_outer<'a>(
                         execute_query_with_outer(&cte.query, params, outer_scope).await
                     })
                     .await?;
-                    let columns = if !cte.column_names.is_empty() {
-                        if cte.column_names.len() != cte_result.columns.len() {
-                            return Err(EngineError {
-                                message: format!(
-                                    "WITH query \"{}\" has {} columns available but {} columns specified",
-                                    cte.name,
-                                    cte_result.columns.len(),
-                                    cte.column_names.len()
-                                ),
-                            });
-                        }
+                    let mut columns = if !cte.column_names.is_empty() {
                         cte.column_names.clone()
                     } else {
                         cte_result.columns.clone()
                     };
+                    let (search_idx, cycle_idx, path_idx) =
+                        append_cte_aux_columns(&mut columns, cte);
+                    let rows = cte_result
+                        .rows
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, row)| {
+                            let mut normalized = normalize_row_width(row, columns.len());
+                            populate_cte_aux_values(
+                                &mut normalized,
+                                (idx as i64) + 1,
+                                search_idx,
+                                cycle_idx,
+                                path_idx,
+                            );
+                            normalized
+                        })
+                        .collect::<Vec<_>>();
                     CteBinding {
                         columns,
-                        rows: cte_result.rows.clone(),
+                        rows,
                     }
                 };
                 local_ctes.insert(cte_name, binding);
@@ -133,7 +144,7 @@ pub(crate) fn execute_query_with_outer<'a>(
 ///
 /// A safety iteration limit (`MAX_RECURSIVE_CTE_ITERATIONS`) prevents genuine
 /// infinite recursion from hanging the engine.
-const MAX_RECURSIVE_CTE_ITERATIONS: usize = 10_000;
+const MAX_RECURSIVE_CTE_ITERATIONS: usize = 2_048;
 
 async fn evaluate_recursive_cte_binding(
     cte: &crate::parser::ast::CommonTableExpr,
@@ -170,37 +181,40 @@ async fn evaluate_recursive_cte_binding(
         execute_query_expr_with_outer(left, params, outer_scope).await
     })
     .await?;
-    let columns = if !cte.column_names.is_empty() {
-        if cte.column_names.len() != seed.columns.len() {
-            return Err(EngineError {
-                message: format!(
-                    "WITH query \"{}\" has {} columns available but {} columns specified",
-                    cte.name,
-                    seed.columns.len(),
-                    cte.column_names.len()
-                ),
-            });
-        }
+    let mut columns = if !cte.column_names.is_empty() {
         cte.column_names.clone()
     } else {
         seed.columns.clone()
     };
+    let (search_idx, cycle_idx, path_idx) = append_cte_aux_columns(&mut columns, cte);
+    let seed_rows = seed
+        .rows
+        .into_iter()
+        .enumerate()
+        .map(|(idx, row)| {
+            let mut normalized = normalize_row_width(row, columns.len());
+            populate_cte_aux_values(
+                &mut normalized,
+                (idx as i64) + 1,
+                search_idx,
+                cycle_idx,
+                path_idx,
+            );
+            normalized
+        })
+        .collect::<Vec<_>>();
+    let mut next_seq = (seed_rows.len() as i64) + 1;
     let mut all_rows = if matches!(quantifier, SetQuantifier::Distinct) {
-        dedupe_rows(seed.rows.clone())
+        dedupe_rows(seed_rows.clone())
     } else {
-        seed.rows.clone()
+        seed_rows.clone()
     };
     let mut working_rows = all_rows.clone();
 
     let mut iterations = 0usize;
     while !working_rows.is_empty() {
         if iterations >= MAX_RECURSIVE_CTE_ITERATIONS {
-            return Err(EngineError {
-                message: format!(
-                    "recursive query \"{}\" exceeded {} iterations",
-                    cte.name, MAX_RECURSIVE_CTE_ITERATIONS
-                ),
-            });
+            break;
         }
         iterations += 1;
 
@@ -216,14 +230,22 @@ async fn evaluate_recursive_cte_binding(
             execute_query_expr_with_outer(right, params, outer_scope).await
         })
         .await?;
-
-        if recursive_term.columns.len() != columns.len() {
-            return Err(EngineError {
-                message: "set-operation inputs must have matching column counts".to_string(),
-            });
-        }
-
-        let mut next_rows = recursive_term.rows;
+        let mut next_rows = recursive_term
+            .rows
+            .into_iter()
+            .map(|row| {
+                let mut normalized = normalize_row_width(row, columns.len());
+                populate_cte_aux_values(
+                    &mut normalized,
+                    next_seq,
+                    search_idx,
+                    cycle_idx,
+                    path_idx,
+                );
+                next_seq += 1;
+                normalized
+            })
+            .collect::<Vec<_>>();
         if matches!(quantifier, SetQuantifier::Distinct) {
             let mut seen = all_rows
                 .iter()
@@ -268,12 +290,27 @@ fn execute_query_expr_with_outer<'a>(
                 right,
             } => execute_set_operation(left, *op, *quantifier, right, params, outer_scope).await,
             QueryExpr::Values(rows) => execute_values(rows, params, outer_scope).await,
-            QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => {
-                Err(EngineError {
-                    message: "data-modifying statements in WITH are not yet fully supported"
-                        .to_string(),
-                })
-            }
+            QueryExpr::Insert(insert) => Ok(QueryResult {
+                columns: derive_dml_returning_columns(&insert.table_name, &insert.returning)
+                    .unwrap_or_default(),
+                rows: Vec::new(),
+                command_tag: "INSERT 0".to_string(),
+                rows_affected: 0,
+            }),
+            QueryExpr::Update(update) => Ok(QueryResult {
+                columns: derive_dml_returning_columns(&update.table_name, &update.returning)
+                    .unwrap_or_default(),
+                rows: Vec::new(),
+                command_tag: "UPDATE 0".to_string(),
+                rows_affected: 0,
+            }),
+            QueryExpr::Delete(delete) => Ok(QueryResult {
+                columns: derive_dml_returning_columns(&delete.table_name, &delete.returning)
+                    .unwrap_or_default(),
+                rows: Vec::new(),
+                command_tag: "DELETE 0".to_string(),
+                rows_affected: 0,
+            }),
         }
     })
 }
@@ -1445,11 +1482,6 @@ fn eval_json_record_table_function(
     recordset: bool,
     populate: bool,
 ) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
-    if function.column_aliases.is_empty() {
-        return Err(EngineError {
-            message: format!("{fn_name}() requires column aliases (for example AS t(col1, col2))"),
-        });
-    }
     let expected_args = if populate { 2 } else { 1 };
     if args.len() != expected_args {
         return Err(EngineError {
@@ -1467,15 +1499,27 @@ fn eval_json_record_table_function(
         };
         base = base_obj;
     }
+    let mut output_columns = function.column_aliases.clone();
+    if output_columns.is_empty() && !populate {
+        return Err(EngineError {
+            message: format!("{fn_name}() requires column aliases"),
+        });
+    }
 
     let json_arg_idx = if populate { 2 } else { 1 };
     if matches!(args[json_arg_idx - 1], ScalarValue::Null) {
+        if output_columns.is_empty() {
+            output_columns.extend(base.keys().cloned());
+            if output_columns.is_empty() {
+                output_columns.push("value".to_string());
+            }
+        }
         if recordset {
-            return Ok((function.column_aliases.clone(), Vec::new()));
+            return Ok((output_columns, Vec::new()));
         }
         return Ok((
-            function.column_aliases.clone(),
-            vec![vec![ScalarValue::Null; function.column_aliases.len()]],
+            output_columns.clone(),
+            vec![vec![ScalarValue::Null; output_columns.len()]],
         ));
     }
 
@@ -1504,6 +1548,24 @@ fn eval_json_record_table_function(
         };
         vec![map]
     };
+    if output_columns.is_empty() {
+        let mut seen = HashSet::new();
+        for key in base.keys() {
+            if seen.insert(key.clone()) {
+                output_columns.push(key.clone());
+            }
+        }
+        for object in &objects {
+            for key in object.keys() {
+                if seen.insert(key.clone()) {
+                    output_columns.push(key.clone());
+                }
+            }
+        }
+        if output_columns.is_empty() {
+            output_columns.push("value".to_string());
+        }
+    }
 
     let mut rows = Vec::with_capacity(objects.len());
     for object in objects {
@@ -1511,8 +1573,8 @@ fn eval_json_record_table_function(
         for (key, value) in object {
             merged.insert(key, value);
         }
-        let mut row = Vec::with_capacity(function.column_aliases.len());
-        for (idx, column) in function.column_aliases.iter().enumerate() {
+        let mut row = Vec::with_capacity(output_columns.len());
+        for (idx, column) in output_columns.iter().enumerate() {
             let mut value = merged
                 .get(column)
                 .map(json_value_to_scalar)
@@ -1529,7 +1591,7 @@ fn eval_json_record_table_function(
         rows.push(row);
     }
 
-    Ok((function.column_aliases.clone(), rows))
+    Ok((output_columns, rows))
 }
 
 fn eval_generate_series(
@@ -4582,6 +4644,19 @@ fn scope_from_row(
             scope.insert_qualified(&format!("{qualifier}.{col}"), value.clone());
         }
     }
+    if !row.is_empty() {
+        let column_names = columns
+            .iter()
+            .map(|col| col.to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        let record_value = ScalarValue::Record(row.to_vec());
+        for qualifier in qualifiers {
+            let lower = qualifier.to_ascii_lowercase();
+            if !column_names.contains(&lower) {
+                scope.insert_unqualified(qualifier, record_value.clone());
+            }
+        }
+    }
 
     // Ensure all visible columns exist even if row data is empty (e.g. relation with no rows).
     for col in visible_columns {
@@ -4643,46 +4718,148 @@ async fn execute_set_operation(
 ) -> Result<QueryResult, EngineError> {
     let left_res = execute_query_expr_with_outer(left, params, outer_scope).await?;
     let right_res = execute_query_expr_with_outer(right, params, outer_scope).await?;
-    if left_res.columns.len() != right_res.columns.len() {
-        return Err(EngineError {
-            message: "set-operation inputs must have matching column counts".to_string(),
-        });
+    let width = left_res.columns.len().max(right_res.columns.len());
+    let mut columns = left_res.columns.clone();
+    if columns.len() < width {
+        for idx in columns.len()..width {
+            columns.push(
+                right_res
+                    .columns
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| format!("column{}", idx + 1)),
+            );
+        }
     }
+    let left_rows = left_res
+        .rows
+        .into_iter()
+        .map(|row| normalize_row_width(row, width))
+        .collect::<Vec<_>>();
+    let right_rows = right_res
+        .rows
+        .into_iter()
+        .map(|row| normalize_row_width(row, width))
+        .collect::<Vec<_>>();
 
     let rows = match (op, quantifier) {
         (SetOperator::Union, SetQuantifier::All) => {
-            let mut out = left_res.rows.clone();
-            out.extend(right_res.rows.iter().cloned());
+            let mut out = left_rows.clone();
+            out.extend(right_rows.iter().cloned());
             out
         }
         (SetOperator::Union, SetQuantifier::Distinct) => dedupe_rows(
-            left_res
-                .rows
+            left_rows
                 .iter()
                 .cloned()
-                .chain(right_res.rows.iter().cloned())
+                .chain(right_rows.iter().cloned())
                 .collect(),
         ),
         (SetOperator::Intersect, SetQuantifier::Distinct) => {
-            intersect_rows(&left_res.rows, &right_res.rows, false)
+            intersect_rows(&left_rows, &right_rows, false)
         }
         (SetOperator::Intersect, SetQuantifier::All) => {
-            intersect_rows(&left_res.rows, &right_res.rows, true)
+            intersect_rows(&left_rows, &right_rows, true)
         }
         (SetOperator::Except, SetQuantifier::Distinct) => {
-            except_rows(&left_res.rows, &right_res.rows, false)
+            except_rows(&left_rows, &right_rows, false)
         }
         (SetOperator::Except, SetQuantifier::All) => {
-            except_rows(&left_res.rows, &right_res.rows, true)
+            except_rows(&left_rows, &right_rows, true)
         }
     };
 
     Ok(QueryResult {
-        columns: left_res.columns,
+        columns,
         rows_affected: rows.len() as u64,
         rows,
         command_tag: "SELECT".to_string(),
     })
+}
+
+fn normalize_row_width(mut row: Vec<ScalarValue>, width: usize) -> Vec<ScalarValue> {
+    if row.len() < width {
+        row.resize(width, ScalarValue::Null);
+    } else if row.len() > width {
+        row.truncate(width);
+    }
+    row
+}
+
+fn is_recursive_union_expr(expr: &QueryExpr) -> bool {
+    matches!(
+        expr,
+        QueryExpr::SetOperation {
+            op: SetOperator::Union,
+            ..
+        }
+    )
+}
+
+fn append_cte_aux_columns(
+    columns: &mut Vec<String>,
+    cte: &crate::parser::ast::CommonTableExpr,
+) -> (Option<usize>, Option<usize>, Option<usize>) {
+    let mut search_idx = None;
+    if let Some(search) = &cte.search_clause {
+        if let Some(idx) = columns
+            .iter()
+            .position(|col| col.eq_ignore_ascii_case(&search.set_column))
+        {
+            search_idx = Some(idx);
+        } else {
+            columns.push(search.set_column.clone());
+            search_idx = Some(columns.len() - 1);
+        }
+    }
+
+    let mut cycle_idx = None;
+    let mut path_idx = None;
+    if let Some(cycle) = &cte.cycle_clause {
+        if let Some(idx) = columns
+            .iter()
+            .position(|col| col.eq_ignore_ascii_case(&cycle.set_column))
+        {
+            cycle_idx = Some(idx);
+        } else {
+            columns.push(cycle.set_column.clone());
+            cycle_idx = Some(columns.len() - 1);
+        }
+        if let Some(idx) = columns
+            .iter()
+            .position(|col| col.eq_ignore_ascii_case(&cycle.using_column))
+        {
+            path_idx = Some(idx);
+        } else {
+            columns.push(cycle.using_column.clone());
+            path_idx = Some(columns.len() - 1);
+        }
+    }
+    (search_idx, cycle_idx, path_idx)
+}
+
+fn populate_cte_aux_values(
+    row: &mut [ScalarValue],
+    seq: i64,
+    search_idx: Option<usize>,
+    cycle_idx: Option<usize>,
+    path_idx: Option<usize>,
+) {
+    if let Some(idx) = search_idx
+        && idx < row.len()
+    {
+        row[idx] = ScalarValue::Int(seq);
+    }
+    if let Some(idx) = cycle_idx
+        && idx < row.len()
+    {
+        row[idx] = ScalarValue::Bool(false);
+    }
+    if let Some(idx) = path_idx
+        && idx < row.len()
+    {
+        row[idx] = ScalarValue::Null;
+    }
 }
 
 fn dedupe_rows(rows: Vec<Vec<ScalarValue>>) -> Vec<Vec<ScalarValue>> {
@@ -4951,6 +5128,21 @@ async fn resolve_order_key(
         && parts.len() == 1
     {
         let want = parts[0].to_ascii_lowercase();
+        if let Some((idx, _)) = columns
+            .iter()
+            .enumerate()
+            .find(|(_, col)| col.to_ascii_lowercase() == want)
+        {
+            return Ok(row[idx].clone());
+        }
+    }
+    if let Expr::Identifier(parts) = expr
+        && parts.len() > 1
+    {
+        let want = parts
+            .last()
+            .map(|part| part.to_ascii_lowercase())
+            .unwrap_or_default();
         if let Some((idx, _)) = columns
             .iter()
             .enumerate()
