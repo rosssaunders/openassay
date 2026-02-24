@@ -39,7 +39,8 @@ use crate::utils::adt::json::{
 };
 use crate::utils::adt::math_functions::{NumericOperand, numeric_mod, parse_numeric_operand};
 use crate::utils::adt::misc::{
-    compare_values_for_predicate, parse_bool_scalar, parse_f64_scalar, parse_i64_scalar,
+    compare_values_for_predicate, parse_bool_scalar, parse_f64_numeric_scalar, parse_f64_scalar,
+    parse_i64_scalar,
     parse_nullable_bool, truthy,
 };
 use crate::utils::fmgr::eval_scalar_function;
@@ -2313,8 +2314,32 @@ pub(crate) fn eval_unary(op: UnaryOp, value: ScalarValue) -> Result<ScalarValue,
         (UnaryOp::Not, ScalarValue::Null) => Ok(ScalarValue::Null),
         (UnaryOp::Plus, ScalarValue::Int(v)) => Ok(ScalarValue::Int(v)),
         (UnaryOp::Plus, ScalarValue::Float(v)) => Ok(ScalarValue::Float(v)),
+        (UnaryOp::Plus, ScalarValue::Text(text)) => {
+            if is_interval_text(&text) {
+                if let Some(interval) = parse_interval_operand(&ScalarValue::Text(text.clone())) {
+                    return Ok(ScalarValue::Text(format_interval_value(interval)));
+                }
+                return Ok(ScalarValue::Null);
+            }
+            Err(EngineError {
+                message: "invalid unary operation".to_string(),
+            })
+        }
         (UnaryOp::Minus, ScalarValue::Int(v)) => Ok(ScalarValue::Int(-v)),
         (UnaryOp::Minus, ScalarValue::Float(v)) => Ok(ScalarValue::Float(-v)),
+        (UnaryOp::Minus, ScalarValue::Text(text)) => {
+            if is_interval_text(&text) {
+                if let Some(interval) = parse_interval_operand(&ScalarValue::Text(text)) {
+                    return Ok(ScalarValue::Text(format_interval_value(interval_negate(
+                        interval,
+                    ))));
+                }
+                return Ok(ScalarValue::Null);
+            }
+            Err(EngineError {
+                message: "invalid unary operation".to_string(),
+            })
+        }
         _ => Err(EngineError {
             message: "invalid unary operation".to_string(),
         }),
@@ -2353,13 +2378,15 @@ pub(crate) fn eval_binary(
             let left_is_interval = matches!(&left, ScalarValue::Text(t) if is_interval_text(t));
             let right_is_interval = matches!(&right, ScalarValue::Text(t) if is_interval_text(t));
             if left_is_interval && let Some(iv) = parse_interval_operand(&left) {
-                let factor = parse_f64_scalar(&right, "interval multiplication expects numeric")?;
+                let factor =
+                    parse_f64_numeric_scalar(&right, "interval multiplication expects numeric")?;
                 return Ok(ScalarValue::Text(format_interval_value(interval_mul(
                     iv, factor,
                 ))));
             }
             if right_is_interval && let Some(iv) = parse_interval_operand(&right) {
-                let factor = parse_f64_scalar(&left, "interval multiplication expects numeric")?;
+                let factor =
+                    parse_f64_numeric_scalar(&left, "interval multiplication expects numeric")?;
                 return Ok(ScalarValue::Text(format_interval_value(interval_mul(
                     iv, factor,
                 ))));
@@ -2372,7 +2399,24 @@ pub(crate) fn eval_binary(
                 |a, b| Ok(a * b),
             )
         }
-        Div => numeric_div(left, right),
+        Div => {
+            if matches!(&left, ScalarValue::Text(t) if is_interval_text(t))
+                && let Some(iv) = parse_interval_operand(&left)
+            {
+                let divisor =
+                    parse_f64_numeric_scalar(&right, "interval division expects numeric")?;
+                if divisor == 0.0 {
+                    return Err(EngineError {
+                        message: "division by zero".to_string(),
+                    });
+                }
+                return Ok(ScalarValue::Text(format_interval_value(interval_mul(
+                    iv,
+                    1.0 / divisor,
+                ))));
+            }
+            numeric_div(left, right)
+        }
         Mod => numeric_mod(left, right),
         JsonGet => eval_json_get_operator(left, right, false),
         JsonGetText => eval_json_get_operator(left, right, true),

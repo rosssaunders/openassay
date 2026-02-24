@@ -525,6 +525,7 @@ pub enum MergeWhenClause {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateIndexStatement {
     pub name: String,
+    pub generated_name: bool,
     pub table_name: Vec<String>,
     pub columns: Vec<String>,
     pub unique: bool,

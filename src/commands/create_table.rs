@@ -12,12 +12,6 @@ pub async fn execute_create_table(
         return execute_create_table_as_select(create, query).await;
     }
 
-    if create.columns.is_empty() {
-        return Err(EngineError {
-            message: "CREATE TABLE requires at least one column".to_string(),
-        });
-    }
-
     let (schema_name, table_name) = relation_name_for_create(&create.name)?;
     let mut transformed_columns = create.columns.clone();
     let mut identity_sequence_names = Vec::new();
