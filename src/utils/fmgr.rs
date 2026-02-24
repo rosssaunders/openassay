@@ -236,7 +236,12 @@ pub(crate) async fn eval_scalar_function(
         }
         "abs" if args.len() == 1 => match &args[0] {
             ScalarValue::Null => Ok(ScalarValue::Null),
-            ScalarValue::Int(i) => Ok(ScalarValue::Int(i.abs())),
+            ScalarValue::Int(i) => {
+                let abs_value = i.checked_abs().ok_or_else(|| EngineError {
+                    message: "bigint out of range".to_string(),
+                })?;
+                Ok(ScalarValue::Int(abs_value))
+            }
             ScalarValue::Float(f) => Ok(ScalarValue::Float(f.abs())),
             _ => Err(EngineError {
                 message: "abs() expects numeric argument".to_string(),
@@ -830,7 +835,7 @@ pub(crate) async fn eval_scalar_function(
             }
             let a = parse_i64_scalar(&args[0], "gcd() expects integer")?;
             let b = parse_i64_scalar(&args[1], "gcd() expects integer")?;
-            Ok(ScalarValue::Int(gcd_i64(a, b)))
+            Ok(ScalarValue::Int(gcd_i64(a, b)?))
         }
         "lcm" if args.len() == 2 => {
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
@@ -838,8 +843,16 @@ pub(crate) async fn eval_scalar_function(
             }
             let a = parse_i64_scalar(&args[0], "lcm() expects integer")?;
             let b = parse_i64_scalar(&args[1], "lcm() expects integer")?;
-            let g = gcd_i64(a, b);
-            Ok(ScalarValue::Int(if g == 0 { 0 } else { (a / g * b).abs() }))
+            let g = gcd_i64(a, b)?;
+            if g == 0 {
+                return Ok(ScalarValue::Int(0));
+            }
+            let product = i128::from(a / g) * i128::from(b);
+            let abs_product = product.abs();
+            let value = i64::try_from(abs_product).map_err(|_| EngineError {
+                message: "bigint out of range".to_string(),
+            })?;
+            Ok(ScalarValue::Int(value))
         }
         // --- Additional string functions ---
         "initcap" if args.len() == 1 => {

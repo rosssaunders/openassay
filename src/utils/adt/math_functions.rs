@@ -61,15 +61,17 @@ pub(crate) fn coerce_to_f64(v: &ScalarValue, context: &str) -> Result<f64, Engin
     }
 }
 
-pub(crate) fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
-    a = a.abs();
-    b = b.abs();
-    while b != 0 {
-        let t = b;
-        b = a % b;
-        a = t;
+pub(crate) fn gcd_i64(a: i64, b: i64) -> Result<i64, EngineError> {
+    let mut left = i128::from(a).abs();
+    let mut right = i128::from(b).abs();
+    while right != 0 {
+        let next = left % right;
+        left = right;
+        right = next;
     }
-    a
+    i64::try_from(left).map_err(|_| EngineError {
+        message: "bigint out of range".to_string(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]

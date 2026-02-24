@@ -272,6 +272,7 @@ impl Parser {
                 "expected '(' after CREATE INDEX table name",
             )?;
             let mut columns = vec![self.parse_identifier()?];
+            self.parse_optional_index_operator_class()?;
             let _ = self.consume_keyword(Keyword::Asc) || self.consume_keyword(Keyword::Desc);
             if self.consume_ident("nulls")
                 && !(self.consume_keyword(Keyword::First) || self.consume_keyword(Keyword::Last))
@@ -280,6 +281,7 @@ impl Parser {
             }
             while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                 columns.push(self.parse_identifier()?);
+                self.parse_optional_index_operator_class()?;
                 let _ = self.consume_keyword(Keyword::Asc) || self.consume_keyword(Keyword::Desc);
                 if self.consume_ident("nulls")
                     && !(self.consume_keyword(Keyword::First)
@@ -4835,6 +4837,23 @@ impl Parser {
         }
     }
 
+    /// Parse and ignore an optional CREATE INDEX operator class token, e.g. `int4_ops`
+    /// or schema-qualified `pg_catalog.int4_ops`.
+    fn parse_optional_index_operator_class(&mut self) -> Result<(), ParseError> {
+        let TokenKind::Identifier(ident) = self.current_kind() else {
+            return Ok(());
+        };
+        if ident.eq_ignore_ascii_case("nulls") {
+            return Ok(());
+        }
+
+        let _ = self.parse_identifier()?;
+        while self.consume_if(|k| matches!(k, TokenKind::Dot)) {
+            let _ = self.parse_identifier()?;
+        }
+        Ok(())
+    }
+
     /// Skip optional array subscripts like [1], [1:2], [1:2][3:4], etc.
     /// Used in INSERT column lists where subscripts are accepted but we ignore them.
     fn skip_array_subscripts(&mut self) {
@@ -7319,6 +7338,23 @@ mod tests {
         assert_eq!(create.table_name, vec!["users".to_string()]);
         assert_eq!(create.columns, vec!["email".to_string()]);
         assert!(create.unique);
+    }
+
+    #[test]
+    fn parses_create_index_with_operator_class() {
+        let stmt = parse_statement(
+            "CREATE INDEX onek_unique1 ON onek USING btree(unique1 int4_ops, unique2 int4_ops)",
+        )
+        .expect("parse should succeed");
+        let Statement::CreateIndex(create) = stmt else {
+            panic!("expected create index statement");
+        };
+        assert_eq!(create.name, "onek_unique1");
+        assert_eq!(create.table_name, vec!["onek".to_string()]);
+        assert_eq!(
+            create.columns,
+            vec!["unique1".to_string(), "unique2".to_string()]
+        );
     }
 
     #[test]
