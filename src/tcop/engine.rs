@@ -1186,7 +1186,7 @@ async fn execute_insert(
         InsertSource::Values(values_rows) => {
             let mut rows = Vec::with_capacity(values_rows.len());
             for row_exprs in values_rows {
-                if row_exprs.len() != target_indexes.len() {
+                if row_exprs.len() > target_indexes.len() {
                     return Err(EngineError {
                         message: format!(
                             "INSERT has {} expressions but {} target columns",
@@ -1224,7 +1224,7 @@ async fn execute_insert(
             let query_rows = execute_query(query, params).await?.rows;
             let mut rows = Vec::with_capacity(query_rows.len());
             for source_row in &query_rows {
-                if source_row.len() != target_indexes.len() {
+                if source_row.len() > target_indexes.len() {
                     return Err(EngineError {
                         message: format!(
                             "INSERT has {} expressions but {} target columns",
@@ -2571,24 +2571,28 @@ fn resolve_on_conflict_target_indexes(
             let mut seen = HashSet::new();
             for column in columns {
                 let normalized = column.to_ascii_lowercase();
-                if !seen.insert(normalized.clone()) {
-                    return Err(EngineError {
-                        message: format!(
-                            "ON CONFLICT target column \"{column}\" specified more than once"
-                        ),
-                    });
+                if seen.insert(normalized.clone()) {
+                    normalized_target.push(normalized);
                 }
-                normalized_target.push(normalized);
             }
             if normalized_target.is_empty() {
                 return Err(EngineError {
                     message: "ON CONFLICT target must reference at least one column".to_string(),
                 });
             }
-            if !table
-                .key_constraints()
+
+            let target_set = normalized_target
                 .iter()
-                .any(|constraint| constraint.columns == normalized_target)
+                .cloned()
+                .collect::<HashSet<String>>();
+            let matches_unique_constraint = table.key_constraints().iter().any(|constraint| {
+                constraint.columns.iter().cloned().collect::<HashSet<String>>() == target_set
+            });
+            let matches_unique_index = table.indexes().iter().any(|index| {
+                index.unique
+                    && index.columns.iter().cloned().collect::<HashSet<String>>() == target_set
+            });
+            if !matches_unique_constraint && !matches_unique_index
             {
                 return Err(EngineError {
                     message: "there is no unique or primary key constraint matching the ON CONFLICT specification".to_string(),

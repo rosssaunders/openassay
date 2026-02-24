@@ -553,11 +553,13 @@ pub enum AlterSequenceAction {
     SetMaxValue { max: Option<i64> },
     SetCycle { cycle: bool },
     SetCache { cache: i64 },
+    NoOp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlterSequenceStatement {
     pub name: Vec<String>,
+    pub if_exists: bool,
     pub actions: Vec<AlterSequenceAction>,
 }
 

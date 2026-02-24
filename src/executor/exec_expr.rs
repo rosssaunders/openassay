@@ -106,6 +106,9 @@ impl EvalScope {
                     message: format!("column reference \"{}\" is ambiguous", parts[0]),
                 });
             }
+            if key == "current_user" || key == "session_user" {
+                return Ok(ScalarValue::Text(crate::security::current_role()));
+            }
             return self
                 .unqualified
                 .get(&key)
@@ -2155,6 +2158,11 @@ pub(crate) fn eval_cast_scalar(
                 _ => Ok(ScalarValue::Text(value.render())),
             }
         }
+        "regclass" => Ok(ScalarValue::Text(value.render())),
+        "oid" => Ok(ScalarValue::Int(parse_i64_scalar(
+            &value,
+            "cannot cast value to oid",
+        )?)),
         "date" => {
             let dt = parse_datetime_scalar(&value)?;
             Ok(ScalarValue::Text(format_date(dt.date)))
