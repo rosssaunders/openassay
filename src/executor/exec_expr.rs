@@ -40,7 +40,7 @@ use crate::utils::adt::json::{
 use crate::utils::adt::math_functions::{NumericOperand, numeric_mod, parse_numeric_operand};
 use crate::utils::adt::misc::{
     compare_values_for_predicate, parse_bool_scalar, parse_f64_numeric_scalar, parse_f64_scalar,
-    parse_i64_scalar, parse_nullable_bool, truthy,
+    parse_i64_scalar, parse_nullable_bool, parse_pg_array_literal, truthy,
 };
 use crate::utils::fmgr::eval_scalar_function;
 
@@ -2034,6 +2034,15 @@ pub(crate) fn eval_cast_scalar(
     if matches!(value, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
+    if type_name.ends_with("[]") {
+        return match value {
+            ScalarValue::Array(values) => Ok(ScalarValue::Array(values)),
+            ScalarValue::Text(text) => parse_pg_array_literal(&text),
+            _ => Err(EngineError {
+                message: format!("cannot cast value to {type_name}"),
+            }),
+        };
+    }
     match type_name {
         "boolean" => {
             // PostgreSQL-compatible error message from bool.c
@@ -3624,6 +3633,10 @@ fn eval_array_subscript(
     index: ScalarValue,
 ) -> Result<ScalarValue, EngineError> {
     // Get the array elements
+    let array = match array {
+        ScalarValue::Text(text) => parse_pg_array_literal(&text)?,
+        other => other,
+    };
     let elements = match array {
         ScalarValue::Array(ref arr) => arr,
         ScalarValue::Null => return Ok(ScalarValue::Null),
@@ -3645,14 +3658,11 @@ fn eval_array_subscript(
         }
     };
 
-    // Convert 1-indexed to 0-indexed
-    if idx == 0 {
-        return Err(EngineError {
-            message: "array index 0 is invalid (PostgreSQL arrays are 1-indexed)".to_string(),
-        });
-    }
+    // Convert to a zero-based offset.
     let zero_idx = if idx > 0 {
         (idx - 1) as usize
+    } else if idx == 0 {
+        0usize
     } else {
         // Negative indices count from the end
         let abs_idx = (-idx) as usize;
@@ -3672,6 +3682,10 @@ fn eval_array_slice(
     end: Option<ScalarValue>,
 ) -> Result<ScalarValue, EngineError> {
     // Get the array elements
+    let array = match array {
+        ScalarValue::Text(text) => parse_pg_array_literal(&text)?,
+        other => other,
+    };
     let elements = match array {
         ScalarValue::Array(ref arr) => arr,
         ScalarValue::Null => return Ok(ScalarValue::Null),
@@ -3738,6 +3752,16 @@ fn eval_array_slice(
 
 /// Concatenate two arrays (or an array and a scalar).
 fn eval_array_concat(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, EngineError> {
+    let left = if let ScalarValue::Text(text) = left {
+        parse_pg_array_literal(&text).unwrap_or(ScalarValue::Text(text))
+    } else {
+        left
+    };
+    let right = if let ScalarValue::Text(text) = right {
+        parse_pg_array_literal(&text).unwrap_or(ScalarValue::Text(text))
+    } else {
+        right
+    };
     let mut result = match left {
         ScalarValue::Array(elems) => elems,
         other => vec![other],
@@ -3751,6 +3775,16 @@ fn eval_array_concat(left: ScalarValue, right: ScalarValue) -> Result<ScalarValu
 
 /// Check if left array contains all elements of right array (`@>`).
 fn eval_array_contains(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, EngineError> {
+    let left = if let ScalarValue::Text(text) = left {
+        parse_pg_array_literal(&text).unwrap_or(ScalarValue::Text(text))
+    } else {
+        left
+    };
+    let right = if let ScalarValue::Text(text) = right {
+        parse_pg_array_literal(&text).unwrap_or(ScalarValue::Text(text))
+    } else {
+        right
+    };
     let left_elems = match left {
         ScalarValue::Array(elems) => elems,
         _ => return Ok(ScalarValue::Bool(false)),
@@ -3765,6 +3799,16 @@ fn eval_array_contains(left: ScalarValue, right: ScalarValue) -> Result<ScalarVa
 
 /// Check if two arrays share any elements (`&&`).
 fn eval_array_overlap(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, EngineError> {
+    let left = if let ScalarValue::Text(text) = left {
+        parse_pg_array_literal(&text).unwrap_or(ScalarValue::Text(text))
+    } else {
+        left
+    };
+    let right = if let ScalarValue::Text(text) = right {
+        parse_pg_array_literal(&text).unwrap_or(ScalarValue::Text(text))
+    } else {
+        right
+    };
     let left_elems = match left {
         ScalarValue::Array(elems) => elems,
         _ => return Ok(ScalarValue::Bool(false)),

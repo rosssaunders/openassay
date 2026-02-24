@@ -2150,6 +2150,21 @@ impl Parser {
                 cache = Some(self.parse_signed_integer_literal()?);
                 continue;
             }
+            if self.consume_keyword(Keyword::As) {
+                let _ = self.parse_type_name()?;
+                continue;
+            }
+            if self.consume_ident("owned") {
+                self.expect_keyword(Keyword::By, "expected BY after OWNED in CREATE SEQUENCE")?;
+                if self.consume_ident("none") {
+                    continue;
+                }
+                let _ = self.parse_identifier()?;
+                if self.consume_if(|k| matches!(k, TokenKind::Dot)) {
+                    let _ = self.parse_identifier()?;
+                }
+                continue;
+            }
             break;
         }
 
@@ -2986,10 +3001,11 @@ impl Parser {
                     "expected ')' to close subquery in FROM",
                 )?;
                 let alias = self.parse_optional_alias()?;
-                let _ = self.parse_optional_column_aliases()?;
+                let (column_aliases, _) = self.parse_optional_column_aliases()?;
                 return Ok(TableExpression::Subquery(SubqueryRef {
                     query,
                     alias,
+                    column_aliases,
                     lateral,
                 }));
             }

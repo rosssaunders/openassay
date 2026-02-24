@@ -1533,11 +1533,12 @@ async fn execute_update(
     let mut seen = HashSet::new();
     for assignment in &update.assignments {
         let normalized = assignment.column.to_ascii_lowercase();
+        let assignment_key = format!("{normalized}:{:?}", assignment.subscripts);
         // Check for qualified column name (e.g. SET t.b = ...) — PostgreSQL rejects this
         // The column name should not contain dots; if someone writes "t.b", the parser
         // produces column="t" which won't match, giving a good error. But let's also
         // detect if the column name looks qualified.
-        if !seen.insert(normalized.clone()) {
+        if !seen.insert(assignment_key) {
             return Err(EngineError {
                 message: format!("column \"{}\" specified more than once", assignment.column),
             });
@@ -1589,12 +1590,17 @@ async fn execute_update(
     let mut after_trigger_rows = Vec::new();
     let mut updated_changes = Vec::new();
     let mut updated = 0u64;
+    let target_qualifiers = update
+        .alias
+        .as_ref()
+        .map(|alias| vec![alias.to_ascii_lowercase()])
+        .unwrap_or_else(|| vec![table.name().to_string(), table.qualified_name()]);
 
     'row_updates: for (row_idx, row) in current_rows.iter().enumerate() {
         if !relation_row_visible_for_command(&table, row, RlsCommand::Update, params).await? {
             continue;
         }
-        let base_scope = scope_for_table_row(&table, row);
+        let base_scope = scope_for_table_row_with_qualifiers(&table, row, &target_qualifiers);
         let mut matched_scope = None;
         if update.from.is_empty() {
             let matches = if let Some(predicate) = &update.where_clause {
@@ -2494,7 +2500,8 @@ fn resolve_update_assignment_targets<'a>(
     let mut seen = HashSet::new();
     for assignment in assignments {
         let normalized = assignment.column.to_ascii_lowercase();
-        if !seen.insert(normalized.clone()) {
+        let assignment_key = format!("{normalized}:{:?}", assignment.subscripts);
+        if !seen.insert(assignment_key) {
             return Err(EngineError {
                 message: format!("column \"{}\" specified more than once", assignment.column),
             });

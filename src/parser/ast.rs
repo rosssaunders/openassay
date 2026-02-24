@@ -715,6 +715,7 @@ pub struct TableFunctionRef {
 pub struct SubqueryRef {
     pub query: Query,
     pub alias: Option<String>,
+    pub column_aliases: Vec<String>,
     pub lateral: bool,
 }
 

@@ -1016,6 +1016,19 @@ pub(crate) fn evaluate_table_expression<'a>(
             }
             TableExpression::Subquery(sub) => {
                 let result = execute_query_with_outer(&sub.query, params, outer_scope).await?;
+                let columns = if sub.column_aliases.is_empty() {
+                    result.columns.clone()
+                } else if sub.column_aliases.len() == result.columns.len() {
+                    sub.column_aliases.clone()
+                } else {
+                    return Err(EngineError {
+                        message: format!(
+                            "subquery alias has {} columns but subquery returns {} columns",
+                            sub.column_aliases.len(),
+                            result.columns.len()
+                        ),
+                    });
+                };
                 let qualifiers = sub
                     .alias
                     .as_ref()
@@ -1023,20 +1036,14 @@ pub(crate) fn evaluate_table_expression<'a>(
                     .unwrap_or_default();
                 let mut rows = Vec::with_capacity(result.rows.len());
                 for row in &result.rows {
-                    rows.push(scope_from_row(
-                        &result.columns,
-                        row,
-                        &qualifiers,
-                        &result.columns,
-                    ));
+                    rows.push(scope_from_row(&columns, row, &qualifiers, &columns));
                 }
-                let null_values = vec![ScalarValue::Null; result.columns.len()];
-                let null_scope =
-                    scope_from_row(&result.columns, &null_values, &qualifiers, &result.columns);
+                let null_values = vec![ScalarValue::Null; columns.len()];
+                let null_scope = scope_from_row(&columns, &null_values, &qualifiers, &columns);
 
                 Ok(TableEval {
                     rows,
-                    columns: result.columns,
+                    columns,
                     null_scope,
                 })
             }
