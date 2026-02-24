@@ -152,11 +152,29 @@ fn parse_dollar_tag(bytes: &[u8], start: usize) -> Option<usize> {
 
 fn split_sql_statements(sql: &str) -> Vec<String> {
     // psql meta-commands (`\set`, `\getenv`, etc.) are not SQL statements.
-    let filtered = sql
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('\\'))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // Also skip COPY FROM STDIN data sections, which are not SQL.
+    let mut filtered_lines = Vec::new();
+    let mut in_copy_stdin_data = false;
+    for line in sql.lines() {
+        let trimmed = line.trim();
+        if in_copy_stdin_data {
+            if trimmed == "\\." {
+                in_copy_stdin_data = false;
+            }
+            continue;
+        }
+
+        if line.trim_start().starts_with('\\') {
+            continue;
+        }
+
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("copy ") && lower.contains("from stdin") {
+            in_copy_stdin_data = true;
+        }
+        filtered_lines.push(line);
+    }
+    let filtered = filtered_lines.join("\n");
 
     let bytes = filtered.as_bytes();
     let mut statements = Vec::new();

@@ -56,6 +56,167 @@ pub(crate) fn text_array_from_options(items: &[Option<String>]) -> String {
     format!("{{{}}}", rendered.join(","))
 }
 
+pub(crate) fn parse_pg_array_literal(input: &str) -> Result<ScalarValue, EngineError> {
+    let mut text = input.trim();
+    if text.starts_with('[') {
+        let Some(eq_pos) = text.find('=') else {
+            return Err(EngineError {
+                message: format!("invalid array literal \"{input}\""),
+            });
+        };
+        text = &text[eq_pos + 1..];
+    }
+
+    let mut parser = ArrayLiteralParser::new(text);
+    let value = parser.parse_array()?;
+    parser.skip_whitespace();
+    if !parser.is_eof() {
+        return Err(EngineError {
+            message: format!("invalid array literal \"{input}\""),
+        });
+    }
+    Ok(value)
+}
+
+struct ArrayLiteralParser<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> ArrayLiteralParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self {
+            bytes: input.as_bytes(),
+            pos: 0,
+        }
+    }
+
+    fn is_eof(&self) -> bool {
+        self.pos >= self.bytes.len()
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.pos).copied()
+    }
+
+    fn bump(&mut self) -> Option<u8> {
+        let byte = self.peek()?;
+        self.pos += 1;
+        Some(byte)
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(byte) = self.peek() {
+            if (byte as char).is_ascii_whitespace() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn expect(&mut self, expected: u8) -> Result<(), EngineError> {
+        match self.bump() {
+            Some(found) if found == expected => Ok(()),
+            _ => Err(EngineError {
+                message: "invalid array literal".to_string(),
+            }),
+        }
+    }
+
+    fn parse_array(&mut self) -> Result<ScalarValue, EngineError> {
+        self.skip_whitespace();
+        self.expect(b'{')?;
+        self.skip_whitespace();
+        let mut elements = Vec::new();
+
+        if self.peek() == Some(b'}') {
+            self.bump();
+            return Ok(ScalarValue::Array(elements));
+        }
+
+        loop {
+            elements.push(self.parse_element()?);
+            self.skip_whitespace();
+            match self.bump() {
+                Some(b',') => {
+                    self.skip_whitespace();
+                }
+                Some(b'}') => break,
+                _ => {
+                    return Err(EngineError {
+                        message: "invalid array literal".to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(ScalarValue::Array(elements))
+    }
+
+    fn parse_element(&mut self) -> Result<ScalarValue, EngineError> {
+        self.skip_whitespace();
+        match self.peek() {
+            Some(b'{') => self.parse_array(),
+            Some(b'"') => Ok(ScalarValue::Text(self.parse_quoted_text()?)),
+            Some(_) => self.parse_unquoted_element(),
+            None => Err(EngineError {
+                message: "invalid array literal".to_string(),
+            }),
+        }
+    }
+
+    fn parse_quoted_text(&mut self) -> Result<String, EngineError> {
+        self.expect(b'"')?;
+        let mut out = String::new();
+        while let Some(byte) = self.bump() {
+            match byte {
+                b'"' => {
+                    if self.peek() == Some(b'"') {
+                        self.bump();
+                        out.push('"');
+                    } else {
+                        return Ok(out);
+                    }
+                }
+                b'\\' => {
+                    if let Some(next) = self.bump() {
+                        out.push(next as char);
+                    } else {
+                        return Err(EngineError {
+                            message: "invalid array literal".to_string(),
+                        });
+                    }
+                }
+                _ => out.push(byte as char),
+            }
+        }
+        Err(EngineError {
+            message: "invalid array literal".to_string(),
+        })
+    }
+
+    fn parse_unquoted_element(&mut self) -> Result<ScalarValue, EngineError> {
+        let start = self.pos;
+        while let Some(byte) = self.peek() {
+            if byte == b',' || byte == b'}' {
+                break;
+            }
+            self.pos += 1;
+        }
+        let token = std::str::from_utf8(&self.bytes[start..self.pos])
+            .map_err(|_| EngineError {
+                message: "invalid array literal".to_string(),
+            })?
+            .trim();
+        if token.eq_ignore_ascii_case("null") {
+            Ok(ScalarValue::Null)
+        } else {
+            Ok(ScalarValue::Text(token.to_string()))
+        }
+    }
+}
+
 pub(crate) fn eval_regexp_match(
     text: &str,
     pattern: &str,

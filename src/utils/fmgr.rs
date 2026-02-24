@@ -31,8 +31,8 @@ use crate::utils::adt::misc::{
     array_value_matches, compare_values_for_predicate, count_nonnulls, count_nulls, eval_extremum,
     eval_regexp_count, eval_regexp_instr, eval_regexp_like, eval_regexp_match, eval_regexp_replace,
     eval_regexp_split_to_array, eval_regexp_substr, eval_unistr, gen_random_uuid,
-    parse_bool_scalar, parse_f64_numeric_scalar, parse_i64_scalar, pg_get_viewdef,
-    pg_input_is_valid, quote_ident, quote_literal, quote_nullable, rand_f64,
+    parse_bool_scalar, parse_f64_numeric_scalar, parse_i64_scalar, parse_pg_array_literal,
+    pg_get_viewdef, pg_input_is_valid, quote_ident, quote_literal, quote_nullable, rand_f64,
 };
 use crate::utils::adt::string_functions::{
     TrimMode, ascii_code, chr_from_code, decode_bytes, encode_bytes, eval_format,
@@ -47,6 +47,21 @@ fn require_http_extension() -> Result<(), EngineError> {
         Err(EngineError {
             message: "extension \"http\" is not loaded".to_string(),
         })
+    }
+}
+
+fn array_values_arg(value: &ScalarValue, message: &str) -> Result<Vec<ScalarValue>, EngineError> {
+    match value {
+        ScalarValue::Array(values) => Ok(values.clone()),
+        ScalarValue::Text(text) => match parse_pg_array_literal(text)? {
+            ScalarValue::Array(values) => Ok(values),
+            _ => Err(EngineError {
+                message: message.to_string(),
+            }),
+        },
+        _ => Err(EngineError {
+            message: message.to_string(),
+        }),
     }
 }
 
@@ -1293,14 +1308,8 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            let mut values = match &args[0] {
-                ScalarValue::Array(values) => values.clone(),
-                _ => {
-                    return Err(EngineError {
-                        message: "array_append() expects array as first argument".to_string(),
-                    });
-                }
-            };
+            let mut values =
+                array_values_arg(&args[0], "array_append() expects array as first argument")?;
             values.push(args[1].clone());
             Ok(ScalarValue::Array(values))
         }
@@ -1308,14 +1317,8 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[1], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            let mut values = match &args[1] {
-                ScalarValue::Array(values) => values.clone(),
-                _ => {
-                    return Err(EngineError {
-                        message: "array_prepend() expects array as second argument".to_string(),
-                    });
-                }
-            };
+            let mut values =
+                array_values_arg(&args[1], "array_prepend() expects array as second argument")?;
             values.insert(0, args[0].clone());
             Ok(ScalarValue::Array(values))
         }
@@ -1323,22 +1326,8 @@ pub(crate) async fn eval_scalar_function(
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
                 return Ok(ScalarValue::Null);
             }
-            let mut left = match &args[0] {
-                ScalarValue::Array(values) => values.clone(),
-                _ => {
-                    return Err(EngineError {
-                        message: "array_cat() expects array arguments".to_string(),
-                    });
-                }
-            };
-            let right = match &args[1] {
-                ScalarValue::Array(values) => values.clone(),
-                _ => {
-                    return Err(EngineError {
-                        message: "array_cat() expects array arguments".to_string(),
-                    });
-                }
-            };
+            let mut left = array_values_arg(&args[0], "array_cat() expects array arguments")?;
+            let right = array_values_arg(&args[1], "array_cat() expects array arguments")?;
             left.extend(right);
             Ok(ScalarValue::Array(left))
         }
@@ -1346,16 +1335,10 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            let values = match &args[0] {
-                ScalarValue::Array(values) => values,
-                _ => {
-                    return Err(EngineError {
-                        message: "array_remove() expects array as first argument".to_string(),
-                    });
-                }
-            };
+            let values =
+                array_values_arg(&args[0], "array_remove() expects array as first argument")?;
             let mut out = Vec::with_capacity(values.len());
-            for value in values {
+            for value in &values {
                 if !array_value_matches(&args[1], value)? {
                     out.push(value.clone());
                 }
@@ -1366,16 +1349,10 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            let values = match &args[0] {
-                ScalarValue::Array(values) => values,
-                _ => {
-                    return Err(EngineError {
-                        message: "array_replace() expects array as first argument".to_string(),
-                    });
-                }
-            };
+            let values =
+                array_values_arg(&args[0], "array_replace() expects array as first argument")?;
             let mut out = Vec::with_capacity(values.len());
-            for value in values {
+            for value in &values {
                 if array_value_matches(&args[1], value)? {
                     out.push(args[2].clone());
                 } else {
@@ -1388,14 +1365,8 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            let values = match &args[0] {
-                ScalarValue::Array(values) => values,
-                _ => {
-                    return Err(EngineError {
-                        message: "array_position() expects array as first argument".to_string(),
-                    });
-                }
-            };
+            let values =
+                array_values_arg(&args[0], "array_position() expects array as first argument")?;
             for (idx, value) in values.iter().enumerate() {
                 if array_value_matches(&args[1], value)? {
                     return Ok(ScalarValue::Int((idx + 1) as i64));
@@ -1407,14 +1378,10 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            let values = match &args[0] {
-                ScalarValue::Array(values) => values,
-                _ => {
-                    return Err(EngineError {
-                        message: "array_positions() expects array as first argument".to_string(),
-                    });
-                }
-            };
+            let values = array_values_arg(
+                &args[0],
+                "array_positions() expects array as first argument",
+            )?;
             let mut positions = Vec::new();
             for (idx, value) in values.iter().enumerate() {
                 if array_value_matches(&args[1], value)? {
@@ -1427,14 +1394,8 @@ pub(crate) async fn eval_scalar_function(
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
                 return Ok(ScalarValue::Null);
             }
-            let values = match &args[0] {
-                ScalarValue::Array(values) => values,
-                _ => {
-                    return Err(EngineError {
-                        message: "array_length() expects array as first argument".to_string(),
-                    });
-                }
-            };
+            let values =
+                array_values_arg(&args[0], "array_length() expects array as first argument")?;
             let dim = parse_i64_scalar(&args[1], "array_length() expects integer dimension")?;
             if dim != 1 {
                 return Ok(ScalarValue::Null);
@@ -1445,14 +1406,7 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            let values = match &args[0] {
-                ScalarValue::Array(values) => values,
-                _ => {
-                    return Err(EngineError {
-                        message: "array_dims() expects array argument".to_string(),
-                    });
-                }
-            };
+            let values = array_values_arg(&args[0], "array_dims() expects array argument")?;
             if values.is_empty() {
                 return Ok(ScalarValue::Null);
             }
@@ -1462,25 +1416,14 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            match &args[0] {
-                ScalarValue::Array(_) => Ok(ScalarValue::Int(1)),
-                _ => Err(EngineError {
-                    message: "array_ndims() expects array argument".to_string(),
-                }),
-            }
+            let _ = array_values_arg(&args[0], "array_ndims() expects array argument")?;
+            Ok(ScalarValue::Int(1))
         }
         "array_fill" if args.len() == 2 => {
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
                 return Ok(ScalarValue::Null);
             }
-            let lengths = match &args[1] {
-                ScalarValue::Array(values) => values,
-                _ => {
-                    return Err(EngineError {
-                        message: "array_fill() expects array of lengths".to_string(),
-                    });
-                }
-            };
+            let lengths = array_values_arg(&args[1], "array_fill() expects array of lengths")?;
             if lengths.len() != 1 {
                 return Err(EngineError {
                     message: "array_fill() currently supports one-dimensional arrays".to_string(),
@@ -1502,14 +1445,8 @@ pub(crate) async fn eval_scalar_function(
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
                 return Ok(ScalarValue::Null);
             }
-            let values = match &args[0] {
-                ScalarValue::Array(values) => values,
-                _ => {
-                    return Err(EngineError {
-                        message: "array_upper() expects array as first argument".to_string(),
-                    });
-                }
-            };
+            let values =
+                array_values_arg(&args[0], "array_upper() expects array as first argument")?;
             let dim = parse_i64_scalar(&args[1], "array_upper() expects integer dimension")?;
             if dim != 1 || values.is_empty() {
                 return Ok(ScalarValue::Null);
@@ -1520,14 +1457,8 @@ pub(crate) async fn eval_scalar_function(
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
                 return Ok(ScalarValue::Null);
             }
-            let values = match &args[0] {
-                ScalarValue::Array(values) => values,
-                _ => {
-                    return Err(EngineError {
-                        message: "array_lower() expects array as first argument".to_string(),
-                    });
-                }
-            };
+            let values =
+                array_values_arg(&args[0], "array_lower() expects array as first argument")?;
             let dim = parse_i64_scalar(&args[1], "array_lower() expects integer dimension")?;
             if dim != 1 || values.is_empty() {
                 return Ok(ScalarValue::Null);
@@ -1538,12 +1469,8 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            match &args[0] {
-                ScalarValue::Array(values) => Ok(ScalarValue::Int(values.len() as i64)),
-                _ => Err(EngineError {
-                    message: "cardinality() expects array argument".to_string(),
-                }),
-            }
+            let values = array_values_arg(&args[0], "cardinality() expects array argument")?;
+            Ok(ScalarValue::Int(values.len() as i64))
         }
         "string_to_array" if args.len() == 2 || args.len() == 3 => {
             if matches!(args[0], ScalarValue::Null) {
