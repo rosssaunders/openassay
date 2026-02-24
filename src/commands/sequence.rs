@@ -133,12 +133,16 @@ pub async fn execute_alter_sequence(
     let key = normalize_sequence_name(&alter.name)?;
     with_sequences_write(|sequences| {
         let Some(state) = sequences.get_mut(&key) else {
+            if alter.if_exists {
+                return Ok(());
+            }
             return Err(EngineError {
                 message: format!("sequence \"{key}\" does not exist"),
             });
         };
         for action in &alter.actions {
             match action {
+                AlterSequenceAction::NoOp => {}
                 AlterSequenceAction::Restart { with } => {
                     state.current = with.unwrap_or(state.start);
                     state.called = false;

@@ -271,23 +271,23 @@ impl Parser {
                 |k| matches!(k, TokenKind::LParen),
                 "expected '(' after CREATE INDEX table name",
             )?;
-            let mut columns = vec![self.parse_identifier()?];
-            self.parse_optional_index_operator_class()?;
-            let _ = self.consume_keyword(Keyword::Asc) || self.consume_keyword(Keyword::Desc);
-            if self.consume_ident("nulls")
-                && !(self.consume_keyword(Keyword::First) || self.consume_keyword(Keyword::Last))
-            {
-                return Err(self.error_at_current("expected FIRST or LAST after NULLS"));
-            }
-            while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
-                columns.push(self.parse_identifier()?);
+            let mut columns = Vec::new();
+            loop {
+                let expr = self.parse_expr()?;
+                let fallback = format!("expr{}", columns.len() + 1);
+                columns.push(Self::extract_identifier_from_expr(&expr).unwrap_or(fallback));
+                self.parse_optional_collation_clause()?;
                 self.parse_optional_index_operator_class()?;
+                self.skip_optional_parenthesized_tokens();
                 let _ = self.consume_keyword(Keyword::Asc) || self.consume_keyword(Keyword::Desc);
                 if self.consume_ident("nulls")
                     && !(self.consume_keyword(Keyword::First)
                         || self.consume_keyword(Keyword::Last))
                 {
                     return Err(self.error_at_current("expected FIRST or LAST after NULLS"));
+                }
+                if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    break;
                 }
             }
             self.expect_token(
@@ -457,10 +457,23 @@ impl Parser {
                 if_not_exists,
             }));
         }
-        if self.consume_keyword(Keyword::Sequence) {
-            if temporary || unlogged {
-                return Err(self.error_at_current("unexpected modifier before CREATE SEQUENCE"));
+        if self.consume_ident("tablespace") {
+            let name = self.parse_identifier()?;
+            if self.consume_ident("location")
+                && !matches!(self.current_kind(), TokenKind::String(_))
+            {
+                return Err(self.error_at_current("CREATE TABLESPACE LOCATION requires a string"));
             }
+            if matches!(self.current_kind(), TokenKind::String(_)) {
+                self.advance();
+            }
+            // OpenAssay has no durable tablespaces; accept as no-op via schema creation.
+            return Ok(Statement::CreateSchema(CreateSchemaStatement {
+                name,
+                if_not_exists: true,
+            }));
+        }
+        if self.consume_keyword(Keyword::Sequence) {
             let if_not_exists = if self.consume_keyword(Keyword::If) {
                 self.expect_keyword(Keyword::Not, "expected NOT after IF in CREATE SEQUENCE")?;
                 self.expect_keyword(
@@ -754,14 +767,17 @@ impl Parser {
         let on_conflict = if self.consume_keyword(Keyword::On) {
             self.expect_keyword(Keyword::Conflict, "expected CONFLICT after ON")?;
             let conflict_target = self.parse_conflict_target()?;
+            if self.consume_keyword(Keyword::Where) {
+                let _ = self.parse_expr()?;
+            }
             self.expect_keyword(Keyword::Do, "expected DO in ON CONFLICT clause")?;
             if self.consume_keyword(Keyword::Nothing) {
                 Some(OnConflictClause::DoNothing { conflict_target })
             } else if self.consume_keyword(Keyword::Update) {
                 self.expect_keyword(Keyword::Set, "expected SET after ON CONFLICT DO UPDATE")?;
-                let mut assignments = vec![self.parse_assignment()?];
+                let mut assignments = self.parse_update_set_clause()?;
                 while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
-                    assignments.push(self.parse_assignment()?);
+                    assignments.extend(self.parse_update_set_clause()?);
                 }
                 let where_clause = if self.consume_keyword(Keyword::Where) {
                     Some(self.parse_expr()?)
@@ -1897,9 +1913,23 @@ impl Parser {
     }
 
     fn parse_alter_sequence_statement(&mut self) -> Result<Statement, ParseError> {
+        let if_exists = if self.consume_keyword(Keyword::If) {
+            self.expect_keyword(
+                Keyword::Exists,
+                "expected EXISTS after IF in ALTER SEQUENCE",
+            )?;
+            true
+        } else {
+            false
+        };
         let name = self.parse_qualified_name()?;
         let mut actions = Vec::new();
         loop {
+            if self.consume_keyword(Keyword::As) {
+                let _ = self.parse_type_name()?;
+                actions.push(AlterSequenceAction::NoOp);
+                continue;
+            }
             if self.consume_keyword(Keyword::Restart) {
                 let with = if self.consume_keyword(Keyword::With)
                     || matches!(
@@ -1959,6 +1989,15 @@ impl Parser {
                 actions.push(AlterSequenceAction::SetCache { cache });
                 continue;
             }
+            if self.consume_keyword(Keyword::Set) {
+                if self.consume_ident("logged") || self.consume_ident("unlogged") {
+                    actions.push(AlterSequenceAction::NoOp);
+                    continue;
+                }
+                return Err(
+                    self.error_at_current("expected LOGGED or UNLOGGED after SET in ALTER SEQUENCE")
+                );
+            }
             break;
         }
         if actions.is_empty() {
@@ -1968,12 +2007,16 @@ impl Parser {
         }
         Ok(Statement::AlterSequence(AlterSequenceStatement {
             name,
+            if_exists,
             actions,
         }))
     }
 
     fn parse_assignment(&mut self) -> Result<Assignment, ParseError> {
-        let column = self.parse_identifier()?;
+        let mut column = self.parse_identifier()?;
+        while self.consume_if(|k| matches!(k, TokenKind::Dot)) {
+            column = self.parse_identifier()?;
+        }
         let mut subscripts = Vec::new();
         // Parse optional array subscripts: col[idx], col[start:end], etc.
         while self.consume_if(|k| matches!(k, TokenKind::LBracket)) {
@@ -2159,10 +2202,7 @@ impl Parser {
                 if self.consume_ident("none") {
                     continue;
                 }
-                let _ = self.parse_identifier()?;
-                if self.consume_if(|k| matches!(k, TokenKind::Dot)) {
-                    let _ = self.parse_identifier()?;
-                }
+                let _ = self.parse_qualified_name()?;
                 continue;
             }
             break;
@@ -2183,9 +2223,24 @@ impl Parser {
 
     fn parse_conflict_target(&mut self) -> Result<Option<ConflictTarget>, ParseError> {
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
-            let mut cols = vec![self.parse_identifier()?];
-            while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
-                cols.push(self.parse_identifier()?);
+            let mut cols = Vec::new();
+            loop {
+                let expr = self.parse_expr()?;
+                let fallback = format!("expr{}", cols.len() + 1);
+                cols.push(Self::extract_identifier_from_expr(&expr).unwrap_or(fallback));
+                self.parse_optional_collation_clause()?;
+                self.parse_optional_index_operator_class()?;
+                self.skip_optional_parenthesized_tokens();
+                let _ = self.consume_keyword(Keyword::Asc) || self.consume_keyword(Keyword::Desc);
+                if self.consume_ident("nulls")
+                    && !(self.consume_keyword(Keyword::First)
+                        || self.consume_keyword(Keyword::Last))
+                {
+                    return Err(self.error_at_current("expected FIRST or LAST after NULLS"));
+                }
+                if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    break;
+                }
             }
             self.expect_token(
                 |k| matches!(k, TokenKind::RParen),
@@ -2391,6 +2446,7 @@ impl Parser {
             "smallint" | "int2" => TypeName::Int2,
             "int" | "integer" | "int4" => TypeName::Int4,
             "bigint" | "int8" => TypeName::Int8,
+            "xid" => TypeName::Int8,
             "real" | "float4" => TypeName::Float4,
             "float" | "float8" => TypeName::Float8,
             "double" => {
@@ -2402,6 +2458,7 @@ impl Parser {
                 TypeName::Float8
             }
             "text" => TypeName::Text,
+            "bit" | "varbit" => TypeName::Text,
             "varchar" => TypeName::Varchar,
             "character" => {
                 if matches!(self.current_kind(), TokenKind::Identifier(next) if next.eq_ignore_ascii_case("varying"))
@@ -2423,6 +2480,7 @@ impl Parser {
             "timestamptz" => TypeName::TimestampTz,
             "interval" => TypeName::Interval,
             "serial" => TypeName::Serial,
+            "smallserial" | "serial2" => TypeName::Serial,
             "bigserial" | "serial8" => TypeName::BigSerial,
             "numeric" | "decimal" => TypeName::Numeric,
             "money" => TypeName::Numeric, // treat money as numeric for now
@@ -3253,21 +3311,8 @@ impl Parser {
         )?;
         let mut sets = Vec::new();
         loop {
-            self.expect_token(
-                |k| matches!(k, TokenKind::LParen),
-                "expected '(' to start grouping set",
-            )?;
-            if self.consume_if(|k| matches!(k, TokenKind::RParen)) {
-                sets.push(Vec::new());
-            } else {
-                let exprs = self.parse_expr_list()?;
-                self.expect_token(
-                    |k| matches!(k, TokenKind::RParen),
-                    "expected ')' to close grouping set",
-                )?;
-                sets.push(exprs);
-            }
-
+            let mut item_sets = self.parse_grouping_set_item()?;
+            sets.append(&mut item_sets);
             if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
                 break;
             }
@@ -3277,6 +3322,61 @@ impl Parser {
             "expected ')' after GROUPING SETS",
         )?;
         Ok(sets)
+    }
+
+    fn parse_grouping_set_item(&mut self) -> Result<Vec<Vec<Expr>>, ParseError> {
+        if self.consume_keyword(Keyword::Grouping) {
+            self.expect_keyword(Keyword::Sets, "expected SETS after GROUPING")?;
+            return self.parse_grouping_sets();
+        }
+        if self.consume_keyword(Keyword::Rollup) {
+            self.expect_token(
+                |k| matches!(k, TokenKind::LParen),
+                "expected '(' after ROLLUP",
+            )?;
+            let exprs = if self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+                Vec::new()
+            } else {
+                let out = self.parse_expr_list()?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after ROLLUP list",
+                )?;
+                out
+            };
+            return Ok(vec![exprs]);
+        }
+        if self.consume_keyword(Keyword::Cube) {
+            self.expect_token(
+                |k| matches!(k, TokenKind::LParen),
+                "expected '(' after CUBE",
+            )?;
+            let exprs = if self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+                Vec::new()
+            } else {
+                let out = self.parse_expr_list()?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after CUBE list",
+                )?;
+                out
+            };
+            return Ok(vec![exprs]);
+        }
+
+        if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+            if self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+                return Ok(vec![Vec::new()]);
+            }
+            let exprs = self.parse_expr_list()?;
+            self.expect_token(
+                |k| matches!(k, TokenKind::RParen),
+                "expected ')' to close grouping set",
+            )?;
+            return Ok(vec![exprs]);
+        }
+
+        Ok(vec![vec![self.parse_expr()?]])
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
@@ -3823,6 +3923,16 @@ impl Parser {
                 "expected ')' to close expression",
             )?;
             return Ok(expr);
+        }
+
+        if let Some(TokenKind::Identifier(prefix)) = self.peek_nth_kind(0)
+            && (prefix.eq_ignore_ascii_case("b") || prefix.eq_ignore_ascii_case("x"))
+            && let Some(TokenKind::String(value)) = self.peek_nth_kind(1)
+        {
+            let out = value.clone();
+            self.advance();
+            self.advance();
+            return Ok(Expr::String(out));
         }
 
         match self.current_kind() {
@@ -4518,11 +4628,13 @@ impl Parser {
             "bytea" => "bytea".to_string(),
             "uuid" => "uuid".to_string(),
             "vector" => "vector".to_string(),
+            "bit" | "varbit" => "text".to_string(),
             // JSON types
             "json" => "json".to_string(),
             "jsonb" => "jsonb".to_string(),
             // System types
             "regclass" => "regclass".to_string(),
+            "xid" => "int8".to_string(),
             "oid" => "oid".to_string(),
             "name" => "text".to_string(),
             // PostgreSQL underscore-prefixed array type aliases
@@ -4901,6 +5013,52 @@ impl Parser {
             let _ = self.parse_identifier()?;
         }
         Ok(())
+    }
+
+    fn parse_optional_collation_clause(&mut self) -> Result<(), ParseError> {
+        if self.consume_ident("collate") {
+            let _ = self.parse_identifier()?;
+        }
+        Ok(())
+    }
+
+    fn skip_optional_parenthesized_tokens(&mut self) {
+        if !self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+            return;
+        }
+        let mut depth = 1usize;
+        while depth > 0 {
+            match self.current_kind() {
+                TokenKind::LParen => {
+                    depth += 1;
+                    self.advance();
+                }
+                TokenKind::RParen => {
+                    depth -= 1;
+                    self.advance();
+                }
+                TokenKind::Eof => break,
+                _ => self.advance(),
+            }
+        }
+    }
+
+    fn extract_identifier_from_expr(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Identifier(parts) => parts.last().cloned(),
+            Expr::Cast { expr, .. }
+            | Expr::Unary { expr, .. }
+            | Expr::ArraySubscript { expr, .. }
+            | Expr::ArraySlice { expr, .. } => Self::extract_identifier_from_expr(expr),
+            Expr::FunctionCall { args, .. }
+            | Expr::ArrayConstructor(args)
+            | Expr::RowConstructor(args) => args.iter().find_map(Self::extract_identifier_from_expr),
+            Expr::Binary { left, right, .. } | Expr::AnyAll { left, right, .. } => {
+                Self::extract_identifier_from_expr(left)
+                    .or_else(|| Self::extract_identifier_from_expr(right))
+            }
+            _ => None,
+        }
     }
 
     /// Skip optional array subscripts like [1], [1:2], [1:2][3:4], etc.
@@ -5851,9 +6009,11 @@ impl Parser {
             "int2" | "smallint" => Ok(TypeName::Int2),
             "int4" | "integer" | "int" => Ok(TypeName::Int4),
             "int8" | "bigint" => Ok(TypeName::Int8),
+            "xid" => Ok(TypeName::Int8),
             "float4" | "real" => Ok(TypeName::Float4),
             "float8" | "double" => Ok(TypeName::Float8),
             "text" => Ok(TypeName::Text),
+            "bit" | "varbit" => Ok(TypeName::Text),
             "varchar" => Ok(TypeName::Varchar),
             "char" => Ok(TypeName::Char),
             "bytea" => Ok(TypeName::Bytea),
@@ -5865,6 +6025,7 @@ impl Parser {
             "timestamptz" => Ok(TypeName::TimestampTz),
             "interval" => Ok(TypeName::Interval),
             "serial" => Ok(TypeName::Serial),
+            "serial2" | "smallserial" => Ok(TypeName::Serial),
             "bigserial" => Ok(TypeName::BigSerial),
             "numeric" | "decimal" => Ok(TypeName::Numeric),
             "vector" => Ok(TypeName::Vector(None)),

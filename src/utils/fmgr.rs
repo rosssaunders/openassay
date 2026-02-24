@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::sync::{OnceLock, RwLock};
 
 use serde_json::Value as JsonValue;
 
@@ -39,6 +40,24 @@ use crate::utils::adt::string_functions::{
     find_substring_position, initcap_string, left_chars, md5_hex, overlay_text, pad_string,
     right_chars, sha256_hex, substring_chars, trim_text,
 };
+
+static LAST_SEQUENCE_VALUE: OnceLock<RwLock<Option<i64>>> = OnceLock::new();
+
+fn with_last_sequence_value_read<T>(f: impl FnOnce(&Option<i64>) -> T) -> T {
+    let guard = LAST_SEQUENCE_VALUE
+        .get_or_init(|| RwLock::new(None))
+        .read()
+        .expect("last sequence value lock poisoned for read");
+    f(&guard)
+}
+
+fn with_last_sequence_value_write<T>(f: impl FnOnce(&mut Option<i64>) -> T) -> T {
+    let mut guard = LAST_SEQUENCE_VALUE
+        .get_or_init(|| RwLock::new(None))
+        .write()
+        .expect("last sequence value lock poisoned for write");
+    f(&mut guard)
+}
 
 fn require_http_extension() -> Result<(), EngineError> {
     if with_ext_read(|ext| ext.extensions.iter().any(|ext| ext.name == "http")) {
@@ -178,6 +197,7 @@ pub(crate) async fn eval_scalar_function(
                     });
                 };
                 let value = sequence_next_value(state, &sequence_name)?;
+                with_last_sequence_value_write(|last| *last = Some(value));
                 Ok(ScalarValue::Int(value))
             })
         }
@@ -206,6 +226,14 @@ pub(crate) async fn eval_scalar_function(
                 Ok(ScalarValue::Int(state.current))
             })
         }
+        "lastval" if args.is_empty() => with_last_sequence_value_read(|last| {
+            let Some(value) = last else {
+                return Err(EngineError {
+                    message: "lastval is not yet defined in this session".to_string(),
+                });
+            };
+            Ok(ScalarValue::Int(*value))
+        }),
         "setval" if args.len() == 2 || args.len() == 3 => {
             let sequence_name = match &args[0] {
                 ScalarValue::Text(v) => normalize_sequence_name_from_text(v)?,
