@@ -280,8 +280,9 @@ pub(crate) fn eval_regexp_matches_set_function(
 pub(crate) fn eval_regexp_split_to_array(
     text: &str,
     pattern: &str,
+    flags: &str,
 ) -> Result<ScalarValue, EngineError> {
-    let regex = build_regex(pattern, "", "regexp_split_to_array")?;
+    let regex = build_regex(pattern, flags, "regexp_split_to_array")?;
     let parts = regex
         .split(text)
         .map(|part| Some(part.to_string()))
@@ -293,9 +294,9 @@ pub(crate) fn eval_regexp_split_to_table_set_function(
     args: &[ScalarValue],
     fn_name: &str,
 ) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
-    if args.len() != 2 {
+    if args.len() != 2 && args.len() != 3 {
         return Err(EngineError {
-            message: format!("{fn_name}() expects 2 arguments"),
+            message: format!("{fn_name}() expects 2 or 3 arguments"),
         });
     }
     if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
@@ -303,7 +304,12 @@ pub(crate) fn eval_regexp_split_to_table_set_function(
     }
     let text = args[0].render();
     let pattern = args[1].render();
-    let regex = build_regex(&pattern, "", fn_name)?;
+    let flags = if args.len() == 3 {
+        args[2].render()
+    } else {
+        String::new()
+    };
+    let regex = build_regex(&pattern, &flags, fn_name)?;
     let rows = regex
         .split(&text)
         .map(|part| vec![ScalarValue::Text(part.to_string())])
@@ -361,14 +367,45 @@ pub(crate) fn eval_regexp_replace(
     source: &str,
     pattern: &str,
     replacement: &str,
+    start: i64,
+    occurrence: i64,
     flags: &str,
 ) -> Result<ScalarValue, EngineError> {
-    let global = flags.contains('g');
+    if start < 1 {
+        return Err(EngineError {
+            message: format!("invalid value for parameter \"start\": {start}"),
+        });
+    }
+    if occurrence < 0 {
+        return Err(EngineError {
+            message: format!("invalid value for parameter \"N\": {occurrence}"),
+        });
+    }
+
+    let start_idx = usize::try_from(start - 1).map_err(|_| EngineError {
+        message: "invalid value for parameter \"start\"".to_string(),
+    })?;
+    let search_start_byte = source
+        .char_indices()
+        .nth(start_idx)
+        .map_or(source.len(), |(idx, _)| idx);
+    let prefix = &source[..search_start_byte];
+    let search = &source[search_start_byte..];
+
+    let global = occurrence == 0 || flags.contains('g');
     let regex = build_regex(pattern, flags, "regexp_replace")?;
     let out = if global {
-        regex.replace_all(source, replacement).to_string()
+        format!("{prefix}{}", regex.replace_all(search, replacement))
     } else {
-        regex.replace(source, replacement).to_string()
+        let occurrence_idx = usize::try_from(occurrence - 1).map_err(|_| EngineError {
+            message: "invalid value for parameter \"N\"".to_string(),
+        })?;
+        let Some(matched) = regex.find_iter(search).nth(occurrence_idx) else {
+            return Ok(ScalarValue::Text(source.to_string()));
+        };
+        let before = &search[..matched.start()];
+        let tail = &search[matched.start()..];
+        format!("{prefix}{before}{}", regex.replacen(tail, 1, replacement))
     };
     Ok(ScalarValue::Text(out))
 }
@@ -381,7 +418,7 @@ pub(crate) fn eval_regexp_count(args: &[ScalarValue]) -> Result<ScalarValue, Eng
     let text = args[0].render();
     let pattern = args[1].render();
     let start = if args.len() >= 3 {
-        parse_i64_scalar(&args[2], "regexp_count() expects integer start")? as usize
+        parse_i64_scalar(&args[2], "regexp_count() expects integer start")?
     } else {
         1
     };
@@ -395,7 +432,10 @@ pub(crate) fn eval_regexp_count(args: &[ScalarValue]) -> Result<ScalarValue, Eng
             message: "invalid value for parameter \"start\": 0".to_string(),
         });
     }
-    let search_text: String = text.chars().skip(start - 1).collect();
+    let start_idx = usize::try_from(start - 1).map_err(|_| EngineError {
+        message: "invalid value for parameter \"start\"".to_string(),
+    })?;
+    let search_text: String = text.chars().skip(start_idx).collect();
     let regex = build_regex(&pattern, &flags, "regexp_count")?;
     let count = regex.find_iter(&search_text).count();
     Ok(ScalarValue::Int(count as i64))
@@ -409,17 +449,17 @@ pub(crate) fn eval_regexp_instr(args: &[ScalarValue]) -> Result<ScalarValue, Eng
     let text = args[0].render();
     let pattern = args[1].render();
     let start = if args.len() >= 3 {
-        parse_i64_scalar(&args[2], "regexp_instr() start")? as usize
+        parse_i64_scalar(&args[2], "regexp_instr() start")?
     } else {
         1
     };
     let n = if args.len() >= 4 {
-        parse_i64_scalar(&args[3], "regexp_instr() N")? as usize
+        parse_i64_scalar(&args[3], "regexp_instr() N")?
     } else {
         1
     };
     let endoption = if args.len() >= 5 {
-        parse_i64_scalar(&args[4], "regexp_instr() endoption")? as usize
+        parse_i64_scalar(&args[4], "regexp_instr() endoption")?
     } else {
         0
     };
@@ -429,7 +469,7 @@ pub(crate) fn eval_regexp_instr(args: &[ScalarValue]) -> Result<ScalarValue, Eng
         String::new()
     };
     let subexpr = if args.len() >= 7 {
-        parse_i64_scalar(&args[6], "regexp_instr() subexpr")? as usize
+        parse_i64_scalar(&args[6], "regexp_instr() subexpr")?
     } else {
         0
     };
@@ -437,9 +477,21 @@ pub(crate) fn eval_regexp_instr(args: &[ScalarValue]) -> Result<ScalarValue, Eng
     if start < 1 || n < 1 {
         return Ok(ScalarValue::Int(0));
     }
+    let start_idx = usize::try_from(start - 1).map_err(|_| EngineError {
+        message: "invalid value for parameter \"start\"".to_string(),
+    })?;
+    let n = usize::try_from(n).map_err(|_| EngineError {
+        message: "invalid value for parameter \"N\"".to_string(),
+    })?;
+    let endoption = usize::try_from(endoption).map_err(|_| EngineError {
+        message: "invalid value for parameter \"endoption\"".to_string(),
+    })?;
+    let subexpr = usize::try_from(subexpr).map_err(|_| EngineError {
+        message: "invalid value for parameter \"subexpr\"".to_string(),
+    })?;
 
     let char_vec: Vec<char> = text.chars().collect();
-    let search_text: String = char_vec.iter().skip(start - 1).collect();
+    let search_text: String = char_vec.iter().skip(start_idx).collect();
     let regex = build_regex(&pattern, &flags, "regexp_instr")?;
 
     let mut matches_iter = regex.captures_iter(&search_text);
@@ -464,9 +516,9 @@ pub(crate) fn eval_regexp_instr(args: &[ScalarValue]) -> Result<ScalarValue, Eng
     let char_end = search_text[..byte_end].chars().count();
 
     let result = if endoption == 0 {
-        (start + char_start) as i64
+        start + char_start as i64
     } else {
-        (start + char_end) as i64
+        start + char_end as i64
     };
     Ok(ScalarValue::Int(result))
 }
@@ -479,12 +531,12 @@ pub(crate) fn eval_regexp_substr(args: &[ScalarValue]) -> Result<ScalarValue, En
     let text = args[0].render();
     let pattern = args[1].render();
     let start = if args.len() >= 3 {
-        parse_i64_scalar(&args[2], "regexp_substr() start")? as usize
+        parse_i64_scalar(&args[2], "regexp_substr() start")?
     } else {
         1
     };
     let n = if args.len() >= 4 {
-        parse_i64_scalar(&args[3], "regexp_substr() N")? as usize
+        parse_i64_scalar(&args[3], "regexp_substr() N")?
     } else {
         1
     };
@@ -494,7 +546,7 @@ pub(crate) fn eval_regexp_substr(args: &[ScalarValue]) -> Result<ScalarValue, En
         String::new()
     };
     let subexpr = if args.len() >= 6 {
-        parse_i64_scalar(&args[5], "regexp_substr() subexpr")? as usize
+        parse_i64_scalar(&args[5], "regexp_substr() subexpr")?
     } else {
         0
     };
@@ -502,8 +554,17 @@ pub(crate) fn eval_regexp_substr(args: &[ScalarValue]) -> Result<ScalarValue, En
     if start < 1 || n < 1 {
         return Ok(ScalarValue::Null);
     }
+    let start_idx = usize::try_from(start - 1).map_err(|_| EngineError {
+        message: "invalid value for parameter \"start\"".to_string(),
+    })?;
+    let n = usize::try_from(n).map_err(|_| EngineError {
+        message: "invalid value for parameter \"N\"".to_string(),
+    })?;
+    let subexpr = usize::try_from(subexpr).map_err(|_| EngineError {
+        message: "invalid value for parameter \"subexpr\"".to_string(),
+    })?;
 
-    let search_text: String = text.chars().skip(start - 1).collect();
+    let search_text: String = text.chars().skip(start_idx).collect();
     let regex = build_regex(&pattern, &flags, "regexp_substr")?;
 
     let mut matches_iter = regex.captures_iter(&search_text);

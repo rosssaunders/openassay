@@ -57,7 +57,7 @@ const KNOWN_FUNCTIONS: &[(&str, usize, usize)] = &[
     ("ascii", 1, 1),
     ("chr", 1, 1),
     ("initcap", 1, 1),
-    ("regexp_replace", 3, 4),
+    ("regexp_replace", 3, 6),
     ("regexp_matches", 2, 3),
     ("regexp_count", 2, 4),
     ("regexp_instr", 2, 7),

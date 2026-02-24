@@ -270,6 +270,98 @@ pub(crate) fn substring_chars(
     Ok(chars[start_idx..end_idx].iter().collect())
 }
 
+pub(crate) fn substring_regex(input: &str, pattern: &str) -> Result<Option<String>, EngineError> {
+    let regex = regex::Regex::new(pattern).map_err(|err| EngineError {
+        message: format!("substring() invalid regex: {err}"),
+    })?;
+    let Some(caps) = regex.captures(input) else {
+        return Ok(None);
+    };
+    if let Some(group) = caps.get(1) {
+        return Ok(Some(group.as_str().to_string()));
+    }
+    Ok(caps.get(0).map(|m| m.as_str().to_string()))
+}
+
+fn escape_regex_char(ch: char, out: &mut String) {
+    if "\\.^$|?*+()[]{}".contains(ch) {
+        out.push('\\');
+    }
+    out.push(ch);
+}
+
+fn similar_pattern_to_regex(pattern: &str, escape_char: char) -> String {
+    let mut out = String::new();
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch == escape_char {
+            if let Some(next) = chars.next() {
+                escape_regex_char(next, &mut out);
+            }
+            continue;
+        }
+        match ch {
+            '%' => out.push_str(".*"),
+            '_' => out.push('.'),
+            _ => escape_regex_char(ch, &mut out),
+        }
+    }
+    out
+}
+
+pub(crate) fn substring_similar(
+    input: &str,
+    pattern: &str,
+    escape: &str,
+) -> Result<Option<String>, EngineError> {
+    let escape_char = if escape.is_empty() {
+        '\\'
+    } else {
+        let mut chars = escape.chars();
+        let ch = chars.next().ok_or_else(|| EngineError {
+            message: "substring() invalid escape".to_string(),
+        })?;
+        if chars.next().is_some() {
+            return Err(EngineError {
+                message: "substring() invalid escape".to_string(),
+            });
+        }
+        ch
+    };
+
+    let marker = format!("{escape_char}\"");
+    if let Some(first_marker) = pattern.find(&marker)
+        && let Some(second_marker_rel) = pattern[first_marker + marker.len()..].find(&marker)
+    {
+        let second_marker = first_marker + marker.len() + second_marker_rel;
+        let prefix = &pattern[..first_marker];
+        let middle = &pattern[first_marker + marker.len()..second_marker];
+        let suffix = &pattern[second_marker + marker.len()..];
+        let regex_text = format!(
+            "^{}({}){}$",
+            similar_pattern_to_regex(prefix, escape_char),
+            similar_pattern_to_regex(middle, escape_char),
+            similar_pattern_to_regex(suffix, escape_char)
+        );
+        let regex = regex::Regex::new(&regex_text).map_err(|err| EngineError {
+            message: format!("substring() invalid regex: {err}"),
+        })?;
+        return Ok(regex
+            .captures(input)
+            .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string())));
+    }
+
+    let regex_text = format!("^{}$", similar_pattern_to_regex(pattern, escape_char));
+    let regex = regex::Regex::new(&regex_text).map_err(|err| EngineError {
+        message: format!("substring() invalid regex: {err}"),
+    })?;
+    if regex.is_match(input) {
+        Ok(Some(input.to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
 pub(crate) fn left_chars(input: &str, count: i64) -> String {
     let chars = input.chars().collect::<Vec<_>>();
     if count >= 0 {
