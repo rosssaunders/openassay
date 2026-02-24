@@ -2325,6 +2325,7 @@ pub(crate) fn eval_unary(op: UnaryOp, value: ScalarValue) -> Result<ScalarValue,
         (UnaryOp::Not, ScalarValue::Null) => Ok(ScalarValue::Null),
         (UnaryOp::Plus, ScalarValue::Int(v)) => Ok(ScalarValue::Int(v)),
         (UnaryOp::Plus, ScalarValue::Float(v)) => Ok(ScalarValue::Float(v)),
+        (UnaryOp::Plus, ScalarValue::Numeric(v)) => Ok(ScalarValue::Numeric(v)),
         (UnaryOp::Plus, ScalarValue::Text(text)) => {
             if is_interval_text(&text) {
                 if let Some(interval) = parse_interval_operand(&ScalarValue::Text(text.clone())) {
@@ -2343,6 +2344,7 @@ pub(crate) fn eval_unary(op: UnaryOp, value: ScalarValue) -> Result<ScalarValue,
             Ok(ScalarValue::Int(negated))
         }
         (UnaryOp::Minus, ScalarValue::Float(v)) => Ok(ScalarValue::Float(-v)),
+        (UnaryOp::Minus, ScalarValue::Numeric(v)) => Ok(ScalarValue::Numeric(-v)),
         (UnaryOp::Minus, ScalarValue::Text(text)) => {
             if is_interval_text(&text) {
                 if let Some(interval) = parse_interval_operand(&ScalarValue::Text(text)) {
@@ -2371,7 +2373,7 @@ pub(crate) fn eval_binary(
         Add, And, ArrayConcat, ArrayContainedBy, ArrayContains, ArrayOverlap, Div, Eq, Gt, Gte,
         JsonConcat, JsonContainedBy, JsonContains, JsonDelete, JsonDeletePath, JsonGet,
         JsonGetText, JsonHasAll, JsonHasAny, JsonHasKey, JsonPath, JsonPathExists, JsonPathMatch,
-        JsonPathText, Lt, Lte, Mod, Mul, NotEq, Or, ShiftLeft, ShiftRight, Sub,
+        JsonPathText, Lt, Lte, Mod, Mul, NotEq, Or, Pow, ShiftLeft, ShiftRight, Sub,
         VectorCosineDistance, VectorInnerProduct, VectorL2Distance,
     };
     match op {
@@ -2434,6 +2436,11 @@ pub(crate) fn eval_binary(
             numeric_div(left, right)
         }
         Mod => numeric_mod(left, right),
+        Pow => {
+            let base = parse_f64_numeric_scalar(&left, "power operator expects numeric values")?;
+            let exp = parse_f64_numeric_scalar(&right, "power operator expects numeric values")?;
+            Ok(ScalarValue::Float(base.powf(exp)))
+        }
         ShiftLeft => eval_bit_shift(left, right, true),
         ShiftRight => eval_bit_shift(left, right, false),
         JsonGet => eval_json_get_operator(left, right, false),
@@ -2724,6 +2731,21 @@ pub(crate) fn eval_any_all(
     }
     let items = match right {
         ScalarValue::Array(values) => values,
+        ScalarValue::Text(text) => {
+            if !(text.trim_start().starts_with('{') || text.trim_start().starts_with('[')) {
+                return Err(EngineError {
+                    message: "ANY/ALL expects array argument".to_string(),
+                });
+            }
+            match parse_pg_array_literal(&text)? {
+                ScalarValue::Array(values) => values,
+                _ => {
+                    return Err(EngineError {
+                        message: "ANY/ALL expects array argument".to_string(),
+                    });
+                }
+            }
+        }
         _ => {
             return Err(EngineError {
                 message: "ANY/ALL expects array argument".to_string(),

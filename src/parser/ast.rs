@@ -959,6 +959,7 @@ pub enum BinaryOp {
     Mul,
     Div,
     Mod,
+    Pow,
     ShiftLeft,
     ShiftRight,
     JsonGet,
