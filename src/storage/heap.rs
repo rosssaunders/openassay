@@ -111,7 +111,11 @@ impl InMemoryStorage {
         self.rebuild_indexes_for_table(table_oid)
     }
 
-    pub(crate) fn append_row(&mut self, table_oid: Oid, row: Vec<ScalarValue>) -> Result<usize, String> {
+    pub(crate) fn append_row(
+        &mut self,
+        table_oid: Oid,
+        row: Vec<ScalarValue>,
+    ) -> Result<usize, String> {
         let offset = self
             .rows_by_table
             .get(&table_oid)
@@ -126,9 +130,11 @@ impl InMemoryStorage {
                 })?;
                 composite_key_from_row(&row, &index.column_indexes)?
             };
-            let index = self.index_mut_for_table(table_oid, index_name).ok_or_else(|| {
-                format!("index \"{index_name}\" does not exist for relation OID {table_oid}")
-            })?;
+            let index = self
+                .index_mut_for_table(table_oid, index_name)
+                .ok_or_else(|| {
+                    format!("index \"{index_name}\" does not exist for relation OID {table_oid}")
+                })?;
             index.btree.insert(composite_key.clone(), offset);
             inserted_keys.push((index_name.clone(), composite_key));
         }
@@ -163,7 +169,9 @@ impl InMemoryStorage {
             return Err(format!("relation OID {table_oid} has no row storage"));
         };
         let Some(existing_row) = current_rows.get(offset).cloned() else {
-            return Err(format!("row offset {offset} does not exist in relation OID {table_oid}"));
+            return Err(format!(
+                "row offset {offset} does not exist in relation OID {table_oid}"
+            ));
         };
 
         let index_names = self.index_names_for_table(table_oid);
@@ -180,9 +188,11 @@ impl InMemoryStorage {
             if old_key == new_key {
                 continue;
             }
-            let index = self.index_mut_for_table(table_oid, index_name).ok_or_else(|| {
-                format!("index \"{index_name}\" does not exist for relation OID {table_oid}")
-            })?;
+            let index = self
+                .index_mut_for_table(table_oid, index_name)
+                .ok_or_else(|| {
+                    format!("index \"{index_name}\" does not exist for relation OID {table_oid}")
+                })?;
             let _ = index.btree.delete(&old_key, offset);
             index.btree.insert(new_key, offset);
         }
@@ -193,7 +203,9 @@ impl InMemoryStorage {
             rows[offset] = row;
             return Ok(());
         }
-        Err(format!("row offset {offset} does not exist in relation OID {table_oid}"))
+        Err(format!(
+            "row offset {offset} does not exist in relation OID {table_oid}"
+        ))
     }
 
     pub(crate) fn delete_rows_by_offsets(
@@ -231,9 +243,13 @@ impl InMemoryStorage {
                     })?;
                     composite_key_from_row(removed_row, &index.column_indexes)?
                 };
-                let index = self.index_mut_for_table(table_oid, index_name).ok_or_else(|| {
-                    format!("index \"{index_name}\" does not exist for relation OID {table_oid}")
-                })?;
+                let index = self
+                    .index_mut_for_table(table_oid, index_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "index \"{index_name}\" does not exist for relation OID {table_oid}"
+                        )
+                    })?;
                 let _ = index.btree.delete(&composite_key, *offset);
             }
         }
@@ -333,9 +349,10 @@ impl InMemoryStorage {
 fn composite_key_from_row(row: &[ScalarValue], indexes: &[usize]) -> Result<CompositeKey, String> {
     let mut out = Vec::with_capacity(indexes.len());
     for idx in indexes {
-        let value = row.get(*idx).cloned().ok_or_else(|| {
-            format!("row does not have index column offset {idx}")
-        })?;
+        let value = row
+            .get(*idx)
+            .cloned()
+            .ok_or_else(|| format!("row does not have index column offset {idx}"))?;
         out.push(value);
     }
     Ok(out)

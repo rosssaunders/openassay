@@ -233,8 +233,9 @@ fn infer_function_return_oid(
         "uuid_generate_v1" | "uuid_generate_v4" | "uuid_generate_v5" | "uuid_nil"
         | "gen_random_uuid" => PG_TEXT_OID,
         "digest" | "hmac" | "gen_random_bytes" | "crypt" | "gen_salt" => PG_TEXT_OID,
-        "l2_distance" | "cosine_distance" | "inner_product" | "l1_distance"
-        | "vector_norm" => PG_FLOAT8_OID,
+        "l2_distance" | "cosine_distance" | "inner_product" | "l1_distance" | "vector_norm" => {
+            PG_FLOAT8_OID
+        }
         "vector_dims" => PG_INT8_OID,
         _ => PG_TEXT_OID,
     }

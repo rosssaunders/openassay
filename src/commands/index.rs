@@ -140,12 +140,7 @@ pub async fn execute_create_index(
             storage.drop_index(table.oid(), &index_name);
         });
         let _ = with_catalog_write(|catalog| {
-            catalog.drop_index(
-                table.schema_name(),
-                table.name(),
-                &index_name,
-                true,
-            )
+            catalog.drop_index(table.schema_name(), table.name(), &index_name, true)
         });
         return Err(EngineError { message: err });
     }

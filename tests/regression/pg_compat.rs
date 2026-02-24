@@ -2,13 +2,28 @@ use openassay::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::mpsc;
+use std::time::Duration;
+
+const STATEMENT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_RECORDED_ERRORS: usize = 200;
+
+enum StatementExecution {
+    Completed {
+        session: PostgresSession,
+        result: Result<String, String>,
+    },
+    Panicked,
+    TimedOut,
+}
 
 /// Load PostgreSQL compatibility test files from the pg_compat directory
 fn load_pg_compat_tests() -> Vec<(String, String, Option<String>)> {
     let sql_dir = Path::new("tests/regression/pg_compat/sql");
     let expected_dir = Path::new("tests/regression/pg_compat/expected");
 
-    assert!(sql_dir.exists(), 
+    assert!(
+        sql_dir.exists(),
         "PostgreSQL compatibility test SQL directory not found: {}",
         sql_dir.display()
     );
@@ -160,11 +175,12 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
         }
 
         if bytes[i] == b'$'
-            && let Some(tag_len) = parse_dollar_tag(bytes, i) {
-                dollar_tag = Some(bytes[i..i + tag_len].to_vec());
-                i += tag_len;
-                continue;
-            }
+            && let Some(tag_len) = parse_dollar_tag(bytes, i)
+        {
+            dollar_tag = Some(bytes[i..i + tag_len].to_vec());
+            i += tag_len;
+            continue;
+        }
 
         if bytes[i] == b';' {
             let statement = sql[statement_start..i].trim();
@@ -238,6 +254,29 @@ fn run_sql_statement(session: &mut PostgresSession, sql: &str) -> Result<String,
     }
 
     if has_error { Err(result) } else { Ok(result) }
+}
+
+fn run_sql_statement_with_timeout(session: PostgresSession, sql: &str) -> StatementExecution {
+    let (tx, rx) = mpsc::channel();
+    let sql = sql.to_string();
+
+    std::thread::spawn(move || {
+        let mut session = session;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_sql_statement(&mut session, &sql)
+        }));
+
+        let send_result = match outcome {
+            Ok(result) => tx.send(StatementExecution::Completed { session, result }),
+            Err(_) => tx.send(StatementExecution::Panicked),
+        };
+        let _ = send_result;
+    });
+
+    match rx.recv_timeout(STATEMENT_TIMEOUT) {
+        Ok(outcome) => outcome,
+        Err(_) => StatementExecution::TimedOut,
+    }
 }
 
 /// Normalize output for comparison (remove timestamps, variable data, etc.)
@@ -357,23 +396,30 @@ fn postgresql_compatibility_suite() {
         let mut stmt_ok = 0u32;
         let mut stmt_err = 0u32;
         let mut stmt_skip = 0u32;
+        let mut stmt_timeout = 0u32;
 
         // Run each statement — continue past errors to measure compatibility
         for statement in &statements {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_sql_statement(&mut session, statement)
-            }));
-            match result {
-                Ok(Ok(_)) => {
+            let run_result = run_sql_statement_with_timeout(session, statement);
+            match run_result {
+                StatementExecution::Completed {
+                    session: next_session,
+                    result: Ok(_),
+                } => {
+                    session = next_session;
                     stmt_ok += 1;
                 }
-                Ok(Err(error)) => {
+                StatementExecution::Completed {
+                    session: next_session,
+                    result: Err(error),
+                } => {
+                    session = next_session;
                     if is_expected_limitation(&test_name, &error) {
                         stmt_skip += 1;
                         continue;
                     }
                     stmt_err += 1;
-                    if error_messages.len() < 200 {
+                    if error_messages.len() < MAX_RECORDED_ERRORS {
                         error_messages.push(format!(
                             "SQL: {}... => {}",
                             &statement[..statement.len().min(80)],
@@ -381,12 +427,24 @@ fn postgresql_compatibility_suite() {
                         ));
                     }
                 }
-                Err(_panic) => {
+                StatementExecution::Panicked => {
                     // Statement caused a panic — treat as error and recreate session
                     stmt_err += 1;
-                    if error_messages.len() < 200 {
+                    if error_messages.len() < MAX_RECORDED_ERRORS {
                         error_messages.push(format!(
                             "PANIC in: {}...",
+                            &statement[..statement.len().min(60)]
+                        ));
+                    }
+                    session = PostgresSession::new();
+                }
+                StatementExecution::TimedOut => {
+                    stmt_timeout += 1;
+                    stmt_err += 1;
+                    if error_messages.len() < MAX_RECORDED_ERRORS {
+                        error_messages.push(format!(
+                            "TIMEOUT (>{}s) in: {}...",
+                            STATEMENT_TIMEOUT.as_secs(),
                             &statement[..statement.len().min(60)]
                         ));
                     }
@@ -401,30 +459,38 @@ fn postgresql_compatibility_suite() {
 
         if test_passed {
             println!(
-                "PASS ({}/{} statements ok, {} skipped)",
+                "PASS ({}/{} statements ok, {} skipped, {} timed out)",
                 stmt_ok,
                 stmt_ok + stmt_err,
-                stmt_skip
+                stmt_skip,
+                stmt_timeout
             );
             passed += 1;
             results.insert(
                 test_name,
-                format!("PASS ({}/{})", stmt_ok, stmt_ok + stmt_err),
+                format!(
+                    "PASS ({}/{}, timed out: {})",
+                    stmt_ok,
+                    stmt_ok + stmt_err,
+                    stmt_timeout
+                ),
             );
         } else {
             println!(
-                "FAIL ({}/{} statements ok, {} skipped)",
+                "FAIL ({}/{} statements ok, {} skipped, {} timed out)",
                 stmt_ok,
                 stmt_ok + stmt_err,
-                stmt_skip
+                stmt_skip,
+                stmt_timeout
             );
             failed += 1;
             results.insert(
                 test_name,
                 format!(
-                    "FAIL ({}/{}): {}",
+                    "FAIL ({}/{}, timed out: {}): {}",
                     stmt_ok,
                     stmt_ok + stmt_err,
+                    stmt_timeout,
                     error_messages.join("; ")
                 ),
             );
@@ -454,7 +520,10 @@ fn postgresql_compatibility_suite() {
 
     // Don't fail the test if we have some compatibility issues - this is expected
     // The goal is to measure compatibility, not to have 100% compatibility immediately
-    assert!(!(passed == 0 && failed > 0), "No tests passed - there might be a fundamental issue")
+    assert!(
+        !(passed == 0 && failed > 0),
+        "No tests passed - there might be a fundamental issue"
+    )
 }
 
 /// Test individual PostgreSQL features that openassay claims to support

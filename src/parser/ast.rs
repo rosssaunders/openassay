@@ -253,7 +253,7 @@ pub enum TypeName {
     Numeric,          // DECIMAL/NUMERIC
     Array(Box<Self>), // e.g. int4[], text[][]
     Vector(Option<usize>),
-    Name,             // PostgreSQL name type (63-byte identifier)
+    Name, // PostgreSQL name type (63-byte identifier)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -969,10 +969,10 @@ pub enum BinaryOp {
     JsonHasAll,
     JsonDelete,
     JsonDeletePath,
-    ArrayContains,    // @>
-    ArrayContainedBy, // <@
-    ArrayOverlap,     // &&
-    ArrayConcat,      // ||
+    ArrayContains,        // @>
+    ArrayContainedBy,     // <@
+    ArrayOverlap,         // &&
+    ArrayConcat,          // ||
     VectorL2Distance,     // <->
     VectorInnerProduct,   // <#>
     VectorCosineDistance, // <=>

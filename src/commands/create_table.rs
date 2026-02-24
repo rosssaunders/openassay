@@ -349,7 +349,7 @@ async fn execute_create_table_as_select(
                 1700 => TypeSignature::Numeric,                                   // numeric
                 1082 => TypeSignature::Date,                                      // date
                 1114 | 1184 => TypeSignature::Timestamp, // timestamp, timestamptz
-                6000 => TypeSignature::Vector(None),                              // vector
+                6000 => TypeSignature::Vector(None),     // vector
                 _ => TypeSignature::Text,                // default to text for unknown types
             };
             ColumnSpec {

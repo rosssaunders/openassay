@@ -1,5 +1,7 @@
 use crate::parser::ast::{CreateFunctionStatement, DropFunctionStatement};
-use crate::tcop::engine::{EngineError, QueryResult, UserFunction, same_function_identity, with_ext_write};
+use crate::tcop::engine::{
+    EngineError, QueryResult, UserFunction, same_function_identity, with_ext_write,
+};
 
 pub async fn execute_create_function(
     create: &CreateFunctionStatement,
@@ -48,10 +50,7 @@ pub async fn execute_drop_function(
     });
     if removed == 0 && !drop.if_exists {
         return Err(EngineError {
-            message: format!(
-                "function {} does not exist",
-                drop.name.join(".")
-            ),
+            message: format!("function {} does not exist", drop.name.join(".")),
         });
     }
     Ok(QueryResult {

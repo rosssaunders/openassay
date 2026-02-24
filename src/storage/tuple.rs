@@ -92,10 +92,7 @@ fn render_array_literal(values: &[ScalarValue]) -> String {
 }
 
 fn render_vector_literal(values: &[f32]) -> String {
-    let parts: Vec<String> = values
-        .iter()
-        .map(|v| render_float4(*v as f64))
-        .collect();
+    let parts: Vec<String> = values.iter().map(|v| render_float4(*v as f64)).collect();
     format!("[{}]", parts.join(","))
 }
 

@@ -1,13 +1,13 @@
-use base64::engine::general_purpose::STANDARD_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD_NO_PAD;
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
 
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::EngineError;
-use crate::utils::adt::string_functions::{md5_digest, md5_hex};
 use crate::utils::adt::misc::gen_random_uuid;
+use crate::utils::adt::string_functions::{md5_digest, md5_hex};
 
 type HmacSha1 = Hmac<Sha1>;
 type HmacSha224 = Hmac<Sha224>;

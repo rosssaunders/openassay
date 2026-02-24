@@ -848,9 +848,11 @@ fn scalar_to_json_path_segment(
         ScalarValue::Float(v) => Ok(v.to_string()),
         ScalarValue::Numeric(v) => Ok(v.to_string()),
         ScalarValue::Bool(v) => Ok(v.to_string()),
-        ScalarValue::Array(_) | ScalarValue::Record(_) | ScalarValue::Vector(_) => Err(EngineError {
-            message: format!("{operator_name} operator path operand must be scalar"),
-        }),
+        ScalarValue::Array(_) | ScalarValue::Record(_) | ScalarValue::Vector(_) => {
+            Err(EngineError {
+                message: format!("{operator_name} operator path operand must be scalar"),
+            })
+        }
     }
 }
 

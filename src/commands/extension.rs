@@ -1,7 +1,5 @@
 use crate::parser::ast::{CreateExtensionStatement, DropExtensionStatement};
-use crate::tcop::engine::{
-    EngineError, ExtensionRecord, QueryResult, with_ext_write,
-};
+use crate::tcop::engine::{EngineError, ExtensionRecord, QueryResult, with_ext_write};
 
 pub async fn execute_create_extension(
     create: &CreateExtensionStatement,
@@ -21,7 +19,10 @@ pub async fn execute_create_extension(
             "http" => ("1.0".to_string(), "HTTP client extension".to_string()),
             "uuid-ossp" => ("1.0".to_string(), "UUID generation functions".to_string()),
             "pgcrypto" => ("1.0".to_string(), "Cryptographic functions".to_string()),
-            "vector" => ("1.0".to_string(), "Vector type and distance functions".to_string()),
+            "vector" => (
+                "1.0".to_string(),
+                "Vector type and distance functions".to_string(),
+            ),
             _ => {
                 return Err(EngineError {
                     message: format!("extension \"{name}\" is not available"),

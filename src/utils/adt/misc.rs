@@ -857,20 +857,23 @@ pub(crate) fn pg_get_viewdef(
     view_name: &str,
     pretty: bool,
 ) -> Result<String, crate::tcop::engine::EngineError> {
-    use crate::catalog::{with_catalog_read, SearchPath};
     use crate::catalog::table::TableKind;
+    use crate::catalog::{SearchPath, with_catalog_read};
 
     // Try to look up the view in the catalog
     let parts: Vec<String> = view_name.split('.').map(|s| s.trim().to_string()).collect();
     let result = with_catalog_read(|catalog| {
         let search_path = SearchPath::default();
-        catalog.resolve_table(&parts, &search_path).ok().and_then(|table| {
-            if matches!(table.kind(), TableKind::View | TableKind::MaterializedView) {
-                table.view_definition().cloned()
-            } else {
-                None
-            }
-        })
+        catalog
+            .resolve_table(&parts, &search_path)
+            .ok()
+            .and_then(|table| {
+                if matches!(table.kind(), TableKind::View | TableKind::MaterializedView) {
+                    table.view_definition().cloned()
+                } else {
+                    None
+                }
+            })
     });
 
     match result {

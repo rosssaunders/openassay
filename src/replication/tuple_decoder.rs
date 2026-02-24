@@ -129,8 +129,8 @@ pub fn decode_binary_value(
                 text_value
                     .parse::<rust_decimal::Decimal>()
                     .map_err(|_| ReplicationError {
-                message: format!("invalid numeric binary data: {text_value}"),
-            })?;
+                        message: format!("invalid numeric binary data: {text_value}"),
+                    })?;
             Ok(ScalarValue::Numeric(decimal))
         }
         TypeSignature::Text => Ok(ScalarValue::Text(

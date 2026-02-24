@@ -1,11 +1,9 @@
-use crate::parser::ast::{CreateDomainStatement, CreateTypeStatement, DropDomainStatement, DropTypeStatement};
-use crate::tcop::engine::{
-    EngineError, QueryResult, UserDomain, UserEnumType, with_ext_write,
+use crate::parser::ast::{
+    CreateDomainStatement, CreateTypeStatement, DropDomainStatement, DropTypeStatement,
 };
+use crate::tcop::engine::{EngineError, QueryResult, UserDomain, UserEnumType, with_ext_write};
 
-pub async fn execute_create_type(
-    create: &CreateTypeStatement,
-) -> Result<QueryResult, EngineError> {
+pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryResult, EngineError> {
     let normalized_name: Vec<String> = create.name.iter().map(|s| s.to_ascii_lowercase()).collect();
 
     if create.as_enum.is_empty() {
@@ -39,9 +37,7 @@ pub async fn execute_create_type(
     })
 }
 
-pub async fn execute_drop_type(
-    drop: &DropTypeStatement,
-) -> Result<QueryResult, EngineError> {
+pub async fn execute_drop_type(drop: &DropTypeStatement) -> Result<QueryResult, EngineError> {
     let normalized_name: Vec<String> = drop.name.iter().map(|s| s.to_ascii_lowercase()).collect();
 
     let removed = with_ext_write(|ext| {
@@ -91,9 +87,7 @@ pub async fn execute_create_domain(
     })
 }
 
-pub async fn execute_drop_domain(
-    drop: &DropDomainStatement,
-) -> Result<QueryResult, EngineError> {
+pub async fn execute_drop_domain(drop: &DropDomainStatement) -> Result<QueryResult, EngineError> {
     let normalized_name: Vec<String> = drop.name.iter().map(|s| s.to_ascii_lowercase()).collect();
 
     let removed = with_ext_write(|ext| {

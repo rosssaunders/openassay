@@ -90,16 +90,12 @@ fn bench_aggregate(c: &mut Criterion, name: &str, setup_sql: &str, query_sql: &s
         b.iter_batched(
             || {
                 let mut session = PostgresSession::new();
-                let out = session.run_sync([FrontendMessage::Query {
-                    sql: setup.clone(),
-                }]);
+                let out = session.run_sync([FrontendMessage::Query { sql: setup.clone() }]);
                 assert_ok(&out);
                 session
             },
             |mut session| {
-                let out = session.run_sync([FrontendMessage::Query {
-                    sql: query.clone(),
-                }]);
+                let out = session.run_sync([FrontendMessage::Query { sql: query.clone() }]);
                 assert_ok(&out);
             },
             BatchSize::SmallInput,
@@ -111,15 +107,30 @@ const AGG_1K_SETUP: &str =
     "CREATE TABLE bench_agg AS SELECT g AS val FROM generate_series(1, 1000) g";
 
 fn bench_aggregate_sum_1k(c: &mut Criterion) {
-    bench_aggregate(c, "aggregate_sum_1k", AGG_1K_SETUP, "SELECT sum(val) FROM bench_agg");
+    bench_aggregate(
+        c,
+        "aggregate_sum_1k",
+        AGG_1K_SETUP,
+        "SELECT sum(val) FROM bench_agg",
+    );
 }
 
 fn bench_aggregate_min_1k(c: &mut Criterion) {
-    bench_aggregate(c, "aggregate_min_1k", AGG_1K_SETUP, "SELECT min(val) FROM bench_agg");
+    bench_aggregate(
+        c,
+        "aggregate_min_1k",
+        AGG_1K_SETUP,
+        "SELECT min(val) FROM bench_agg",
+    );
 }
 
 fn bench_aggregate_max_1k(c: &mut Criterion) {
-    bench_aggregate(c, "aggregate_max_1k", AGG_1K_SETUP, "SELECT max(val) FROM bench_agg");
+    bench_aggregate(
+        c,
+        "aggregate_max_1k",
+        AGG_1K_SETUP,
+        "SELECT max(val) FROM bench_agg",
+    );
 }
 
 fn bench_aggregate_group_by_1k(c: &mut Criterion) {

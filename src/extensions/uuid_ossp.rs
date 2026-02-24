@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use uuid::v1::{Context, Timestamp};
 use uuid::Uuid;
+use uuid::v1::{Context, Timestamp};
 
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::EngineError;
