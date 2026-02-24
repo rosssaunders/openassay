@@ -299,7 +299,9 @@ impl PlannedOperation {
         matches!(
             self,
             Self::Transaction(
-                TransactionCommand::Rollback | TransactionCommand::RollbackToSavepoint(_)
+                TransactionCommand::Rollback
+                    | TransactionCommand::RollbackToSavepoint(_)
+                    | TransactionCommand::Savepoint(_)
             )
         )
     }

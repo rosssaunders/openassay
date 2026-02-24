@@ -404,9 +404,114 @@ fn infer_select_target_name(target: &SelectItem) -> Result<String, EngineError> 
                 message: "wildcard target requires FROM support".to_string(),
             });
         }
+        Expr::QualifiedWildcard(_) => {
+            return Err(EngineError {
+                message: "qualified wildcard target requires FROM support".to_string(),
+            });
+        }
         _ => "?column?".to_string(),
     };
     Ok(name)
+}
+
+fn is_recursive_union_expr(expr: &QueryExpr) -> bool {
+    matches!(
+        expr,
+        QueryExpr::SetOperation {
+            op: SetOperator::Union,
+            ..
+        }
+    )
+}
+
+fn harmonize_setop_columns(mut left: Vec<String>, right: &[String]) -> Vec<String> {
+    if left.len() < right.len() {
+        left.extend(right.iter().skip(left.len()).cloned());
+    } else if right.len() < left.len() {
+        left.truncate(right.len());
+    }
+    left
+}
+
+fn harmonize_setop_output_columns(
+    mut left: Vec<PlannedOutputColumn>,
+    right: &[PlannedOutputColumn],
+) -> Vec<PlannedOutputColumn> {
+    if left.len() < right.len() {
+        left.extend(right.iter().skip(left.len()).cloned());
+    } else if right.len() < left.len() {
+        left.truncate(right.len());
+    }
+    left
+}
+
+fn append_cte_aux_columns(columns: &mut Vec<String>, cte: &crate::parser::ast::CommonTableExpr) {
+    if let Some(search) = &cte.search_clause
+        && !columns
+            .iter()
+            .any(|col| col.eq_ignore_ascii_case(&search.set_column))
+    {
+        columns.push(search.set_column.clone());
+    }
+    if let Some(cycle) = &cte.cycle_clause {
+        if !columns
+            .iter()
+            .any(|col| col.eq_ignore_ascii_case(&cycle.set_column))
+        {
+            columns.push(cycle.set_column.clone());
+        }
+        if !columns
+            .iter()
+            .any(|col| col.eq_ignore_ascii_case(&cycle.using_column))
+        {
+            columns.push(cycle.using_column.clone());
+        }
+    }
+}
+
+fn append_cte_aux_output_columns(
+    columns: &mut Vec<PlannedOutputColumn>,
+    cte: &crate::parser::ast::CommonTableExpr,
+) {
+    if let Some(search) = &cte.search_clause
+        && !columns
+            .iter()
+            .any(|col| col.name.eq_ignore_ascii_case(&search.set_column))
+    {
+        columns.push(PlannedOutputColumn {
+            name: search.set_column.clone(),
+            type_oid: PG_INT8_OID,
+        });
+    }
+    if let Some(cycle) = &cte.cycle_clause {
+        if !columns
+            .iter()
+            .any(|col| col.name.eq_ignore_ascii_case(&cycle.set_column))
+        {
+            columns.push(PlannedOutputColumn {
+                name: cycle.set_column.clone(),
+                type_oid: PG_BOOL_OID,
+            });
+        }
+        if !columns
+            .iter()
+            .any(|col| col.name.eq_ignore_ascii_case(&cycle.using_column))
+        {
+            columns.push(PlannedOutputColumn {
+                name: cycle.using_column.clone(),
+                type_oid: PG_TEXT_OID,
+            });
+        }
+    }
+}
+
+fn wildcard_matches_qualifier(lookup_parts: &[String], qualifier: &[String]) -> bool {
+    let Some(target) = qualifier.last() else {
+        return false;
+    };
+    lookup_parts
+        .first()
+        .is_some_and(|part| part.eq_ignore_ascii_case(target))
 }
 
 pub(crate) fn derive_query_output_columns(
@@ -424,10 +529,27 @@ pub(crate) fn derive_query_output_columns_with_ctes(
     if let Some(with) = &query.with {
         for cte in &with.ctes {
             let cte_name = cte.name.to_ascii_lowercase();
-            let cols = if with.recursive && query_references_relation(&cte.query, &cte_name) {
+            let cols = if with.recursive
+                && query_references_relation(&cte.query, &cte_name)
+                && is_recursive_union_expr(&cte.query.body)
+            {
                 derive_recursive_cte_output_columns(cte, &local_ctes)?
             } else {
-                derive_query_output_columns_with_ctes(&cte.query, &mut local_ctes)?
+                let mut cols = derive_query_output_columns_with_ctes(&cte.query, &mut local_ctes)?;
+                if !cte.column_names.is_empty() {
+                    let renamed = cte
+                        .column_names
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, name)| PlannedOutputColumn {
+                            name: name.clone(),
+                            type_oid: cols.get(idx).map_or(PG_TEXT_OID, |col| col.type_oid),
+                        })
+                        .collect::<Vec<_>>();
+                    cols = renamed;
+                }
+                append_cte_aux_output_columns(&mut cols, cte);
+                cols
             };
             local_ctes.insert(cte_name, cols);
         }
@@ -464,16 +586,24 @@ fn derive_recursive_cte_output_columns(
     }
     validate_recursive_cte_terms(&cte.name, &cte_name, left, right)?;
 
-    let left_cols = derive_query_expr_output_columns(left, ctes)?;
+    let mut left_cols = derive_query_expr_output_columns(left, ctes)?;
+    if !cte.column_names.is_empty() {
+        left_cols = cte
+            .column_names
+            .iter()
+            .enumerate()
+            .map(|(idx, name)| PlannedOutputColumn {
+                name: name.clone(),
+                type_oid: left_cols.get(idx).map_or(PG_TEXT_OID, |col| col.type_oid),
+            })
+            .collect();
+    }
     let mut recursive_ctes = ctes.clone();
     recursive_ctes.insert(cte_name, left_cols.clone());
     let right_cols = derive_query_expr_output_columns(right, &recursive_ctes)?;
-    if left_cols.len() != right_cols.len() {
-        return Err(EngineError {
-            message: "set-operation inputs must have matching column counts".to_string(),
-        });
-    }
-    Ok(left_cols)
+    let mut out = harmonize_setop_output_columns(left_cols, &right_cols);
+    append_cte_aux_output_columns(&mut out, cte);
+    Ok(out)
 }
 
 fn derive_query_expr_output_columns(
@@ -485,12 +615,7 @@ fn derive_query_expr_output_columns(
         QueryExpr::SetOperation { left, right, .. } => {
             let left_cols = derive_query_expr_output_columns(left, ctes)?;
             let right_cols = derive_query_expr_output_columns(right, ctes)?;
-            if left_cols.len() != right_cols.len() {
-                return Err(EngineError {
-                    message: "set-operation inputs must have matching column counts".to_string(),
-                });
-            }
-            Ok(left_cols)
+            Ok(harmonize_setop_output_columns(left_cols, &right_cols))
         }
         QueryExpr::Nested(query) => {
             let mut nested = ctes.clone();
@@ -506,9 +631,48 @@ fn derive_query_expr_output_columns(
                 })
                 .collect())
         }
-        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => Err(EngineError {
-            message: "data-modifying statements in WITH are not yet fully supported".to_string(),
-        }),
+        QueryExpr::Insert(insert) => {
+            let names =
+                derive_dml_returning_columns(&insert.table_name, &insert.returning).unwrap_or_default();
+            let types = derive_dml_returning_column_type_oids(&insert.table_name, &insert.returning)
+                .unwrap_or_else(|_| vec![PG_TEXT_OID; names.len()]);
+            Ok(names
+                .into_iter()
+                .enumerate()
+                .map(|(idx, name)| PlannedOutputColumn {
+                    name,
+                    type_oid: types.get(idx).copied().unwrap_or(PG_TEXT_OID),
+                })
+                .collect())
+        }
+        QueryExpr::Update(update) => {
+            let names =
+                derive_dml_returning_columns(&update.table_name, &update.returning).unwrap_or_default();
+            let types = derive_dml_returning_column_type_oids(&update.table_name, &update.returning)
+                .unwrap_or_else(|_| vec![PG_TEXT_OID; names.len()]);
+            Ok(names
+                .into_iter()
+                .enumerate()
+                .map(|(idx, name)| PlannedOutputColumn {
+                    name,
+                    type_oid: types.get(idx).copied().unwrap_or(PG_TEXT_OID),
+                })
+                .collect())
+        }
+        QueryExpr::Delete(delete) => {
+            let names =
+                derive_dml_returning_columns(&delete.table_name, &delete.returning).unwrap_or_default();
+            let types = derive_dml_returning_column_type_oids(&delete.table_name, &delete.returning)
+                .unwrap_or_else(|_| vec![PG_TEXT_OID; names.len()]);
+            Ok(names
+                .into_iter()
+                .enumerate()
+                .map(|(idx, name)| PlannedOutputColumn {
+                    name,
+                    type_oid: types.get(idx).copied().unwrap_or(PG_TEXT_OID),
+                })
+                .collect())
+        }
     }
 }
 
@@ -524,7 +688,7 @@ fn derive_select_output_columns(
     let wildcard_columns = if select
         .targets
         .iter()
-        .any(|target| matches!(target.expr, Expr::Wildcard))
+        .any(|target| matches!(target.expr, Expr::Wildcard | Expr::QualifiedWildcard(_)))
     {
         Some(expand_from_columns_typed(&select.from, ctes)?)
     } else {
@@ -551,6 +715,22 @@ fn derive_select_output_columns(
             }));
             continue;
         }
+        if let Expr::QualifiedWildcard(qualifier) = &target.expr {
+            let Some(expanded) = &wildcard_columns else {
+                return Err(EngineError {
+                    message: "qualified wildcard target requires FROM support".to_string(),
+                });
+            };
+            for col in expanded {
+                if wildcard_matches_qualifier(&col.lookup_parts, qualifier) {
+                    columns.push(PlannedOutputColumn {
+                        name: col.label.clone(),
+                        type_oid: col.type_oid,
+                    });
+                }
+            }
+            continue;
+        }
 
         columns.push(PlannedOutputColumn {
             name: infer_select_target_name(target)?,
@@ -573,10 +753,18 @@ fn derive_query_columns_with_ctes(
     if let Some(with) = &query.with {
         for cte in &with.ctes {
             let cte_name = cte.name.to_ascii_lowercase();
-            let cols = if with.recursive && query_references_relation(&cte.query, &cte_name) {
+            let cols = if with.recursive
+                && query_references_relation(&cte.query, &cte_name)
+                && is_recursive_union_expr(&cte.query.body)
+            {
                 derive_recursive_cte_columns(cte, &local_ctes)?
             } else {
-                derive_query_columns_with_ctes(&cte.query, &mut local_ctes)?
+                let mut cols = derive_query_columns_with_ctes(&cte.query, &mut local_ctes)?;
+                if !cte.column_names.is_empty() {
+                    cols = cte.column_names.clone();
+                }
+                append_cte_aux_columns(&mut cols, cte);
+                cols
             };
             local_ctes.insert(cte_name, cols);
         }
@@ -613,16 +801,16 @@ fn derive_recursive_cte_columns(
     }
     validate_recursive_cte_terms(&cte.name, &cte_name, left, right)?;
 
-    let left_cols = derive_query_expr_columns(left, ctes)?;
+    let mut left_cols = derive_query_expr_columns(left, ctes)?;
+    if !cte.column_names.is_empty() {
+        left_cols = cte.column_names.clone();
+    }
     let mut recursive_ctes = ctes.clone();
     recursive_ctes.insert(cte_name, left_cols.clone());
     let right_cols = derive_query_expr_columns(right, &recursive_ctes)?;
-    if left_cols.len() != right_cols.len() {
-        return Err(EngineError {
-            message: "set-operation inputs must have matching column counts".to_string(),
-        });
-    }
-    Ok(left_cols)
+    let mut out = harmonize_setop_columns(left_cols, &right_cols);
+    append_cte_aux_columns(&mut out, cte);
+    Ok(out)
 }
 
 pub(crate) fn query_references_relation(query: &Query, relation_name: &str) -> bool {
@@ -852,12 +1040,7 @@ fn derive_query_expr_columns(
         QueryExpr::SetOperation { left, right, .. } => {
             let left_cols = derive_query_expr_columns(left, ctes)?;
             let right_cols = derive_query_expr_columns(right, ctes)?;
-            if left_cols.len() != right_cols.len() {
-                return Err(EngineError {
-                    message: "set-operation inputs must have matching column counts".to_string(),
-                });
-            }
-            Ok(left_cols)
+            Ok(harmonize_setop_columns(left_cols, &right_cols))
         }
         QueryExpr::Nested(query) => {
             let mut nested = ctes.clone();
@@ -868,9 +1051,15 @@ fn derive_query_expr_columns(
             let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
             Ok((1..=ncols).map(|i| format!("column{i}")).collect())
         }
-        QueryExpr::Insert(_) | QueryExpr::Update(_) | QueryExpr::Delete(_) => Err(EngineError {
-            message: "data-modifying statements in WITH are not yet fully supported".to_string(),
-        }),
+        QueryExpr::Insert(insert) => {
+            Ok(derive_dml_returning_columns(&insert.table_name, &insert.returning).unwrap_or_default())
+        }
+        QueryExpr::Update(update) => {
+            Ok(derive_dml_returning_columns(&update.table_name, &update.returning).unwrap_or_default())
+        }
+        QueryExpr::Delete(delete) => {
+            Ok(derive_dml_returning_columns(&delete.table_name, &delete.returning).unwrap_or_default())
+        }
     }
 }
 
@@ -881,7 +1070,7 @@ pub(crate) fn derive_select_columns(
     let wildcard_columns = if select
         .targets
         .iter()
-        .any(|target| matches!(target.expr, Expr::Wildcard))
+        .any(|target| matches!(target.expr, Expr::Wildcard | Expr::QualifiedWildcard(_)))
     {
         Some(expand_from_columns(&select.from, ctes)?)
     } else {
@@ -897,6 +1086,19 @@ pub(crate) fn derive_select_columns(
             };
             for col in expanded {
                 columns.push(col.label.clone());
+            }
+            continue;
+        }
+        if let Expr::QualifiedWildcard(qualifier) = &target.expr {
+            let Some(expanded) = &wildcard_columns else {
+                return Err(EngineError {
+                    message: "qualified wildcard target requires FROM support".to_string(),
+                });
+            };
+            for col in expanded {
+                if wildcard_matches_qualifier(&col.lookup_parts, qualifier) {
+                    columns.push(col.label.clone());
+                }
             }
             continue;
         }
