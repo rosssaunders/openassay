@@ -317,6 +317,51 @@ pub(crate) fn eval_regexp_split_to_table_set_function(
     Ok((vec![fn_name.to_string()], rows))
 }
 
+pub(crate) fn eval_string_to_table_set_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if args.len() != 2 && args.len() != 3 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects 2 or 3 arguments"),
+        });
+    }
+    if matches!(args[0], ScalarValue::Null) || matches!(args[1], ScalarValue::Null) {
+        return Ok((vec![fn_name.to_string()], Vec::new()));
+    }
+
+    let input = args[0].render();
+    let delimiter = args[1].render();
+    let null_str = args.get(2).and_then(|arg| {
+        if matches!(arg, ScalarValue::Null) {
+            None
+        } else {
+            Some(arg.render())
+        }
+    });
+
+    let parts = if delimiter.is_empty() {
+        input.chars().map(|c| c.to_string()).collect::<Vec<_>>()
+    } else {
+        input
+            .split(&delimiter)
+            .map(|part| part.to_string())
+            .collect::<Vec<_>>()
+    };
+
+    let rows = parts
+        .into_iter()
+        .map(|part| {
+            if null_str.as_deref() == Some(part.as_str()) {
+                vec![ScalarValue::Null]
+            } else {
+                vec![ScalarValue::Text(part)]
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok((vec![fn_name.to_string()], rows))
+}
+
 pub(crate) fn rand_f64() -> f64 {
     use std::time::SystemTime;
     let seed = SystemTime::now()
@@ -931,6 +976,12 @@ pub(crate) fn parse_f64_scalar(value: &ScalarValue, message: &str) -> Result<f64
     match value {
         ScalarValue::Float(v) => Ok(*v),
         ScalarValue::Int(v) => Ok(*v as f64),
+        ScalarValue::Numeric(d) => {
+            use rust_decimal::prelude::ToPrimitive;
+            d.to_f64().ok_or_else(|| EngineError {
+                message: message.to_string(),
+            })
+        }
         ScalarValue::Text(v) => v.parse::<f64>().map_err(|_| EngineError {
             message: message.to_string(),
         }),
@@ -1509,6 +1560,7 @@ fn binary_op_to_sql(op: &crate::parser::ast::BinaryOp) -> &'static str {
         BinaryOp::Mul => "*",
         BinaryOp::Div => "/",
         BinaryOp::Mod => "%",
+        BinaryOp::Pow => "^",
         BinaryOp::ShiftLeft => "<<",
         BinaryOp::ShiftRight => ">>",
         BinaryOp::JsonGet => "->",

@@ -932,11 +932,10 @@ impl<'a> Lexer<'a> {
         }
 
         let sanitized = text.replace('_', "");
-        let value = sanitized.parse::<i64>().map_err(|_| LexError {
-            message: "integer literal out of range".to_string(),
-            position: start,
-        })?;
-        Ok(self.mk(start, TokenKind::Integer(value)))
+        match sanitized.parse::<i64>() {
+            Ok(value) => Ok(self.mk(start, TokenKind::Integer(value))),
+            Err(_) => Ok(self.mk(start, TokenKind::Float(sanitized))),
+        }
     }
 
     fn lex_radix_integer(

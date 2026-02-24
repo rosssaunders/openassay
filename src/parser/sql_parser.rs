@@ -5454,6 +5454,7 @@ impl Parser {
             TokenKind::Star => Some((BinaryOp::Mul, 9, 10)),
             TokenKind::Slash => Some((BinaryOp::Div, 9, 10)),
             TokenKind::Percent => Some((BinaryOp::Mod, 9, 10)),
+            TokenKind::Caret => Some((BinaryOp::Pow, 13, 14)),
             TokenKind::Operator(op) if op == "<<" => Some((BinaryOp::ShiftLeft, 9, 10)),
             TokenKind::Operator(op) if op == ">>" => Some((BinaryOp::ShiftRight, 9, 10)),
             TokenKind::Operator(op) if op == "->" => Some((BinaryOp::JsonGet, 11, 12)),

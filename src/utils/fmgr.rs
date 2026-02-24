@@ -21,9 +21,11 @@ use crate::utils::adt::json::{
     eval_http_patch, eval_http_post_content, eval_http_post_form, eval_http_put,
     eval_json_array_length, eval_json_extract_path, eval_json_object, eval_json_pretty,
     eval_json_strip_nulls, eval_json_typeof, eval_jsonb_exists, eval_jsonb_exists_any_all,
-    eval_jsonb_insert, eval_jsonb_path_exists, eval_jsonb_path_match, eval_jsonb_path_query_array,
-    eval_jsonb_path_query_first, eval_jsonb_set, eval_jsonb_set_lax, eval_row_to_json,
-    eval_urlencode, json_build_array_value, json_build_object_value, scalar_to_json_value,
+    eval_jsonb_concat, eval_jsonb_contained, eval_jsonb_contains, eval_jsonb_delete,
+    eval_jsonb_delete_path, eval_jsonb_insert, eval_jsonb_path_exists, eval_jsonb_path_match,
+    eval_jsonb_path_query_array, eval_jsonb_path_query_first, eval_jsonb_set, eval_jsonb_set_lax,
+    eval_row_to_json, eval_urlencode, json_build_array_value, json_build_object_value,
+    scalar_to_json_value,
 };
 use crate::utils::adt::math_functions::{
     NumericOperand, coerce_to_f64, eval_factorial, eval_scale, eval_width_bucket, gcd_i64,
@@ -163,8 +165,13 @@ pub(crate) async fn eval_scalar_function(
             eval_json_array_length(&args[0], fn_name)
         }
         "json_typeof" | "jsonb_typeof" if args.len() == 1 => eval_json_typeof(&args[0], fn_name),
-        "json_strip_nulls" | "jsonb_strip_nulls" if args.len() == 1 => {
-            eval_json_strip_nulls(&args[0], fn_name)
+        "json_strip_nulls" | "jsonb_strip_nulls" if args.len() == 1 || args.len() == 2 => {
+            let strip_in_arrays = if args.len() == 2 {
+                parse_bool_scalar(&args[1], "jsonb_strip_nulls() expects boolean second argument")?
+            } else {
+                false
+            };
+            eval_json_strip_nulls(&args[0], fn_name, strip_in_arrays)
         }
         "json_pretty" | "jsonb_pretty" if args.len() == 1 => eval_json_pretty(&args[0], fn_name),
         "jsonb_exists" if args.len() == 2 => eval_jsonb_exists(&args[0], &args[1]),
@@ -180,6 +187,11 @@ pub(crate) async fn eval_scalar_function(
         "jsonb_path_query_array" if args.len() >= 2 => eval_jsonb_path_query_array(args, fn_name),
         "jsonb_path_query_first" if args.len() >= 2 => eval_jsonb_path_query_first(args, fn_name),
         "jsonb_set" if args.len() == 3 || args.len() == 4 => eval_jsonb_set(args),
+        "jsonb_concat" if args.len() == 2 => eval_jsonb_concat(args),
+        "jsonb_contains" if args.len() == 2 => eval_jsonb_contains(args),
+        "jsonb_contained" if args.len() == 2 => eval_jsonb_contained(args),
+        "jsonb_delete" if args.len() == 2 => eval_jsonb_delete(args),
+        "jsonb_delete_path" if args.len() == 2 => eval_jsonb_delete_path(args),
         "jsonb_insert" if args.len() == 3 || args.len() == 4 => eval_jsonb_insert(args),
         "jsonb_set_lax" if args.len() >= 3 && args.len() <= 5 => eval_jsonb_set_lax(args),
         "nextval" if args.len() == 1 => {
@@ -280,16 +292,16 @@ pub(crate) async fn eval_scalar_function(
         }
         "abs" if args.len() == 1 => match &args[0] {
             ScalarValue::Null => Ok(ScalarValue::Null),
-            ScalarValue::Int(i) => {
-                let abs_value = i.checked_abs().ok_or_else(|| EngineError {
-                    message: "bigint out of range".to_string(),
-                })?;
-                Ok(ScalarValue::Int(abs_value))
-            }
-            ScalarValue::Float(f) => Ok(ScalarValue::Float(f.abs())),
-            _ => Err(EngineError {
-                message: "abs() expects numeric argument".to_string(),
-            }),
+            _ => match parse_numeric_operand(&args[0])? {
+                NumericOperand::Int(i) => {
+                    let abs_value = i.checked_abs().ok_or_else(|| EngineError {
+                        message: "bigint out of range".to_string(),
+                    })?;
+                    Ok(ScalarValue::Int(abs_value))
+                }
+                NumericOperand::Float(f) => Ok(ScalarValue::Float(f.abs())),
+                NumericOperand::Numeric(d) => Ok(ScalarValue::Numeric(d.abs())),
+            },
         },
         "nullif" if args.len() == 2 => {
             if matches!(args[0], ScalarValue::Null) {
@@ -444,6 +456,49 @@ pub(crate) async fn eval_scalar_function(
                 &input,
                 trim_chars.as_deref(),
                 TrimMode::Right,
+            )))
+        }
+        "trim" if args.len() == 1 || args.len() == 2 || args.len() == 3 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let (mode, trim_chars, input) = match args.len() {
+                1 => (TrimMode::Both, None, args[0].render()),
+                2 => {
+                    let first = args[0].render();
+                    if first.eq_ignore_ascii_case("leading")
+                        || first.eq_ignore_ascii_case("trailing")
+                        || first.eq_ignore_ascii_case("both")
+                    {
+                        let mode = if first.eq_ignore_ascii_case("leading") {
+                            TrimMode::Left
+                        } else if first.eq_ignore_ascii_case("trailing") {
+                            TrimMode::Right
+                        } else {
+                            TrimMode::Both
+                        };
+                        (mode, None, args[1].render())
+                    } else {
+                        (TrimMode::Both, Some(first), args[1].render())
+                    }
+                }
+                3 => {
+                    let mode_text = args[0].render();
+                    let mode = if mode_text.eq_ignore_ascii_case("leading") {
+                        TrimMode::Left
+                    } else if mode_text.eq_ignore_ascii_case("trailing") {
+                        TrimMode::Right
+                    } else {
+                        TrimMode::Both
+                    };
+                    (mode, Some(args[1].render()), args[2].render())
+                }
+                _ => unreachable!("trim() arity checked in match guard"),
+            };
+            Ok(ScalarValue::Text(trim_text(
+                &input,
+                trim_chars.as_deref(),
+                mode,
             )))
         }
         "replace" if args.len() == 3 => {
@@ -642,6 +697,13 @@ pub(crate) async fn eval_scalar_function(
                 return Ok(ScalarValue::Null);
             }
             let v = coerce_to_f64(&args[0], "log()")?;
+            Ok(ScalarValue::Float(v.log10()))
+        }
+        "log10" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let v = coerce_to_f64(&args[0], "log10()")?;
             Ok(ScalarValue::Float(v.log10()))
         }
         "log" if args.len() == 2 => {
@@ -1028,14 +1090,31 @@ pub(crate) async fn eval_scalar_function(
             let input = args[0].render();
             let delimiter = args[1].render();
             let field = parse_i64_scalar(&args[2], "split_part() expects integer field")?;
-            if field <= 0 {
+            if field == 0 {
                 return Err(EngineError {
                     message: "field position must be greater than zero".to_string(),
                 });
             }
+            if delimiter.is_empty() {
+                return Ok(ScalarValue::Text(if field == 1 || field == -1 {
+                    input
+                } else {
+                    String::new()
+                }));
+            }
             let parts: Vec<&str> = input.split(&delimiter).collect();
+            let idx = if field > 0 {
+                Some((field - 1) as usize)
+            } else {
+                let back = field.unsigned_abs() as usize;
+                if back == 0 || back > parts.len() {
+                    None
+                } else {
+                    Some(parts.len() - back)
+                }
+            };
             Ok(ScalarValue::Text(
-                parts.get((field - 1) as usize).unwrap_or(&"").to_string(),
+                idx.and_then(|i| parts.get(i).copied()).unwrap_or("").to_string(),
             ))
         }
         "strpos" if args.len() == 2 => {

@@ -55,6 +55,9 @@ pub(crate) fn coerce_to_f64(v: &ScalarValue, context: &str) -> Result<f64, Engin
         ScalarValue::Numeric(d) => Ok(d.to_string().parse::<f64>().map_err(|_| EngineError {
             message: format!("{context} cannot convert decimal to float"),
         })?),
+        ScalarValue::Text(text) => text.parse::<f64>().map_err(|_| EngineError {
+            message: format!("{context} expects numeric argument"),
+        }),
         _ => Err(EngineError {
             message: format!("{context} expects numeric argument"),
         }),

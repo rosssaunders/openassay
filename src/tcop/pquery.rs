@@ -197,9 +197,9 @@ fn infer_function_return_oid(
             .first()
             .map(|expr| infer_expr_type_oid(expr, scope, ctes))
             .unwrap_or(PG_FLOAT8_OID),
-        "power" | "pow" | "sqrt" | "cbrt" | "exp" | "ln" | "log" | "sin" | "cos" | "tan"
-        | "asin" | "acos" | "atan" | "atan2" | "degrees" | "radians" | "pi" | "random"
-        | "to_number" => PG_FLOAT8_OID,
+        "power" | "pow" | "sqrt" | "cbrt" | "exp" | "ln" | "log" | "log10" | "sin" | "cos"
+        | "tan" | "asin" | "acos" | "atan" | "atan2" | "degrees" | "radians" | "pi"
+        | "random" | "to_number" => PG_FLOAT8_OID,
         "div" | "gcd" | "lcm" | "ntile" | "row_number" | "rank" | "dense_rank" => PG_INT8_OID,
         "percent_rank" | "cume_dist" => PG_FLOAT8_OID,
         "sum" => args
@@ -331,6 +331,7 @@ fn infer_expr_type_oid(
                 BinaryOp::Mul
                 | BinaryOp::Div
                 | BinaryOp::Mod
+                | BinaryOp::Pow
                 | BinaryOp::ShiftLeft
                 | BinaryOp::ShiftRight => infer_numeric_result_oid(left_oid, right_oid),
             }
@@ -1665,6 +1666,7 @@ fn table_function_output_columns(function: &TableFunctionRef) -> Vec<String> {
         "unnest" => vec!["unnest".to_string()],
         "regexp_matches" => vec!["regexp_matches".to_string()],
         "regexp_split_to_table" => vec!["regexp_split_to_table".to_string()],
+        "string_to_table" => vec!["string_to_table".to_string()],
         "pg_get_keywords" => vec![
             "word".to_string(),
             "catcode".to_string(),

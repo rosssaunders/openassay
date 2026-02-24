@@ -408,13 +408,13 @@ pub(crate) fn eval_json_typeof(
     Ok(ScalarValue::Text(ty.to_string()))
 }
 
-fn strip_null_object_fields(value: &mut JsonValue) {
+fn strip_null_object_fields(value: &mut JsonValue, strip_in_arrays: bool) {
     match value {
         JsonValue::Object(map) => {
             let keys = map.keys().cloned().collect::<Vec<_>>();
             for key in keys {
                 if let Some(inner) = map.get_mut(&key) {
-                    strip_null_object_fields(inner);
+                    strip_null_object_fields(inner, strip_in_arrays);
                 }
                 if map.get(&key).is_some_and(|candidate| candidate.is_null()) {
                     map.remove(&key);
@@ -422,8 +422,11 @@ fn strip_null_object_fields(value: &mut JsonValue) {
             }
         }
         JsonValue::Array(array) => {
-            for item in array {
-                strip_null_object_fields(item);
+            for item in array.iter_mut() {
+                strip_null_object_fields(item, strip_in_arrays);
+            }
+            if strip_in_arrays {
+                array.retain(|item| !item.is_null());
             }
         }
         JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {}
@@ -433,12 +436,13 @@ fn strip_null_object_fields(value: &mut JsonValue) {
 pub(crate) fn eval_json_strip_nulls(
     value: &ScalarValue,
     fn_name: &str,
+    strip_in_arrays: bool,
 ) -> Result<ScalarValue, EngineError> {
     if matches!(value, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
     let mut parsed = parse_json_document_arg(value, fn_name, 1)?;
-    strip_null_object_fields(&mut parsed);
+    strip_null_object_fields(&mut parsed, strip_in_arrays);
     Ok(ScalarValue::Text(parsed.to_string()))
 }
 
@@ -1937,10 +1941,21 @@ pub(crate) fn eval_json_delete_operator(
         return Ok(ScalarValue::Null);
     }
     let mut target = parse_json_document_arg(&left, "json operator -", 1)?;
+    let path_keys = if matches!(&right, ScalarValue::Array(_)) {
+        Some(parse_json_path_operand(&right, "-")?)
+    } else {
+        None
+    };
     match &mut target {
         JsonValue::Object(map) => {
-            let key = scalar_to_json_path_segment(&right, "-")?;
-            map.remove(&key);
+            if let Some(keys) = path_keys {
+                for key in keys {
+                    map.remove(&key);
+                }
+            } else {
+                let key = scalar_to_json_path_segment(&right, "-")?;
+                map.remove(&key);
+            }
         }
         JsonValue::Array(array) => match right {
             ScalarValue::Int(index) => {
@@ -1984,6 +1999,51 @@ pub(crate) fn eval_json_delete_path_operator(
         let _ = json_remove_path(&mut target, &path);
     }
     Ok(ScalarValue::Text(target.to_string()))
+}
+
+pub(crate) fn eval_jsonb_concat(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+    if args.len() != 2 {
+        return Err(EngineError {
+            message: "jsonb_concat() expects 2 arguments".to_string(),
+        });
+    }
+    eval_json_concat_operator(args[0].clone(), args[1].clone())
+}
+
+pub(crate) fn eval_jsonb_delete(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+    if args.len() != 2 {
+        return Err(EngineError {
+            message: "jsonb_delete() expects 2 arguments".to_string(),
+        });
+    }
+    eval_json_delete_operator(args[0].clone(), args[1].clone())
+}
+
+pub(crate) fn eval_jsonb_delete_path(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+    if args.len() != 2 {
+        return Err(EngineError {
+            message: "jsonb_delete_path() expects 2 arguments".to_string(),
+        });
+    }
+    eval_json_delete_path_operator(args[0].clone(), args[1].clone())
+}
+
+pub(crate) fn eval_jsonb_contains(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+    if args.len() != 2 {
+        return Err(EngineError {
+            message: "jsonb_contains() expects 2 arguments".to_string(),
+        });
+    }
+    eval_json_contains_operator(args[0].clone(), args[1].clone())
+}
+
+pub(crate) fn eval_jsonb_contained(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+    if args.len() != 2 {
+        return Err(EngineError {
+            message: "jsonb_contained() expects 2 arguments".to_string(),
+        });
+    }
+    eval_json_contained_by_operator(args[0].clone(), args[1].clone())
 }
 
 fn json_has_key(target: &JsonValue, key: &str) -> bool {

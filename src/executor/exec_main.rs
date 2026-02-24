@@ -37,7 +37,8 @@ use crate::utils::adt::json::{
 };
 use crate::utils::adt::misc::{
     compare_values_for_predicate, eval_regexp_matches_set_function,
-    eval_regexp_split_to_table_set_function, parse_f64_numeric_scalar, render_expr_to_sql, truthy,
+    eval_regexp_split_to_table_set_function, eval_string_to_table_set_function,
+    parse_f64_numeric_scalar, render_expr_to_sql, truthy,
 };
 use crate::utils::fmgr::eval_scalar_function;
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -1325,6 +1326,7 @@ async fn evaluate_set_returning_function(
         }
         "regexp_matches" => eval_regexp_matches_set_function(args, &fn_name),
         "regexp_split_to_table" => eval_regexp_split_to_table_set_function(args, &fn_name),
+        "string_to_table" => eval_string_to_table_set_function(args, &fn_name),
         "generate_series" => eval_generate_series(args, &fn_name),
         "unnest" => eval_unnest_set_function(args, &fn_name),
         "pg_get_keywords" => eval_pg_get_keywords(),
