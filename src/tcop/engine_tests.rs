@@ -3964,6 +3964,25 @@ fn alter_table_set_and_drop_default() {
 }
 
 #[test]
+fn update_set_default_uses_column_default() {
+    let results = run_batch(&[
+        "CREATE TABLE users (id int8 NOT NULL, note text DEFAULT 'x')",
+        "INSERT INTO users VALUES (1, 'a'), (2, 'b')",
+        "UPDATE users SET note = DEFAULT WHERE id = 2",
+        "SELECT id, note FROM users ORDER BY 1",
+    ]);
+
+    assert_eq!(results[2].command_tag, "UPDATE");
+    assert_eq!(
+        results[3].rows,
+        vec![
+            vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())],
+            vec![ScalarValue::Int(2), ScalarValue::Text("x".to_string())]
+        ]
+    );
+}
+
+#[test]
 fn selects_all_columns_with_wildcard() {
     let results = run_batch(&[
         "CREATE TABLE users (id int8 NOT NULL, name text)",
@@ -4099,6 +4118,28 @@ fn math_functions_gcd_lcm_div() {
     assert_eq!(r.rows[0][0], ScalarValue::Int(4));
     assert_eq!(r.rows[0][1], ScalarValue::Int(12));
     assert_eq!(r.rows[0][2], ScalarValue::Int(3));
+}
+
+#[test]
+fn math_functions_abs_bigint_overflow_errors() {
+    with_isolated_state(|| {
+        let statement = parse_statement("SELECT abs('-9223372036854775808'::int8)").unwrap();
+        let planned = plan_statement(statement).unwrap();
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("abs(int8 min) should fail");
+        assert!(err.message.contains("bigint out of range"));
+    });
+}
+
+#[test]
+fn math_functions_lcm_overflow_errors() {
+    with_isolated_state(|| {
+        let statement = parse_statement("SELECT lcm(9223372036854775807::int8, 2::int8)").unwrap();
+        let planned = plan_statement(statement).unwrap();
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("lcm overflow should fail");
+        assert!(err.message.contains("out of range"));
+    });
 }
 
 // 1.6.1 String functions
@@ -5118,6 +5159,16 @@ fn create_index_if_not_exists() {
 }
 
 #[test]
+fn create_index_accepts_operator_class() {
+    let results = run_batch(&[
+        "CREATE TABLE t (id int)",
+        "CREATE INDEX idx_t_id ON t USING btree(id int4_ops)",
+    ]);
+    assert_eq!(results[0].command_tag, "CREATE TABLE");
+    assert_eq!(results[1].command_tag, "CREATE INDEX");
+}
+
+#[test]
 fn create_view_if_not_exists() {
     let results = run_batch(&[
         "CREATE TABLE t (x int)",
@@ -5756,6 +5807,37 @@ fn test_int4_division_overflow() {
             .expect_err("int4 division overflow should fail");
         assert!(err.message.contains("integer out of range"));
     });
+}
+
+#[test]
+fn test_int4_modulo_overflow() {
+    with_isolated_state(|| {
+        let statement = parse_statement("SELECT -2147483648 % -1").unwrap();
+        let planned = plan_statement(statement).unwrap();
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("int4 modulo overflow should fail");
+        assert!(err.message.contains("integer out of range"));
+    });
+}
+
+#[test]
+fn test_unary_minus_bigint_overflow() {
+    with_isolated_state(|| {
+        let statement = parse_statement("SELECT -('-9223372036854775808'::int8)").unwrap();
+        let planned = plan_statement(statement).unwrap();
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("unary minus overflow should fail");
+        assert!(err.message.contains("bigint out of range"));
+    });
+}
+
+#[test]
+fn test_timestamp_positive_infinity_literal() {
+    let result = run("SELECT TIMESTAMP '+infinity'");
+    assert_eq!(
+        result.rows[0][0],
+        ScalarValue::Text("infinity".to_string())
+    );
 }
 
 #[test]

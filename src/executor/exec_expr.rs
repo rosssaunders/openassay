@@ -2325,7 +2325,12 @@ pub(crate) fn eval_unary(op: UnaryOp, value: ScalarValue) -> Result<ScalarValue,
                 message: "invalid unary operation".to_string(),
             })
         }
-        (UnaryOp::Minus, ScalarValue::Int(v)) => Ok(ScalarValue::Int(-v)),
+        (UnaryOp::Minus, ScalarValue::Int(v)) => {
+            let negated = v.checked_neg().ok_or_else(|| EngineError {
+                message: "bigint out of range".to_string(),
+            })?;
+            Ok(ScalarValue::Int(negated))
+        }
         (UnaryOp::Minus, ScalarValue::Float(v)) => Ok(ScalarValue::Float(-v)),
         (UnaryOp::Minus, ScalarValue::Text(text)) => {
             if is_interval_text(&text) {

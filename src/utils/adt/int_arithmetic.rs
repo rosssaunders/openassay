@@ -115,7 +115,13 @@ pub fn int2_mod(a: i64, b: i64) -> Result<i64, EngineError> {
         });
     }
 
-    // Modulo doesn't overflow, even for -32768 % -1 (result is 0)
+    // In Rust, MIN % -1 panics in debug builds; normalize to SQL overflow error.
+    if a_i16 == i16::MIN && b_i16 == -1 {
+        return Err(EngineError {
+            message: "smallint out of range".to_string(),
+        });
+    }
+
     Ok((a_i16 % b_i16) as i64)
 }
 
@@ -190,6 +196,13 @@ pub fn int4_mod(a: i64, b: i64) -> Result<i64, EngineError> {
         });
     }
 
+    // In Rust, MIN % -1 panics in debug builds; normalize to SQL overflow error.
+    if a_i32 == i32::MIN && b_i32 == -1 {
+        return Err(EngineError {
+            message: "integer out of range".to_string(),
+        });
+    }
+
     Ok((a_i32 % b_i32) as i64)
 }
 
@@ -249,6 +262,13 @@ pub fn int8_mod(a: i64, b: i64) -> Result<i64, EngineError> {
         });
     }
 
+    // In Rust, MIN % -1 panics in debug builds; normalize to SQL overflow error.
+    if a == i64::MIN && b == -1 {
+        return Err(EngineError {
+            message: "bigint out of range".to_string(),
+        });
+    }
+
     Ok(a % b)
 }
 
@@ -298,6 +318,15 @@ mod tests {
     }
 
     #[test]
+    fn test_int2_mod_min_div_minus_one() {
+        assert!(int2_mod(-32768, -1).is_err());
+        assert_eq!(
+            int2_mod(-32768, -1).unwrap_err().message,
+            "smallint out of range"
+        );
+    }
+
+    #[test]
     fn test_int4_overflow() {
         // 2147483647 + 1 should overflow
         assert!(int4_add(2147483647, 1).is_err());
@@ -308,11 +337,29 @@ mod tests {
     }
 
     #[test]
+    fn test_int4_mod_min_div_minus_one() {
+        assert!(int4_mod(i32::MIN as i64, -1).is_err());
+        assert_eq!(
+            int4_mod(i32::MIN as i64, -1).unwrap_err().message,
+            "integer out of range"
+        );
+    }
+
+    #[test]
     fn test_int8_overflow() {
         // i64::MAX + 1 should overflow
         assert!(int8_add(i64::MAX, 1).is_err());
         assert_eq!(
             int8_add(i64::MAX, 1).unwrap_err().message,
+            "bigint out of range"
+        );
+    }
+
+    #[test]
+    fn test_int8_mod_min_div_minus_one() {
+        assert!(int8_mod(i64::MIN, -1).is_err());
+        assert_eq!(
+            int8_mod(i64::MIN, -1).unwrap_err().message,
             "bigint out of range"
         );
     }

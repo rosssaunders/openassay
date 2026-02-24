@@ -1408,8 +1408,8 @@ async fn execute_insert(
 
                 let mut updated_row = existing_row.clone();
                 for (col_idx, column, expr) in &assignment_targets {
-                    let raw = eval_expr(expr, &scope, params).await?;
-                    updated_row[*col_idx] = coerce_value_for_column(raw, column)?;
+                    updated_row[*col_idx] =
+                        eval_update_assignment_value(expr, column, &scope, params).await?;
                 }
                 for (idx, column) in table.columns().iter().enumerate() {
                     if matches!(updated_row[idx], ScalarValue::Null) && !column.nullable() {
@@ -1557,7 +1557,7 @@ async fn execute_update(
                 ),
             });
         };
-        if column.is_generated() {
+        if column.is_generated() && !matches!(assignment.value, Expr::Default) {
             return Err(EngineError {
                 message: format!(
                     "column \"{}\" can only be updated to DEFAULT",
@@ -1625,8 +1625,8 @@ async fn execute_update(
 
         let mut new_row = row.clone();
         for (col_idx, column, expr) in &assignment_targets {
-            let raw = eval_expr(expr, &scope, params).await?;
-            new_row[*col_idx] = coerce_value_for_column(raw, column)?;
+            new_row[*col_idx] =
+                eval_update_assignment_value(expr, column, &scope, params).await?;
         }
         for trigger in &before_update_triggers {
             let result = execute_row_trigger(trigger, &table, "UPDATE", Some(row), Some(&new_row))?;
@@ -2007,8 +2007,9 @@ async fn execute_merge(
                             resolve_update_assignment_targets(&table, assignments)?;
                         let mut new_row = candidate_rows[target_idx].values.clone();
                         for (col_idx, column, expr) in &assignment_targets {
-                            let raw = eval_expr(expr, &combined, params).await?;
-                            new_row[*col_idx] = coerce_value_for_column(raw, column)?;
+                            new_row[*col_idx] =
+                                eval_update_assignment_value(expr, column, &combined, params)
+                                    .await?;
                         }
                         for (idx, column) in table.columns().iter().enumerate() {
                             if matches!(new_row[idx], ScalarValue::Null) && !column.nullable() {
@@ -2156,8 +2157,11 @@ async fn execute_merge(
                                 });
                             }
                             for (expr, col_idx) in values.iter().zip(target_indexes.iter()) {
-                                let raw = eval_expr(expr, &source_scope, params).await?;
                                 let column = &table.columns()[*col_idx];
+                                if matches!(expr, Expr::Default) {
+                                    continue;
+                                }
+                                let raw = eval_expr(expr, &source_scope, params).await?;
                                 row[*col_idx] = coerce_value_for_column(raw, column)?;
                                 provided[*col_idx] = true;
                             }
@@ -2279,8 +2283,8 @@ async fn execute_merge(
                             resolve_update_assignment_targets(&table, assignments)?;
                         let mut new_row = candidate_rows[row_idx].values.clone();
                         for (col_idx, column, expr) in &assignment_targets {
-                            let raw = eval_expr(expr, &scope, params).await?;
-                            new_row[*col_idx] = coerce_value_for_column(raw, column)?;
+                            new_row[*col_idx] =
+                                eval_update_assignment_value(expr, column, &scope, params).await?;
                         }
                         for (idx, column) in table.columns().iter().enumerate() {
                             if matches!(new_row[idx], ScalarValue::Null) && !column.nullable() {
@@ -2513,6 +2517,24 @@ fn resolve_update_assignment_targets<'a>(
         out.push((idx, column, &assignment.value));
     }
     Ok(out)
+}
+
+async fn eval_update_assignment_value(
+    expr: &Expr,
+    column: &Column,
+    scope: &EvalScope,
+    params: &[Option<String>],
+) -> Result<ScalarValue, EngineError> {
+    let raw = if matches!(expr, Expr::Default) {
+        if let Some(default_expr) = column.default() {
+            eval_expr(default_expr, scope, params).await?
+        } else {
+            ScalarValue::Null
+        }
+    } else {
+        eval_expr(expr, scope, params).await?
+    };
+    coerce_value_for_column(raw, column)
 }
 
 pub(crate) fn find_column_index(

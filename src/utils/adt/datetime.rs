@@ -12,7 +12,10 @@ pub(crate) struct TemporalOperand {
 #[allow(dead_code)]
 pub(crate) fn is_infinity_datetime(text: &str) -> bool {
     let lower = text.trim().to_ascii_lowercase();
-    matches!(lower.as_str(), "infinity" | "inf" | "-infinity" | "-inf")
+    matches!(
+        lower.as_str(),
+        "infinity" | "+infinity" | "inf" | "+inf" | "-infinity" | "-inf"
+    )
 }
 
 pub(crate) fn parse_temporal_operand(value: &ScalarValue) -> Option<TemporalOperand> {
@@ -326,7 +329,10 @@ pub(crate) fn eval_isfinite(value: &ScalarValue) -> Result<ScalarValue, EngineEr
     let finite = match value {
         ScalarValue::Text(text) => {
             let normalized = text.trim().to_ascii_lowercase();
-            !matches!(normalized.as_str(), "infinity" | "-infinity" | "nan")
+            !matches!(
+                normalized.as_str(),
+                "infinity" | "+infinity" | "inf" | "+inf" | "-infinity" | "-inf" | "nan"
+            )
         }
         ScalarValue::Float(f) => f.is_finite(),
         _ => true,
@@ -403,7 +409,7 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
         _ => {}
     }
     match normalized.as_str() {
-        "infinity" | "inf" => {
+        "infinity" | "+infinity" | "inf" | "+inf" => {
             // Return a sentinel max date to represent +infinity
             return Ok(DateTimeValue {
                 date: DateValue {
@@ -1151,10 +1157,36 @@ fn date_from_parts(year: i32, month: u32, day: u32) -> Result<DateValue, EngineE
 }
 
 pub(crate) fn format_date(date: DateValue) -> String {
+    if date.year == 294276 && date.month == 12 && date.day == 31 {
+        return "infinity".to_string();
+    }
+    if date.year == -4713 && date.month == 1 && date.day == 1 {
+        return "-infinity".to_string();
+    }
     format!("{:04}-{:02}-{:02}", date.year, date.month, date.day)
 }
 
 pub(crate) fn format_timestamp(datetime: DateTimeValue) -> String {
+    if datetime.date.year == 294276
+        && datetime.date.month == 12
+        && datetime.date.day == 31
+        && datetime.hour == 23
+        && datetime.minute == 59
+        && datetime.second == 59
+        && datetime.microsecond == 999999
+    {
+        return "infinity".to_string();
+    }
+    if datetime.date.year == -4713
+        && datetime.date.month == 1
+        && datetime.date.day == 1
+        && datetime.hour == 0
+        && datetime.minute == 0
+        && datetime.second == 0
+        && datetime.microsecond == 0
+    {
+        return "-infinity".to_string();
+    }
     if datetime.microsecond == 0 {
         format!(
             "{} {:02}:{:02}:{:02}",
@@ -2009,6 +2041,32 @@ mod tests {
         assert_eq!(dt.hour, 0);
         assert_eq!(dt.minute, 0);
         assert_eq!(dt.second, 0);
+    }
+
+    #[test]
+    fn test_parse_positive_infinity_variants() {
+        let infinity = parse_datetime_text("infinity").unwrap();
+        let plus_infinity = parse_datetime_text("+infinity").unwrap();
+        let plus_inf = parse_datetime_text("+inf").unwrap();
+        assert_eq!(infinity, plus_infinity);
+        assert_eq!(infinity, plus_inf);
+    }
+
+    #[test]
+    fn test_parse_negative_infinity_variants() {
+        let neg_infinity = parse_datetime_text("-infinity").unwrap();
+        let neg_inf = parse_datetime_text("-inf").unwrap();
+        assert_eq!(neg_infinity, neg_inf);
+    }
+
+    #[test]
+    fn test_format_infinity_datetime_values() {
+        let pos = parse_datetime_text("+infinity").unwrap();
+        let neg = parse_datetime_text("-infinity").unwrap();
+        assert_eq!(format_timestamp(pos), "infinity");
+        assert_eq!(format_timestamp(neg), "-infinity");
+        assert_eq!(format_date(pos.date), "infinity");
+        assert_eq!(format_date(neg.date), "-infinity");
     }
 
     #[test]
