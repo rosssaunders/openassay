@@ -103,6 +103,10 @@ The query flows through 5 major stages:
 - **WebSocket Extension** — `ws.connect()`, `ws.send()`, `ws.recv()`
 - **Logical Replication** — Subscribe to PostgreSQL publications in real-time
 
+## Design Rules
+
+- **Use a hard cutover approach and never implement backward compatibility.**
+
 ## Key Conventions
 
 ### Test Patterns
