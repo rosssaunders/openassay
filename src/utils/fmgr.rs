@@ -26,7 +26,8 @@ use crate::utils::adt::json::{
     eval_urlencode, json_build_array_value, json_build_object_value, scalar_to_json_value,
 };
 use crate::utils::adt::math_functions::{
-    coerce_to_f64, eval_factorial, eval_scale, eval_width_bucket, gcd_i64, numeric_mod,
+    NumericOperand, coerce_to_f64, eval_factorial, eval_scale, eval_width_bucket, gcd_i64,
+    numeric_mod, parse_numeric_operand,
 };
 use crate::utils::adt::misc::{
     array_value_matches, compare_values_for_predicate, count_nonnulls, count_nulls, eval_extremum,
@@ -38,7 +39,7 @@ use crate::utils::adt::misc::{
 use crate::utils::adt::string_functions::{
     TrimMode, ascii_code, chr_from_code, decode_bytes, encode_bytes, eval_format,
     find_substring_position, initcap_string, left_chars, md5_hex, overlay_text, pad_string,
-    right_chars, sha256_hex, substring_chars, trim_text,
+    right_chars, sha256_hex, substring_chars, substring_regex, substring_similar, trim_text,
 };
 
 static LAST_SEQUENCE_VALUE: OnceLock<RwLock<Option<i64>>> = OnceLock::new();
@@ -334,16 +335,32 @@ pub(crate) async fn eval_scalar_function(
                 return Ok(ScalarValue::Null);
             }
             let input = args[0].render();
-            let start = parse_i64_scalar(&args[1], "substring() expects integer start index")?;
-            let length = if args.len() == 3 {
-                Some(parse_i64_scalar(
-                    &args[2],
-                    "substring() expects integer length",
-                )?)
-            } else {
-                None
-            };
-            Ok(ScalarValue::Text(substring_chars(&input, start, length)?))
+            if let Ok(start) = parse_i64_scalar(&args[1], "substring() expects integer start index")
+            {
+                let length = if args.len() == 3 {
+                    Some(parse_i64_scalar(
+                        &args[2],
+                        "substring() expects integer length",
+                    )?)
+                } else {
+                    None
+                };
+                return Ok(ScalarValue::Text(substring_chars(&input, start, length)?));
+            }
+
+            let pattern = args[1].render();
+            if args.len() == 2 {
+                return Ok(match substring_regex(&input, &pattern)? {
+                    Some(value) => ScalarValue::Text(value),
+                    None => ScalarValue::Null,
+                });
+            }
+
+            let escape = args[2].render();
+            Ok(match substring_similar(&input, &pattern, &escape)? {
+                Some(value) => ScalarValue::Text(value),
+                None => ScalarValue::Null,
+            })
         }
         "position" if args.len() == 2 => {
             if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
@@ -715,7 +732,66 @@ pub(crate) async fn eval_scalar_function(
                 message: "sign() expects numeric argument".to_string(),
             }),
         },
+        "numeric_inc" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            match parse_numeric_operand(&args[0])? {
+                NumericOperand::Int(v) => Ok(ScalarValue::Int(v.checked_add(1).ok_or_else(
+                    || EngineError {
+                        message: "bigint out of range".to_string(),
+                    },
+                )?)),
+                NumericOperand::Float(v) => Ok(ScalarValue::Float(v + 1.0)),
+                NumericOperand::Numeric(v) => Ok(ScalarValue::Numeric(v + rust_decimal::Decimal::ONE)),
+            }
+        }
+        "numeric_dec" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            match parse_numeric_operand(&args[0])? {
+                NumericOperand::Int(v) => Ok(ScalarValue::Int(v.checked_sub(1).ok_or_else(
+                    || EngineError {
+                        message: "bigint out of range".to_string(),
+                    },
+                )?)),
+                NumericOperand::Float(v) => Ok(ScalarValue::Float(v - 1.0)),
+                NumericOperand::Numeric(v) => Ok(ScalarValue::Numeric(v - rust_decimal::Decimal::ONE)),
+            }
+        }
         "width_bucket" if args.len() == 4 => eval_width_bucket(args),
+        "width_bucket" if args.len() == 2 => {
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let thresholds = array_values_arg(
+                &args[1],
+                "width_bucket() expects array thresholds as second argument",
+            )?;
+            if thresholds.is_empty() {
+                return Err(EngineError {
+                    message: "width_bucket() requires non-empty thresholds array".to_string(),
+                });
+            }
+            if thresholds.iter().any(|v| matches!(v, ScalarValue::Null)) {
+                return Err(EngineError {
+                    message: "width_bucket() thresholds cannot contain NULL".to_string(),
+                });
+            }
+            let operand = &args[0];
+            let first_cmp = compare_values_for_predicate(operand, &thresholds[0])?;
+            if first_cmp == Ordering::Less {
+                return Ok(ScalarValue::Int(0));
+            }
+            for (idx, threshold) in thresholds.iter().enumerate().skip(1) {
+                let cmp = compare_values_for_predicate(operand, threshold)?;
+                if cmp == Ordering::Less {
+                    return Ok(ScalarValue::Int(idx as i64));
+                }
+            }
+            Ok(ScalarValue::Int(thresholds.len() as i64))
+        }
         "scale" if args.len() == 1 => eval_scale(&args[0]),
         "factorial" if args.len() == 1 => eval_factorial(&args[0]),
         // Hyperbolic functions
@@ -912,7 +988,13 @@ pub(crate) async fn eval_scalar_function(
             if n < 0 {
                 return Ok(ScalarValue::Text(String::new()));
             }
-            Ok(ScalarValue::Text(s.repeat(n as usize)))
+            let n_usize = usize::try_from(n).map_err(|_| EngineError {
+                message: "repeat() count is too large".to_string(),
+            })?;
+            let _ = s.len().checked_mul(n_usize).ok_or_else(|| EngineError {
+                message: "repeat() result is too large".to_string(),
+            })?;
+            Ok(ScalarValue::Text(s.repeat(n_usize)))
         }
         "reverse" if args.len() == 1 => {
             if matches!(args[0], ScalarValue::Null) {
@@ -971,12 +1053,18 @@ pub(crate) async fn eval_scalar_function(
                 return Ok(ScalarValue::Null);
             }
             let input = args[0].render();
-            let len = parse_i64_scalar(&args[1], "lpad() expects integer length")? as usize;
+            let len = parse_i64_scalar(&args[1], "lpad() expects integer length")?;
+            if len <= 0 {
+                return Ok(ScalarValue::Text(String::new()));
+            }
             let fill = if args.len() == 3 {
                 args[2].render()
             } else {
                 " ".to_string()
             };
+            let len = usize::try_from(len).map_err(|_| EngineError {
+                message: "lpad() length is too large".to_string(),
+            })?;
             Ok(ScalarValue::Text(pad_string(&input, len, &fill, true)))
         }
         "rpad" if args.len() == 2 || args.len() == 3 => {
@@ -984,12 +1072,18 @@ pub(crate) async fn eval_scalar_function(
                 return Ok(ScalarValue::Null);
             }
             let input = args[0].render();
-            let len = parse_i64_scalar(&args[1], "rpad() expects integer length")? as usize;
+            let len = parse_i64_scalar(&args[1], "rpad() expects integer length")?;
+            if len <= 0 {
+                return Ok(ScalarValue::Text(String::new()));
+            }
             let fill = if args.len() == 3 {
                 args[2].render()
             } else {
                 " ".to_string()
             };
+            let len = usize::try_from(len).map_err(|_| EngineError {
+                message: "rpad() length is too large".to_string(),
+            })?;
             Ok(ScalarValue::Text(pad_string(&input, len, &fill, false)))
         }
         "quote_literal" if args.len() == 1 => {
@@ -1037,25 +1131,50 @@ pub(crate) async fn eval_scalar_function(
             }
             eval_regexp_match(&args[0].render(), &args[1].render(), &args[2].render())
         }
-        "regexp_replace" if args.len() == 3 || args.len() == 4 => {
+        "regexp_replace" if args.len() >= 3 && args.len() <= 6 => {
             if args.iter().take(3).any(|a| matches!(a, ScalarValue::Null)) {
                 return Ok(ScalarValue::Null);
             }
             let source = args[0].render();
             let pattern = args[1].render();
             let replacement = args[2].render();
-            let flags = if args.len() == 4 {
-                args[3].render()
+            let mut start: i64 = 1;
+            let mut occurrence: i64 = 1;
+            let mut flags = String::new();
+            match args.len() {
+                3 => {}
+                4 => {
+                    if let Ok(parsed_start) =
+                        parse_i64_scalar(&args[3], "regexp_replace() start argument")
+                    {
+                        start = parsed_start;
+                    } else {
+                        flags = args[3].render();
+                    }
+                }
+                5 => {
+                    start = parse_i64_scalar(&args[3], "regexp_replace() start argument")?;
+                    occurrence = parse_i64_scalar(&args[4], "regexp_replace() N argument")?;
+                }
+                6 => {
+                    start = parse_i64_scalar(&args[3], "regexp_replace() start argument")?;
+                    occurrence = parse_i64_scalar(&args[4], "regexp_replace() N argument")?;
+                    flags = args[5].render();
+                }
+                _ => {}
+            }
+            eval_regexp_replace(&source, &pattern, &replacement, start, occurrence, &flags)
+        }
+        "regexp_split_to_array" if args.len() == 2 || args.len() == 3 => {
+            if args.iter().take(2).any(|a| matches!(a, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let flags = if args.len() == 3 {
+                args[2].render()
             } else {
                 String::new()
             };
-            eval_regexp_replace(&source, &pattern, &replacement, &flags)
-        }
-        "regexp_split_to_array" if args.len() == 2 => {
-            if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
-                return Ok(ScalarValue::Null);
-            }
-            eval_regexp_split_to_array(&args[0].render(), &args[1].render())
+            eval_regexp_split_to_array(&args[0].render(), &args[1].render(), &flags)
         }
         "regexp_count" if args.len() >= 2 && args.len() <= 4 => eval_regexp_count(args),
         "regexp_instr" if args.len() >= 2 && args.len() <= 7 => eval_regexp_instr(args),
@@ -1463,7 +1582,15 @@ pub(crate) async fn eval_scalar_function(
                     message: "array_fill() length must be non-negative".to_string(),
                 });
             }
-            let mut out = Vec::with_capacity(length as usize);
+            let length = usize::try_from(length).map_err(|_| EngineError {
+                message: "array_fill() length is too large".to_string(),
+            })?;
+            let _ = length
+                .checked_mul(std::mem::size_of::<ScalarValue>())
+                .ok_or_else(|| EngineError {
+                    message: "array_fill() result is too large".to_string(),
+                })?;
+            let mut out = Vec::with_capacity(length);
             for _ in 0..length {
                 out.push(args[0].clone());
             }

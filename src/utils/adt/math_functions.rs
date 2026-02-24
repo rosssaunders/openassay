@@ -118,30 +118,35 @@ pub(crate) fn eval_width_bucket(args: &[ScalarValue]) -> Result<ScalarValue, Eng
     let max = parse_f64_scalar(&args[2], "width_bucket() expects numeric max")?;
     let count = parse_i64_scalar(&args[3], "width_bucket() expects integer count")?;
     if count <= 0 {
-        return Err(EngineError {
-            message: "width_bucket() expects positive count".to_string(),
-        });
+        return Ok(ScalarValue::Int(0));
     }
     if min == max {
-        return Err(EngineError {
-            message: "width_bucket() requires min and max to differ".to_string(),
-        });
+        return Ok(ScalarValue::Int(1));
     }
     let buckets = count as f64;
+    let compute_interior_bucket = |numerator: f64, denominator: f64| -> i64 {
+        let raw = ((numerator * buckets) / denominator).floor();
+        let clamped = if !raw.is_finite() {
+            count - 1
+        } else {
+            raw.max(0.0).min((count - 1) as f64) as i64
+        };
+        clamped + 1
+    };
     let bucket = if min < max {
         if value < min {
             0
         } else if value >= max {
-            count + 1
+            count.saturating_add(1)
         } else {
-            (((value - min) * buckets) / (max - min)).floor() as i64 + 1
+            compute_interior_bucket(value - min, max - min)
         }
     } else if value > min {
         0
     } else if value <= max {
-        count + 1
+        count.saturating_add(1)
     } else {
-        (((min - value) * buckets) / (min - max)).floor() as i64 + 1
+        compute_interior_bucket(min - value, min - max)
     };
     Ok(ScalarValue::Int(bucket))
 }

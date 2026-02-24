@@ -4226,6 +4226,25 @@ impl Parser {
                 } else if fn_name == "substring" {
                     // SUBSTRING(string FROM start [FOR length])
                     let string = self.parse_expr_bp(6)?;
+                    if self.consume_ident("similar") {
+                        let pattern = self.parse_expr_bp(6)?;
+                        self.expect_keyword(Keyword::Escape, "expected ESCAPE in SUBSTRING")?;
+                        let escape = self.parse_expr_bp(6)?;
+                        self.expect_token(
+                            |k| matches!(k, TokenKind::RParen),
+                            "expected ')' after SUBSTRING arguments",
+                        )?;
+                        args = vec![string, pattern, escape];
+                        return Ok(Expr::FunctionCall {
+                            name,
+                            args,
+                            distinct,
+                            order_by,
+                            within_group: Vec::new(),
+                            filter: None,
+                            over: None,
+                        });
+                    }
                     if self.consume_keyword(Keyword::From) {
                         let start = self.parse_expr_bp(6)?;
                         let length = if self.consume_keyword(Keyword::For) {
@@ -4258,15 +4277,15 @@ impl Parser {
                     let trim_mode = match self.current_kind() {
                         TokenKind::Identifier(s) if s.eq_ignore_ascii_case("leading") => {
                             self.advance();
-                            Some(Expr::Identifier(vec!["leading".to_string()]))
+                            Some(Expr::String("leading".to_string()))
                         }
                         TokenKind::Identifier(s) if s.eq_ignore_ascii_case("trailing") => {
                             self.advance();
-                            Some(Expr::Identifier(vec!["trailing".to_string()]))
+                            Some(Expr::String("trailing".to_string()))
                         }
                         TokenKind::Identifier(s) if s.eq_ignore_ascii_case("both") => {
                             self.advance();
-                            Some(Expr::Identifier(vec!["both".to_string()]))
+                            Some(Expr::String("both".to_string()))
                         }
                         _ => None,
                     };
