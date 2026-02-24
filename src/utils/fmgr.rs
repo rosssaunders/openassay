@@ -437,8 +437,7 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            let seconds =
-                parse_f64_numeric_scalar(&args[0], "pg_sleep() expects numeric seconds")?;
+            let seconds = parse_f64_numeric_scalar(&args[0], "pg_sleep() expects numeric seconds")?;
             if !seconds.is_finite() {
                 return Err(EngineError {
                     message: "pg_sleep() expects finite numeric seconds".to_string(),

@@ -644,7 +644,7 @@ pub(crate) fn parse_i64_scalar(value: &ScalarValue, message: &str) -> Result<i64
         ScalarValue::Int(v) => Ok(*v),
         ScalarValue::Float(v) if v.fract() == 0.0 => Ok(*v as i64),
         ScalarValue::Text(v) => {
-            if let Ok(parsed) = v.parse::<i64>() {
+            if let Ok(parsed) = parse_pg_int_literal(v) {
                 return Ok(parsed);
             }
             if let Ok(parsed) = v.parse::<f64>()
@@ -660,6 +660,49 @@ pub(crate) fn parse_i64_scalar(value: &ScalarValue, message: &str) -> Result<i64
             message: message.to_string(),
         }),
     }
+}
+
+pub(crate) fn parse_pg_int_literal(input: &str) -> Result<i64, EngineError> {
+    let text = input.trim();
+    if text.is_empty() {
+        return Err(EngineError {
+            message: "invalid integer literal".to_string(),
+        });
+    }
+
+    let (negative, rest) = if let Some(tail) = text.strip_prefix('-') {
+        (true, tail)
+    } else if let Some(tail) = text.strip_prefix('+') {
+        (false, tail)
+    } else {
+        (false, text)
+    };
+
+    let (radix, digits) =
+        if let Some(tail) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+            (16u32, tail)
+        } else if let Some(tail) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+            (8u32, tail)
+        } else if let Some(tail) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
+            (2u32, tail)
+        } else {
+            (10u32, rest)
+        };
+
+    let normalized = digits.replace('_', "");
+    if normalized.is_empty() || !normalized.chars().all(|c| c.is_digit(radix)) {
+        return Err(EngineError {
+            message: "invalid integer literal".to_string(),
+        });
+    }
+
+    let unsigned = i128::from_str_radix(&normalized, radix).map_err(|_| EngineError {
+        message: "invalid integer literal".to_string(),
+    })?;
+    let signed = if negative { -unsigned } else { unsigned };
+    i64::try_from(signed).map_err(|_| EngineError {
+        message: "integer out of range".to_string(),
+    })
 }
 
 pub(crate) fn parse_f64_scalar(value: &ScalarValue, message: &str) -> Result<f64, EngineError> {
@@ -727,9 +770,13 @@ pub(crate) fn pg_input_is_valid(
     let normalized_type = normalized_type.as_str();
 
     let is_valid = match normalized_type {
-        "integer" | "int" | "int4" => input.parse::<i32>().is_ok(),
-        "bigint" | "int8" => input.parse::<i64>().is_ok(),
-        "smallint" | "int2" => input.parse::<i16>().is_ok(),
+        "integer" | "int" | "int4" => parse_pg_int_literal(input)
+            .map(|v| i32::try_from(v).is_ok())
+            .unwrap_or(false),
+        "bigint" | "int8" => parse_pg_int_literal(input).is_ok(),
+        "smallint" | "int2" => parse_pg_int_literal(input)
+            .map(|v| i16::try_from(v).is_ok())
+            .unwrap_or(false),
         "numeric" | "decimal" => {
             // Try parsing as float or integer
             input.parse::<f64>().is_ok() || input.parse::<i64>().is_ok()
@@ -1240,6 +1287,8 @@ fn binary_op_to_sql(op: &crate::parser::ast::BinaryOp) -> &'static str {
         BinaryOp::Mul => "*",
         BinaryOp::Div => "/",
         BinaryOp::Mod => "%",
+        BinaryOp::ShiftLeft => "<<",
+        BinaryOp::ShiftRight => ">>",
         BinaryOp::JsonGet => "->",
         BinaryOp::JsonGetText => "->>",
         BinaryOp::JsonPath => "#>",

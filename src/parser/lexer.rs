@@ -462,6 +462,24 @@ impl<'a> Lexer<'a> {
             return self.lex_single_quoted_string(start, false);
         }
 
+        if (ch == 'u' || ch == 'U')
+            && self.peek_nth_char(1) == Some('&')
+            && self.peek_nth_char(2) == Some('\'')
+        {
+            self.advance_char();
+            self.advance_char();
+            return self.lex_single_quoted_string(start, false);
+        }
+
+        if (ch == 'u' || ch == 'U')
+            && self.peek_nth_char(1) == Some('&')
+            && self.peek_nth_char(2) == Some('"')
+        {
+            self.advance_char();
+            self.advance_char();
+            return self.lex_quoted_identifier(start);
+        }
+
         if self.starts_with("::") {
             self.pos += 2;
             return Ok(Token {
@@ -490,6 +508,30 @@ impl<'a> Lexer<'a> {
             self.pos += 2;
             return Ok(Token {
                 kind: TokenKind::EqualsGreater,
+                start,
+                end: self.pos,
+            });
+        }
+        if self.starts_with("<<|") {
+            self.pos += 3;
+            return Ok(Token {
+                kind: TokenKind::Operator("<<|".to_string()),
+                start,
+                end: self.pos,
+            });
+        }
+        if self.starts_with("<<") {
+            self.pos += 2;
+            return Ok(Token {
+                kind: TokenKind::Operator("<<".to_string()),
+                start,
+                end: self.pos,
+            });
+        }
+        if self.starts_with(">>") {
+            self.pos += 2;
+            return Ok(Token {
+                kind: TokenKind::Operator(">>".to_string()),
                 start,
                 end: self.pos,
             });
@@ -1273,5 +1315,19 @@ mod tests {
                 .iter()
                 .any(|token| token.kind == TokenKind::Operator("#-".to_string()))
         );
+    }
+
+    #[test]
+    fn lexes_unicode_prefixed_literals_and_identifiers() {
+        let tokens = lex_sql(r#"SELECT U&'d\0061t\+000061' AS U&"d\0061t\+000061""#)
+            .expect("lexing should succeed");
+        assert!(
+            tokens
+                .iter()
+                .any(|token| { token.kind == TokenKind::String(r#"d\0061t\+000061"#.to_string()) })
+        );
+        assert!(tokens.iter().any(|token| {
+            token.kind == TokenKind::Identifier(r#"d\0061t\+000061"#.to_string())
+        }));
     }
 }

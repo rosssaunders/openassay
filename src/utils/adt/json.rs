@@ -1829,7 +1829,11 @@ pub(crate) fn eval_json_concat_operator(
             ) {
                 Ok(ScalarValue::Text(json_concat(lhs, rhs).to_string()))
             } else {
-                Ok(ScalarValue::Text(format!("{}{}", left.render(), right.render())))
+                Ok(ScalarValue::Text(format!(
+                    "{}{}",
+                    left.render(),
+                    right.render()
+                )))
             }
         }
     }

@@ -2760,6 +2760,23 @@ impl Parser {
             return Ok(QueryExpr::Values(all_rows));
         }
 
+        if self.consume_keyword(Keyword::Table) {
+            let name = self.parse_qualified_name()?;
+            return Ok(QueryExpr::Select(SelectStatement {
+                quantifier: Some(SelectQuantifier::All),
+                targets: vec![SelectItem {
+                    expr: Expr::Wildcard,
+                    alias: None,
+                }],
+                from: vec![TableExpression::Relation(TableRef { name, alias: None })],
+                where_clause: None,
+                group_by: Vec::new(),
+                having: None,
+                window_definitions: Vec::new(),
+                distinct_on: Vec::new(),
+            }));
+        }
+
         // Support DML statements (INSERT/UPDATE/DELETE) in CTEs
         if self.consume_keyword(Keyword::Insert) {
             let stmt = self.parse_insert_statement_after_keyword()?;
@@ -3019,6 +3036,7 @@ impl Parser {
             return Err(self.error_at_current("expected subquery or function after LATERAL"));
         }
         let alias = self.parse_optional_alias()?;
+        let _ = self.parse_optional_column_aliases()?;
         Ok(TableExpression::Relation(TableRef { name, alias }))
     }
 
@@ -3805,6 +3823,7 @@ impl Parser {
             TokenKind::String(v) => {
                 let value = v.clone();
                 self.advance();
+                self.consume_optional_unicode_escape_clause()?;
                 Ok(Expr::String(value))
             }
             TokenKind::Parameter(v) => {
@@ -4170,6 +4189,20 @@ impl Parser {
         }
 
         Ok(Expr::Identifier(name))
+    }
+
+    fn consume_optional_unicode_escape_clause(&mut self) -> Result<(), ParseError> {
+        if self.consume_ident("uescape") {
+            match self.current_kind() {
+                TokenKind::String(_) => {
+                    self.advance();
+                    Ok(())
+                }
+                _ => Err(self.error_at_current("expected string literal after UESCAPE")),
+            }
+        } else {
+            Ok(())
+        }
     }
 
     fn parse_window_definitions(&mut self) -> Result<Vec<WindowDefinition>, ParseError> {
@@ -5110,6 +5143,8 @@ impl Parser {
             TokenKind::Star => Some((BinaryOp::Mul, 9, 10)),
             TokenKind::Slash => Some((BinaryOp::Div, 9, 10)),
             TokenKind::Percent => Some((BinaryOp::Mod, 9, 10)),
+            TokenKind::Operator(op) if op == "<<" => Some((BinaryOp::ShiftLeft, 9, 10)),
+            TokenKind::Operator(op) if op == ">>" => Some((BinaryOp::ShiftRight, 9, 10)),
             TokenKind::Operator(op) if op == "->" => Some((BinaryOp::JsonGet, 11, 12)),
             TokenKind::Operator(op) if op == "->>" => Some((BinaryOp::JsonGetText, 11, 12)),
             TokenKind::Operator(op) if op == "#>" => Some((BinaryOp::JsonPath, 11, 12)),
@@ -5203,7 +5238,7 @@ impl Parser {
     fn current_starts_query(&self) -> bool {
         matches!(
             self.current_kind(),
-            TokenKind::Keyword(Keyword::Select | Keyword::With | Keyword::Values)
+            TokenKind::Keyword(Keyword::Select | Keyword::With | Keyword::Values | Keyword::Table)
         )
     }
 

@@ -453,6 +453,10 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
         _ => {}
     }
 
+    if let Some(datetime) = try_parse_datetime_with_embedded_time(raw) {
+        return Ok(datetime);
+    }
+
     // Split date and time parts
     // Be smart about this: spaces in dates like "January 8, 1999" should not be treated as date/time separators
     // Only split if we see a time-like pattern (HH:MM:SS with colons)
@@ -523,6 +527,90 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
     })
 }
 
+fn try_parse_datetime_with_embedded_time(raw: &str) -> Option<DateTimeValue> {
+    let tokens: Vec<&str> = raw.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    let time_idx = tokens
+        .iter()
+        .position(|token| looks_like_time_token(token))?;
+    if time_idx == 0 {
+        return None;
+    }
+
+    let mut date_tokens = tokens[..time_idx].to_vec();
+    if !date_tokens.is_empty() && is_weekday_name(date_tokens[0]) {
+        date_tokens.remove(0);
+    }
+    if date_tokens.is_empty() {
+        return None;
+    }
+
+    let mut suffix_idx = time_idx + 1;
+    if suffix_idx < tokens.len() && is_year_like_token(tokens[suffix_idx]) {
+        date_tokens.push(tokens[suffix_idx]);
+        suffix_idx += 1;
+        if suffix_idx < tokens.len() && tokens[suffix_idx].eq_ignore_ascii_case("bc") {
+            date_tokens.push(tokens[suffix_idx]);
+            suffix_idx += 1;
+        }
+    }
+
+    let date = parse_date_text(&date_tokens.join(" ")).ok()?;
+    let mut time_text = if tokens[time_idx].contains(':') {
+        tokens[time_idx].to_string()
+    } else {
+        format_compact_time_token(tokens[time_idx])?
+    };
+    if suffix_idx < tokens.len() {
+        time_text.push(' ');
+        time_text.push_str(&tokens[suffix_idx..].join(" "));
+    }
+
+    let (hour, minute, second, microsecond) = parse_time_text(&time_text).ok()?;
+    Some(DateTimeValue {
+        date,
+        hour,
+        minute,
+        second,
+        microsecond,
+    })
+}
+
+fn looks_like_time_token(token: &str) -> bool {
+    token.contains(':') || format_compact_time_token(token).is_some()
+}
+
+fn is_year_like_token(token: &str) -> bool {
+    let trimmed = token.trim();
+    !trimmed.is_empty() && trimmed.len() <= 6 && trimmed.parse::<i32>().is_ok()
+}
+
+fn is_weekday_name(token: &str) -> bool {
+    matches!(
+        token.to_ascii_lowercase().as_str(),
+        "mon"
+            | "monday"
+            | "tue"
+            | "tues"
+            | "tuesday"
+            | "wed"
+            | "wednesday"
+            | "thu"
+            | "thur"
+            | "thurs"
+            | "thursday"
+            | "fri"
+            | "friday"
+            | "sat"
+            | "saturday"
+            | "sun"
+            | "sunday"
+    )
+}
+
 fn parse_date_text(text: &str) -> Result<DateValue, EngineError> {
     let trimmed = text.trim();
 
@@ -541,6 +629,11 @@ fn parse_date_text(text: &str) -> Result<DateValue, EngineError> {
 
     // Try compact formats: YYYYMMDD, YYMMDD
     if let Some(date) = try_parse_compact_date(date_str) {
+        return apply_bc_if_needed(date, is_bc);
+    }
+
+    // Try compact formats with month names: YYMMMDD, YYYYMMMDD
+    if let Some(date) = try_parse_compact_month_name_date(date_str) {
         return apply_bc_if_needed(date, is_bc);
     }
 
@@ -631,6 +724,36 @@ fn try_parse_compact_date(text: &str) -> Option<DateValue> {
         return None;
     }
 
+    Some(DateValue { year, month, day })
+}
+
+fn try_parse_compact_month_name_date(text: &str) -> Option<DateValue> {
+    let trimmed = text.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    let year_len = match upper.len() {
+        7 => 2usize,
+        9 => 4usize,
+        _ => return None,
+    };
+    let (year_part, rem) = upper.split_at(year_len);
+    if !year_part.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let month_part = &rem[..3];
+    let day_part = &rem[3..];
+    if !day_part.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+
+    let mut year = year_part.parse::<i32>().ok()?;
+    if year_len == 2 {
+        year = normalize_year(year);
+    }
+    let month = parse_month_name(month_part)?;
+    let day = day_part.parse::<u32>().ok()?;
+    if day == 0 || day > days_in_month(year, month) {
+        return None;
+    }
     Some(DateValue { year, month, day })
 }
 
@@ -844,47 +967,61 @@ fn parse_month_name(text: &str) -> Option<u32> {
 
 pub(crate) fn parse_time_text(text: &str) -> Result<(u32, u32, u32, u32), EngineError> {
     let mut cleaned = text.trim().to_string();
-
-    // Check for AM/PM
-    let is_pm = cleaned.to_ascii_uppercase().ends_with(" PM");
-    let is_am = cleaned.to_ascii_uppercase().ends_with(" AM");
-
-    if is_pm || is_am {
-        cleaned = cleaned[..cleaned.len() - 3].trim().to_string();
-    }
-
-    // Remove trailing 'Z' (UTC indicator)
     if cleaned.ends_with('Z') {
-        cleaned = cleaned[..cleaned.len() - 1].to_string();
+        cleaned.pop();
+        cleaned = cleaned.trim().to_string();
+    }
+    let mut is_pm = false;
+    let mut is_am = false;
+    if cleaned.to_ascii_uppercase().ends_with(" PM") {
+        cleaned.truncate(cleaned.len() - 3);
+        cleaned = cleaned.trim().to_string();
+        is_pm = true;
+    } else if cleaned.to_ascii_uppercase().ends_with(" AM") {
+        cleaned.truncate(cleaned.len() - 3);
+        cleaned = cleaned.trim().to_string();
+        is_am = true;
     }
 
-    // Look for timezone offset (+/-HH:MM) or timezone name
-    if let Some(sign_pos) = cleaned
+    let mut primary = cleaned
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+        .unwrap_or_default();
+    if primary.is_empty() {
+        return Err(EngineError {
+            message: format!("invalid time format: \"{text}\""),
+        });
+    }
+
+    let upper = primary.to_ascii_uppercase();
+    if upper.ends_with("PM") {
+        is_pm = true;
+        primary.truncate(primary.len() - 2);
+    } else if upper.ends_with("AM") {
+        is_am = true;
+        primary.truncate(primary.len() - 2);
+    }
+    primary = primary.trim().to_string();
+    if primary.is_empty() {
+        return Err(EngineError {
+            message: format!("invalid time format: \"{text}\""),
+        });
+    }
+
+    if let Some(sign_pos) = primary
         .char_indices()
         .find_map(|(idx, ch)| ((ch == '+' || ch == '-') && idx > 1).then_some(idx))
     {
-        cleaned = cleaned[..sign_pos].trim().to_string();
-    } else {
-        // Check for timezone names (PST, EDT, etc.) - remove them
-        let parts: Vec<&str> = cleaned.split_whitespace().collect();
-        if parts.len() >= 2 {
-            // Check if last part looks like a timezone (3 chars, all letters)
-            let last = parts[parts.len() - 1];
-            if last.len() == 3 && last.chars().all(|c| c.is_ascii_alphabetic()) {
-                // Might be a timezone, check if it's a known one
-                let tz_upper = last.to_ascii_uppercase();
-                if matches!(
-                    tz_upper.as_str(),
-                    "PST" | "PDT" | "MST" | "MDT" | "CST" | "CDT" | "EST" | "EDT" | "UTC" | "GMT"
-                ) {
-                    // Join all parts except the last one
-                    cleaned = parts[..parts.len() - 1].join(" ");
-                }
-            }
-        }
+        primary.truncate(sign_pos);
+        primary = primary.trim().to_string();
     }
 
-    let time_parts = cleaned.split(':').collect::<Vec<_>>();
+    if let Some(formatted) = format_compact_time_token(&primary) {
+        primary = formatted;
+    }
+
+    let time_parts = primary.split(':').collect::<Vec<_>>();
     if time_parts.len() < 2 || time_parts.len() > 3 {
         return Err(EngineError {
             message: format!("invalid time format: \"{text}\""),
@@ -894,12 +1031,10 @@ pub(crate) fn parse_time_text(text: &str) -> Result<(u32, u32, u32, u32), Engine
     let mut hour = time_parts[0].parse::<u32>().map_err(|_| EngineError {
         message: "invalid time hour".to_string(),
     })?;
-
-    let minute = time_parts[1].parse::<u32>().map_err(|_| EngineError {
+    let mut minute = time_parts[1].parse::<u32>().map_err(|_| EngineError {
         message: "invalid time minute".to_string(),
     })?;
-
-    let (second, microsecond) = if time_parts.len() == 3 {
+    let (mut second, mut microsecond) = if time_parts.len() == 3 {
         parse_seconds_with_fraction(time_parts[2])?
     } else {
         (0, 0)
@@ -913,14 +1048,14 @@ pub(crate) fn parse_time_text(text: &str) -> Result<(u32, u32, u32, u32), Engine
     }
 
     // Handle special cases for rounding
-    let (second, microsecond) = if microsecond >= 1_000_000 {
+    (second, microsecond) = if microsecond >= 1_000_000 {
         (second + 1, 0)
     } else {
         (second, microsecond)
     };
 
     // If seconds = 60 (leap second), round to next minute
-    let (minute, second) = if second >= 60 {
+    (minute, second) = if second >= 60 {
         (minute + 1, 0)
     } else {
         (minute, second)
@@ -959,6 +1094,22 @@ pub(crate) fn parse_time_text(text: &str) -> Result<(u32, u32, u32, u32), Engine
     }
 
     Ok((hour, minute, second, microsecond))
+}
+
+fn format_compact_time_token(token: &str) -> Option<String> {
+    let trimmed = token.trim();
+    if trimmed.len() == 6 && trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return Some(format!(
+            "{}:{}:{}",
+            &trimmed[0..2],
+            &trimmed[2..4],
+            &trimmed[4..6]
+        ));
+    }
+    if trimmed.len() == 4 && trimmed.chars().all(|c| c.is_ascii_digit()) {
+        return Some(format!("{}:{}", &trimmed[0..2], &trimmed[2..4]));
+    }
+    None
 }
 
 fn parse_seconds_with_fraction(text: &str) -> Result<(u32, u32), EngineError> {

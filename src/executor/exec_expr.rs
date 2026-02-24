@@ -40,8 +40,7 @@ use crate::utils::adt::json::{
 use crate::utils::adt::math_functions::{NumericOperand, numeric_mod, parse_numeric_operand};
 use crate::utils::adt::misc::{
     compare_values_for_predicate, parse_bool_scalar, parse_f64_numeric_scalar, parse_f64_scalar,
-    parse_i64_scalar,
-    parse_nullable_bool, truthy,
+    parse_i64_scalar, parse_nullable_bool, truthy,
 };
 use crate::utils::fmgr::eval_scalar_function;
 
@@ -2360,8 +2359,8 @@ pub(crate) fn eval_binary(
         Add, And, ArrayConcat, ArrayContainedBy, ArrayContains, ArrayOverlap, Div, Eq, Gt, Gte,
         JsonConcat, JsonContainedBy, JsonContains, JsonDelete, JsonDeletePath, JsonGet,
         JsonGetText, JsonHasAll, JsonHasAny, JsonHasKey, JsonPath, JsonPathExists, JsonPathMatch,
-        JsonPathText, Lt, Lte, Mod, Mul, NotEq, Or, Sub, VectorCosineDistance, VectorInnerProduct,
-        VectorL2Distance,
+        JsonPathText, Lt, Lte, Mod, Mul, NotEq, Or, ShiftLeft, ShiftRight, Sub,
+        VectorCosineDistance, VectorInnerProduct, VectorL2Distance,
     };
     match op {
         Or => eval_logical_or(left, right),
@@ -2423,6 +2422,8 @@ pub(crate) fn eval_binary(
             numeric_div(left, right)
         }
         Mod => numeric_mod(left, right),
+        ShiftLeft => eval_bit_shift(left, right, true),
+        ShiftRight => eval_bit_shift(left, right, false),
         JsonGet => eval_json_get_operator(left, right, false),
         JsonGetText => eval_json_get_operator(left, right, true),
         JsonPath => eval_json_path_operator(left, right, false),
@@ -2494,6 +2495,30 @@ pub(crate) fn eval_binary(
             eval_vector_distance_operator("<=>", left, right)
         }
     }
+}
+
+fn eval_bit_shift(
+    left: ScalarValue,
+    right: ScalarValue,
+    left_shift: bool,
+) -> Result<ScalarValue, EngineError> {
+    let value = parse_i64_scalar(&left, "bit shift requires integer value")?;
+    let shift = parse_i64_scalar(&right, "bit shift requires integer shift count")?;
+    if !(0..=63).contains(&shift) {
+        return Err(EngineError {
+            message: "integer out of range".to_string(),
+        });
+    }
+    let amount = shift as u32;
+    let shifted = if left_shift {
+        value.checked_shl(amount)
+    } else {
+        value.checked_shr(amount)
+    }
+    .ok_or_else(|| EngineError {
+        message: "integer out of range".to_string(),
+    })?;
+    Ok(ScalarValue::Int(shifted))
 }
 
 fn eval_add(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, EngineError> {
