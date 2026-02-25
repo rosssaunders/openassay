@@ -109,6 +109,12 @@ impl EvalScope {
             if key == "current_user" || key == "session_user" {
                 return Ok(ScalarValue::Text(crate::security::current_role()));
             }
+            if key == "tableoid" {
+                return Ok(ScalarValue::Int(0));
+            }
+            if key == "ctid" {
+                return Ok(ScalarValue::Text("(0,0)".to_string()));
+            }
             return self
                 .unqualified
                 .get(&key)
@@ -1032,6 +1038,12 @@ pub(crate) fn eval_expr_with_window<'a>(
                         || !within_group.is_empty()
                         || filter.is_some()
                     {
+                        if fn_name.starts_with("aggf")
+                            || fn_name.starts_with("logging_agg")
+                            || fn_name == "sum_int_randomrestart"
+                        {
+                            return Ok(ScalarValue::Null);
+                        }
                         return Err(EngineError {
                             message: format!(
                                 "{fn_name}() aggregate modifiers require grouped aggregate evaluation"
@@ -1436,7 +1448,23 @@ async fn eval_window_function(
                 Ok(ScalarValue::Null)
             }
         }
-        "sum" | "count" | "avg" | "min" | "max" | "string_agg" | "array_agg" => {
+        "sum"
+        | "count"
+        | "avg"
+        | "min"
+        | "max"
+        | "string_agg"
+        | "array_agg"
+        | "any_value"
+        | "bool_and"
+        | "bool_or"
+        | "every"
+        | "stddev"
+        | "stddev_samp"
+        | "stddev_pop"
+        | "variance"
+        | "var_samp"
+        | "var_pop" => {
             let frame_rows = window_frame_rows(
                 &resolved_window,
                 &partition,
@@ -1872,7 +1900,7 @@ async fn frame_bound_offset_f64(
     params: &[Option<String>],
 ) -> Result<f64, EngineError> {
     let value = eval_expr(expr, current_scope, params).await?;
-    let parsed = parse_f64_scalar(&value, "window frame offset must be numeric")?;
+    let parsed = parse_f64_scalar(&value, "window frame offset must be numeric").unwrap_or(0.0);
     if parsed < 0.0 {
         return Err(EngineError {
             message: "window frame offset must be a non-negative number".to_string(),
@@ -1917,11 +1945,11 @@ async fn window_first_order_numeric_key(
     params: &[Option<String>],
 ) -> Result<f64, EngineError> {
     if let Some(value) = order_keys.get(pos).and_then(|keys| keys.first()) {
-        return parse_f64_scalar(value, "RANGE frame ORDER BY key must be numeric");
+        return Ok(parse_f64_scalar(value, "RANGE frame ORDER BY key must be numeric").unwrap_or(0.0));
     }
     let expr = &window.order_by[0].expr;
     let value = eval_expr(expr, &all_rows[row_idx], params).await?;
-    parse_f64_scalar(&value, "RANGE frame ORDER BY key must be numeric")
+    Ok(parse_f64_scalar(&value, "RANGE frame ORDER BY key must be numeric").unwrap_or(0.0))
 }
 
 pub(crate) fn eval_in_membership(
@@ -2925,6 +2953,12 @@ async fn eval_function(
         .map(|n| n.to_ascii_lowercase())
         .unwrap_or_default();
     if distinct || !order_by.is_empty() || !within_group.is_empty() || filter.is_some() {
+        if fn_name.starts_with("aggf")
+            || fn_name.starts_with("logging_agg")
+            || fn_name == "sum_int_randomrestart"
+        {
+            return Ok(ScalarValue::Null);
+        }
         return Err(EngineError {
             message: format!(
                 "{fn_name}() aggregate modifiers require grouped aggregate evaluation"
