@@ -247,6 +247,7 @@ impl Parser {
             if materialized {
                 return Err(self.error_at_current("unexpected MATERIALIZED before CREATE INDEX"));
             }
+            let _concurrently = self.consume_keyword(Keyword::Concurrently);
             let if_not_exists = if self.consume_keyword(Keyword::If) {
                 self.expect_keyword(Keyword::Not, "expected NOT after IF in CREATE INDEX")?;
                 self.expect_keyword(
@@ -263,6 +264,7 @@ impl Parser {
                 (self.parse_identifier()?, false)
             };
             self.expect_keyword(Keyword::On, "expected ON after CREATE INDEX name")?;
+            let _only = self.consume_ident("only");
             let table_name = self.parse_qualified_name()?;
             if self.consume_keyword(Keyword::Using) {
                 let _access_method = self.parse_identifier()?;
@@ -294,6 +296,16 @@ impl Parser {
                 |k| matches!(k, TokenKind::RParen),
                 "expected ')' after CREATE INDEX column list",
             )?;
+            if self.consume_ident("include") {
+                let _included_columns = self.parse_identifier_list_in_parens()?;
+            }
+            if self.consume_ident("nulls") {
+                let _not = self.consume_keyword(Keyword::Not);
+                self.expect_keyword(
+                    Keyword::Distinct,
+                    "expected DISTINCT after NULLS in CREATE INDEX",
+                )?;
+            }
             if generated_name {
                 name = Self::default_index_name(&table_name, &columns);
             }
@@ -1401,6 +1413,7 @@ impl Parser {
             }));
         }
         if self.consume_keyword(Keyword::Index) {
+            let _concurrently = self.consume_keyword(Keyword::Concurrently);
             let if_exists = if self.consume_keyword(Keyword::If) {
                 self.expect_keyword(Keyword::Exists, "expected EXISTS after IF in DROP INDEX")?;
                 true
@@ -1408,6 +1421,9 @@ impl Parser {
                 false
             };
             let name = self.parse_qualified_name()?;
+            while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                let _ = self.parse_qualified_name()?;
+            }
             let behavior = self.parse_drop_behavior()?;
             return Ok(Statement::DropIndex(DropIndexStatement {
                 name,
@@ -3140,6 +3156,19 @@ impl Parser {
             });
         }
 
+        if matches!(left, TableExpression::Join(_)) {
+            let alias = self.parse_optional_alias()?;
+            let (column_aliases, _) = self.parse_optional_column_aliases()?;
+            if alias.is_some() || !column_aliases.is_empty() {
+                if alias.is_none() {
+                    return Err(self.error_at_current(
+                        "expected table alias before column alias list in FROM clause",
+                    ));
+                }
+                left = self.wrap_table_expression_with_alias(left, alias, column_aliases);
+            }
+        }
+
         Ok(left)
     }
 
@@ -3171,8 +3200,20 @@ impl Parser {
                 |k| matches!(k, TokenKind::RParen),
                 "expected ')' to close table expression",
             )?;
-            if let Some(alias) = self.parse_optional_alias()? {
-                self.apply_table_alias(&mut inner, alias);
+            let alias = self.parse_optional_alias()?;
+            let (column_aliases, _) = self.parse_optional_column_aliases()?;
+            if alias.is_some() || !column_aliases.is_empty() {
+                if alias.is_none() {
+                    return Err(self.error_at_current(
+                        "expected table alias before column alias list in FROM clause",
+                    ));
+                }
+                if !column_aliases.is_empty() || matches!(inner, TableExpression::Join(_)) {
+                    return Ok(self.wrap_table_expression_with_alias(inner, alias, column_aliases));
+                }
+                if let Some(alias) = alias {
+                    self.apply_table_alias(&mut inner, alias);
+                }
             }
             return Ok(inner);
         }
@@ -3208,8 +3249,51 @@ impl Parser {
             return Err(self.error_at_current("expected subquery or function after LATERAL"));
         }
         let alias = self.parse_optional_alias()?;
-        let _ = self.parse_optional_column_aliases()?;
+        let (column_aliases, _) = self.parse_optional_column_aliases()?;
+        if !column_aliases.is_empty() {
+            if alias.is_none() {
+                return Err(self.error_at_current(
+                    "expected table alias before column alias list in FROM clause",
+                ));
+            }
+            let relation = TableExpression::Relation(TableRef { name, alias: None });
+            return Ok(self.wrap_table_expression_with_alias(relation, alias, column_aliases));
+        }
         Ok(TableExpression::Relation(TableRef { name, alias }))
+    }
+
+    fn wrap_table_expression_with_alias(
+        &self,
+        table: TableExpression,
+        alias: Option<String>,
+        column_aliases: Vec<String>,
+    ) -> TableExpression {
+        let query = Query {
+            with: None,
+            body: QueryExpr::Select(SelectStatement {
+                quantifier: Some(SelectQuantifier::All),
+                targets: vec![SelectItem {
+                    expr: Expr::Wildcard,
+                    alias: None,
+                }],
+                from: vec![table],
+                where_clause: None,
+                group_by: Vec::new(),
+                having: None,
+                window_definitions: Vec::new(),
+                distinct_on: Vec::new(),
+            }),
+            order_by: Vec::new(),
+            limit: None,
+            offset: None,
+        };
+
+        TableExpression::Subquery(SubqueryRef {
+            query,
+            alias,
+            column_aliases,
+            lateral: false,
+        })
     }
 
     fn apply_table_alias(&self, table: &mut TableExpression, alias: String) {

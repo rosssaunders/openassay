@@ -1054,19 +1054,17 @@ pub(crate) fn evaluate_table_expression<'a>(
             }
             TableExpression::Subquery(sub) => {
                 let result = execute_query_with_outer(&sub.query, params, outer_scope).await?;
-                let columns = if sub.column_aliases.is_empty() {
-                    result.columns.clone()
-                } else if sub.column_aliases.len() == result.columns.len() {
-                    sub.column_aliases.clone()
-                } else {
-                    return Err(EngineError {
-                        message: format!(
-                            "subquery alias has {} columns but subquery returns {} columns",
-                            sub.column_aliases.len(),
-                            result.columns.len()
-                        ),
-                    });
-                };
+                let mut columns = result.columns.clone();
+                if !sub.column_aliases.is_empty() {
+                    for (idx, alias) in sub
+                        .column_aliases
+                        .iter()
+                        .take(columns.len())
+                        .enumerate()
+                    {
+                        columns[idx] = alias.clone();
+                    }
+                }
                 let qualifiers = sub
                     .alias
                     .as_ref()
@@ -1262,6 +1260,14 @@ async fn evaluate_table_function(
             });
         }
         columns = function.column_aliases.clone();
+    } else if columns.len() == 1
+        && let Some(alias) = &function.alias
+        && function
+            .name
+            .last()
+            .is_some_and(|name| name.eq_ignore_ascii_case("generate_series"))
+    {
+        columns[0] = alias.clone();
     }
 
     let qualifiers = function
