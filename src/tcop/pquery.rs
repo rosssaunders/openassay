@@ -1398,11 +1398,7 @@ fn expand_table_expression_columns(
                 .collect())
         }
         TableExpression::Function(function) => {
-            let column_names = if function.column_aliases.is_empty() {
-                table_function_output_columns(function)
-            } else {
-                function.column_aliases.clone()
-            };
+            let column_names = effective_table_function_columns(function);
             let qualifier = function
                 .alias
                 .as_ref()
@@ -1425,7 +1421,12 @@ fn expand_table_expression_columns(
         }
         TableExpression::Subquery(sub) => {
             let mut nested = ctes.clone();
-            let cols = derive_query_columns_with_ctes(&sub.query, &mut nested)?;
+            let mut cols = derive_query_columns_with_ctes(&sub.query, &mut nested)?;
+            if !sub.column_aliases.is_empty() {
+                for (idx, alias) in sub.column_aliases.iter().take(cols.len()).enumerate() {
+                    cols[idx] = alias.clone();
+                }
+            }
             if let Some(alias) = &sub.alias {
                 let qualifier = alias.to_ascii_lowercase();
                 Ok(cols
@@ -1560,11 +1561,7 @@ fn expand_table_expression_columns_typed(
                 .collect())
         }
         TableExpression::Function(function) => {
-            let column_names = if function.column_aliases.is_empty() {
-                table_function_output_columns(function)
-            } else {
-                function.column_aliases.clone()
-            };
+            let column_names = effective_table_function_columns(function);
             let mut column_type_oids =
                 table_function_output_type_oids(function, column_names.len());
             if column_type_oids.len() < column_names.len() {
@@ -1594,7 +1591,12 @@ fn expand_table_expression_columns_typed(
         }
         TableExpression::Subquery(sub) => {
             let mut nested = ctes.clone();
-            let cols = derive_query_output_columns_with_ctes(&sub.query, &mut nested)?;
+            let mut cols = derive_query_output_columns_with_ctes(&sub.query, &mut nested)?;
+            if !sub.column_aliases.is_empty() {
+                for (idx, alias) in sub.column_aliases.iter().take(cols.len()).enumerate() {
+                    cols[idx].name = alias.clone();
+                }
+            }
             if let Some(alias) = &sub.alias {
                 let qualifier = alias.to_ascii_lowercase();
                 Ok(cols
@@ -1649,6 +1651,24 @@ fn expand_table_expression_columns_typed(
             Ok(out)
         }
     }
+}
+
+fn effective_table_function_columns(function: &TableFunctionRef) -> Vec<String> {
+    if !function.column_aliases.is_empty() {
+        return function.column_aliases.clone();
+    }
+
+    let mut columns = table_function_output_columns(function);
+    if columns.len() == 1
+        && let Some(alias) = &function.alias
+        && function
+            .name
+            .last()
+            .is_some_and(|name| name.eq_ignore_ascii_case("generate_series"))
+    {
+        columns[0] = alias.clone();
+    }
+    columns
 }
 
 fn table_function_output_columns(function: &TableFunctionRef) -> Vec<String> {
