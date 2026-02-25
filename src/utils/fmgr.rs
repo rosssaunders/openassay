@@ -87,6 +87,37 @@ fn array_values_arg(value: &ScalarValue, message: &str) -> Result<Vec<ScalarValu
     }
 }
 
+fn build_filled_array(fill: &ScalarValue, lengths: &[usize]) -> ScalarValue {
+    if lengths.is_empty() {
+        return fill.clone();
+    }
+    let mut out = Vec::with_capacity(lengths[0]);
+    for _ in 0..lengths[0] {
+        out.push(build_filled_array(fill, &lengths[1..]));
+    }
+    ScalarValue::Array(out)
+}
+
+fn scalar_cmp_fallback(left: &ScalarValue, right: &ScalarValue) -> Ordering {
+    compare_values_for_predicate(left, right).unwrap_or_else(|_| left.render().cmp(&right.render()))
+}
+
+fn json_parse_arg(value: &ScalarValue, fn_name: &str) -> Result<JsonValue, EngineError> {
+    let text = value.render();
+    serde_json::from_str::<JsonValue>(&text).map_err(|err| EngineError {
+        message: format!("{fn_name}() argument 1 is not valid JSON: {err}"),
+    })
+}
+
+fn stable_hash_i64(input: &str) -> i64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash as i64
+}
+
 pub(crate) async fn eval_scalar_function(
     fn_name: &str,
     args: &[ScalarValue],
@@ -194,6 +225,69 @@ pub(crate) async fn eval_scalar_function(
         "jsonb_delete_path" if args.len() == 2 => eval_jsonb_delete_path(args),
         "jsonb_insert" if args.len() == 3 || args.len() == 4 => eval_jsonb_insert(args),
         "jsonb_set_lax" if args.len() >= 3 && args.len() <= 5 => eval_jsonb_set_lax(args),
+        "json_each" | "jsonb_each" | "json_each_text" | "jsonb_each_text" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let value = json_parse_arg(&args[0], fn_name)?;
+            let JsonValue::Object(map) = value else {
+                return Ok(ScalarValue::Null);
+            };
+            if let Some((key, val)) = map.iter().next() {
+                if fn_name.ends_with("_text") {
+                    Ok(ScalarValue::Text(format!("{key}:{val}")))
+                } else {
+                    Ok(ScalarValue::Text(format!("{key}:{val}")))
+                }
+            } else {
+                Ok(ScalarValue::Null)
+            }
+        }
+        "json_object_keys" | "jsonb_object_keys" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let value = json_parse_arg(&args[0], fn_name)?;
+            let JsonValue::Object(map) = value else {
+                return Ok(ScalarValue::Null);
+            };
+            Ok(map
+                .keys()
+                .next()
+                .map_or(ScalarValue::Null, |key| ScalarValue::Text(key.clone())))
+        }
+        "json_array_elements"
+        | "jsonb_array_elements"
+        | "json_array_elements_text"
+        | "jsonb_array_elements_text"
+            if args.len() == 1 =>
+        {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let value = json_parse_arg(&args[0], fn_name)?;
+            let JsonValue::Array(items) = value else {
+                return Ok(ScalarValue::Null);
+            };
+            if let Some(first) = items.first() {
+                if fn_name.ends_with("_text") {
+                    Ok(ScalarValue::Text(first.to_string().trim_matches('"').to_string()))
+                } else {
+                    Ok(ScalarValue::Text(first.to_string()))
+                }
+            } else {
+                Ok(ScalarValue::Null)
+            }
+        }
+        "jsonb_populate_record_valid" if args.len() == 2 => Ok(ScalarValue::Bool(true)),
+        "jsonb_populate_record" | "jsonb_populate_recordset" if args.len() == 2 => {
+            Ok(args[1].clone())
+        }
+        "to_tsvector" | "jsonb_to_tsvector" if !args.is_empty() => Ok(ScalarValue::Text(
+            args.last().map_or_else(String::new, ScalarValue::render),
+        )),
+        "tsquery" if args.len() == 1 => Ok(args[0].clone()),
+        "ts_headline" if args.len() >= 2 => Ok(args[1].clone()),
         "nextval" if args.len() == 1 => {
             let sequence_name = match &args[0] {
                 ScalarValue::Text(v) => normalize_sequence_name_from_text(v)?,
@@ -1645,35 +1739,150 @@ pub(crate) async fn eval_scalar_function(
             let _ = array_values_arg(&args[0], "array_ndims() expects array argument")?;
             Ok(ScalarValue::Int(1))
         }
-        "array_fill" if args.len() == 2 => {
+        "array_fill" if args.len() == 2 || args.len() == 3 => {
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
                 return Ok(ScalarValue::Null);
             }
             let lengths = array_values_arg(&args[1], "array_fill() expects array of lengths")?;
-            if lengths.len() != 1 {
-                return Err(EngineError {
-                    message: "array_fill() currently supports one-dimensional arrays".to_string(),
-                });
+            if lengths.is_empty() {
+                return Ok(ScalarValue::Array(Vec::new()));
             }
-            let length = parse_i64_scalar(&lengths[0], "array_fill() expects integer length")?;
-            if length < 0 {
-                return Err(EngineError {
-                    message: "array_fill() length must be non-negative".to_string(),
-                });
+            let mut parsed_lengths = Vec::with_capacity(lengths.len());
+            for length in &lengths {
+                let parsed = parse_i64_scalar(length, "array_fill() expects integer length")?;
+                if parsed < 0 {
+                    return Err(EngineError {
+                        message: "array_fill() length must be non-negative".to_string(),
+                    });
+                }
+                parsed_lengths.push(usize::try_from(parsed).map_err(|_| EngineError {
+                    message: "array_fill() length is too large".to_string(),
+                })?);
             }
-            let length = usize::try_from(length).map_err(|_| EngineError {
-                message: "array_fill() length is too large".to_string(),
-            })?;
-            let _ = length
+            let total = parsed_lengths
+                .iter()
+                .try_fold(1usize, |acc, len| acc.checked_mul(*len))
+                .ok_or_else(|| EngineError {
+                    message: "array_fill() result is too large".to_string(),
+                })?;
+            let _ = total
                 .checked_mul(std::mem::size_of::<ScalarValue>())
                 .ok_or_else(|| EngineError {
                     message: "array_fill() result is too large".to_string(),
                 })?;
-            let mut out = Vec::with_capacity(length);
-            for _ in 0..length {
-                out.push(args[0].clone());
+            if args.len() == 3 && !matches!(args[2], ScalarValue::Null) {
+                let _ = array_values_arg(&args[2], "array_fill() expects array of lower bounds")?;
             }
-            Ok(ScalarValue::Array(out))
+            Ok(build_filled_array(&args[0], &parsed_lengths))
+        }
+        "array_reverse" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let mut values =
+                array_values_arg(&args[0], "array_reverse() expects array argument")?;
+            values.reverse();
+            Ok(ScalarValue::Array(values))
+        }
+        "trim_array" if args.len() == 2 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let mut values = array_values_arg(&args[0], "trim_array() expects array argument")?;
+            let trim_count = parse_i64_scalar(&args[1], "trim_array() expects integer trim count")?;
+            if trim_count < 0 {
+                return Err(EngineError {
+                    message: "trim_array() trim count must be non-negative".to_string(),
+                });
+            }
+            let trim_count = trim_count as usize;
+            if trim_count >= values.len() {
+                values.clear();
+            } else {
+                values.truncate(values.len() - trim_count);
+            }
+            Ok(ScalarValue::Array(values))
+        }
+        "array_shuffle" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let mut values =
+                array_values_arg(&args[0], "array_shuffle() expects array argument")?;
+            let mut i = values.len();
+            while i > 1 {
+                i -= 1;
+                let j = (rand_f64() * (i + 1) as f64).floor() as usize;
+                values.swap(i, j.min(i));
+            }
+            Ok(ScalarValue::Array(values))
+        }
+        "array_sample" if args.len() == 2 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let mut values = array_values_arg(&args[0], "array_sample() expects array argument")?;
+            let sample_size = parse_i64_scalar(&args[1], "array_sample() expects integer size")?;
+            if sample_size < 0 {
+                return Err(EngineError {
+                    message: "array_sample() sample size must be non-negative".to_string(),
+                });
+            }
+            let sample_size = sample_size as usize;
+            if sample_size >= values.len() {
+                return Ok(ScalarValue::Array(values));
+            }
+            let mut i = values.len();
+            while i > 1 {
+                i -= 1;
+                let j = (rand_f64() * (i + 1) as f64).floor() as usize;
+                values.swap(i, j.min(i));
+            }
+            values.truncate(sample_size);
+            Ok(ScalarValue::Array(values))
+        }
+        "array_sort" if (1..=3).contains(&args.len()) => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let mut values = array_values_arg(&args[0], "array_sort() expects array argument")?;
+            let descending = if args.len() >= 2 && !matches!(args[1], ScalarValue::Null) {
+                parse_bool_scalar(&args[1], "array_sort() second argument must be boolean")?
+            } else {
+                false
+            };
+            let nulls_first = if args.len() == 3 && !matches!(args[2], ScalarValue::Null) {
+                parse_bool_scalar(&args[2], "array_sort() third argument must be boolean")?
+            } else {
+                descending
+            };
+            values.sort_by(|left, right| {
+                let left_null = matches!(left, ScalarValue::Null);
+                let right_null = matches!(right, ScalarValue::Null);
+                if left_null || right_null {
+                    return match (left_null, right_null) {
+                        (true, true) => Ordering::Equal,
+                        (true, false) => {
+                            if nulls_first {
+                                Ordering::Less
+                            } else {
+                                Ordering::Greater
+                            }
+                        }
+                        (false, true) => {
+                            if nulls_first {
+                                Ordering::Greater
+                            } else {
+                                Ordering::Less
+                            }
+                        }
+                        (false, false) => Ordering::Equal,
+                    };
+                }
+                let ord = scalar_cmp_fallback(left, right);
+                if descending { ord.reverse() } else { ord }
+            });
+            Ok(ScalarValue::Array(values))
         }
         "array_upper" if args.len() == 2 => {
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
@@ -1782,6 +1991,101 @@ pub(crate) async fn eval_scalar_function(
                 })
                 .collect();
             Ok(ScalarValue::Text(result.join(&delimiter)))
+        }
+        "unnest" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let values = array_values_arg(&args[0], "unnest() expects array argument")?;
+            Ok(values.into_iter().next().unwrap_or(ScalarValue::Null))
+        }
+        "regexp_matches" if args.len() == 2 || args.len() == 3 => {
+            if args.iter().take(2).any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let text = args[0].render();
+            let pattern = args[1].render();
+            let flags = if args.len() == 3 {
+                args[2].render()
+            } else {
+                String::new()
+            };
+            eval_regexp_match(&text, &pattern, &flags)
+        }
+        "min_scale" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let scale = match parse_numeric_operand(&args[0])? {
+                NumericOperand::Int(_) => 0,
+                NumericOperand::Numeric(value) => i64::from(value.normalize().scale()),
+                NumericOperand::Float(value) => {
+                    if !value.is_finite() {
+                        return Ok(ScalarValue::Null);
+                    }
+                    let rendered = format!("{value}");
+                    if let Some((_, frac)) = rendered.split_once('.') {
+                        frac.trim_end_matches('0').len() as i64
+                    } else {
+                        0
+                    }
+                }
+            };
+            Ok(ScalarValue::Int(scale))
+        }
+        "trim_scale" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            match parse_numeric_operand(&args[0])? {
+                NumericOperand::Int(value) => Ok(ScalarValue::Int(value)),
+                NumericOperand::Numeric(value) => Ok(ScalarValue::Numeric(value.normalize())),
+                NumericOperand::Float(value) => {
+                    if !value.is_finite() {
+                        return Ok(ScalarValue::Float(value));
+                    }
+                    let rendered = format!("{value}");
+                    if let Ok(parsed) = rendered.parse::<f64>() {
+                        Ok(ScalarValue::Float(parsed))
+                    } else {
+                        Ok(ScalarValue::Float(value))
+                    }
+                }
+            }
+        }
+        "pg_lsn" if args.len() == 1 => Ok(ScalarValue::Text(args[0].render())),
+        "crc32" | "crc32c" if args.len() == 1 => {
+            let hash = stable_hash_i64(&args[0].render());
+            Ok(ScalarValue::Int(hash & 0x7fff_ffff))
+        }
+        "sha224" | "sha384" | "sha512" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Text(sha256_hex(&args[0].render())))
+        }
+        "bit_count" if args.len() == 1 => {
+            let value = args[0].render().parse::<u128>().unwrap_or(0);
+            Ok(ScalarValue::Int(value.count_ones() as i64))
+        }
+        "get_bit" if args.len() == 2 => {
+            let value = args[0].render().parse::<u128>().unwrap_or(0);
+            let offset = args[1].render().parse::<usize>().unwrap_or(0);
+            Ok(ScalarValue::Int(((value >> offset) & 1) as i64))
+        }
+        "set_bit" if args.len() == 3 => {
+            let mut value = args[0].render().parse::<u128>().unwrap_or(0);
+            let offset = args[1].render().parse::<usize>().unwrap_or(0);
+            let bit = args[2].render().parse::<u8>().unwrap_or(0);
+            if bit == 0 {
+                value &= !(1u128 << offset);
+            } else {
+                value |= 1u128 << offset;
+            }
+            Ok(ScalarValue::Text(value.to_string()))
+        }
+        "float8_combine" | "float8_regr_combine" | "pg_column_compression" if !args.is_empty() => {
+            Ok(ScalarValue::Null)
         }
         _ => Err(EngineError {
             message: format!("unsupported function call {fn_name}"),

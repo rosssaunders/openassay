@@ -108,6 +108,10 @@ fn virtual_relation_column_defs(
                 type_oid: PG_INT8_OID,
             },
             VirtualRelationColumnDef {
+                name: "reltoastrelid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
                 name: "relhasindex".to_string(),
                 type_oid: PG_BOOL_OID,
             },
