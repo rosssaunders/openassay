@@ -3234,7 +3234,7 @@ impl Parser {
                     "expected ')' after function arguments",
                 )?;
             }
-            let alias = self.parse_optional_alias()?;
+            let alias = self.parse_optional_function_alias()?;
             let (column_aliases, column_alias_types) = self.parse_optional_column_aliases()?;
             return Ok(TableExpression::Function(TableFunctionRef {
                 name,
@@ -3307,6 +3307,19 @@ impl Parser {
 
     fn parse_optional_alias(&mut self) -> Result<Option<String>, ParseError> {
         if self.consume_keyword(Keyword::As) {
+            return Ok(Some(self.parse_identifier()?));
+        }
+        if matches!(self.current_kind(), TokenKind::Identifier(_)) {
+            return Ok(Some(self.parse_identifier()?));
+        }
+        Ok(None)
+    }
+
+    fn parse_optional_function_alias(&mut self) -> Result<Option<String>, ParseError> {
+        if self.consume_keyword(Keyword::As) {
+            if matches!(self.current_kind(), TokenKind::LParen) {
+                return Ok(None);
+            }
             return Ok(Some(self.parse_identifier()?));
         }
         if matches!(self.current_kind(), TokenKind::Identifier(_)) {
@@ -3740,6 +3753,18 @@ impl Parser {
                     true
                 };
                 lhs = self.parse_like_expr(lhs, false, case_insensitive)?;
+                continue;
+            }
+            if let TokenKind::Operator(op) = self.current_kind()
+                && matches!(op.as_str(), "~" | "~*" | "!~" | "!~*")
+            {
+                let l_bp = 5;
+                if l_bp < min_bp {
+                    break;
+                }
+                let operator = op.clone();
+                self.advance();
+                lhs = self.parse_regex_match_expr(lhs, &operator)?;
                 continue;
             }
             if self.peek_keyword(Keyword::Is) {
@@ -5077,6 +5102,36 @@ impl Parser {
         })
     }
 
+    fn parse_regex_match_expr(&mut self, lhs: Expr, operator: &str) -> Result<Expr, ParseError> {
+        let pattern = self.parse_expr_bp(6)?;
+        let case_insensitive = matches!(operator, "~*" | "!~*");
+        let negated = matches!(operator, "!~" | "!~*");
+
+        let mut args = vec![lhs, pattern];
+        if case_insensitive {
+            args.push(Expr::String("i".to_string()));
+        }
+
+        let expr = Expr::FunctionCall {
+            name: vec!["regexp_like".to_string()],
+            args,
+            distinct: false,
+            order_by: Vec::new(),
+            within_group: Vec::new(),
+            filter: None,
+            over: None,
+        };
+
+        if negated {
+            Ok(Expr::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(expr),
+            })
+        } else {
+            Ok(expr)
+        }
+    }
+
     /// Returns true if the keyword is unreserved in PostgreSQL and can be used as an identifier.
     fn is_unreserved_keyword(kw: &Keyword) -> bool {
         matches!(
@@ -5704,10 +5759,7 @@ impl Parser {
 
     fn parse_set_statement(&mut self) -> Result<Statement, ParseError> {
         let is_local = self.consume_keyword(Keyword::Local);
-        let mut name = self.parse_identifier()?;
-        if name.eq_ignore_ascii_case("time") && self.consume_ident("zone") {
-            name = "timezone".to_string();
-        }
+        let name = self.parse_setting_name()?;
         let has_assignment =
             self.consume_if(|k| matches!(k, TokenKind::Equal)) || self.consume_keyword(Keyword::To);
         // PostgreSQL allows SET TIME ZONE value without TO/=.
@@ -5751,13 +5803,27 @@ impl Parser {
         let name = if self.consume_keyword(Keyword::All) {
             "all".to_string()
         } else {
-            self.parse_identifier()?
+            self.parse_setting_name()?
         };
         Ok(Statement::Set(SetStatement {
             name,
             value: "DEFAULT".to_string(),
             is_local: false,
         }))
+    }
+
+    fn parse_setting_name(&mut self) -> Result<String, ParseError> {
+        let first = self.parse_identifier()?;
+        // PostgreSQL supports SET TIME ZONE ... spelling.
+        if first.eq_ignore_ascii_case("time") && self.consume_ident("zone") {
+            return Ok("timezone".to_string());
+        }
+
+        let mut parts = vec![first];
+        while self.consume_if(|k| matches!(k, TokenKind::Dot)) {
+            parts.push(self.parse_identifier()?);
+        }
+        Ok(parts.join("."))
     }
 
     fn parse_create_function(&mut self, or_replace: bool) -> Result<Statement, ParseError> {

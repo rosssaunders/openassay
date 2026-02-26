@@ -1349,6 +1349,12 @@ impl<'a> BodyParser<'a> {
                         self.advance();
                         PlPgSqlGetdiagKind::RowCount
                     }
+                    PlPgSqlTokenKind::Identifier(name)
+                        if name.eq_ignore_ascii_case("pg_routine_oid") =>
+                    {
+                        self.advance();
+                        PlPgSqlGetdiagKind::RoutineOid
+                    }
                     _ => return Err(self.error_at_current("unsupported GET DIAGNOSTICS item")),
                 };
 
