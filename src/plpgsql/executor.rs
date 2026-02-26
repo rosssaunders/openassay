@@ -867,7 +867,16 @@ fn exec_stmt_getdiag(
                 let row_count = i64::try_from(estate.eval_processed).unwrap_or(i64::MAX);
                 exec_assign_value_dno(estate, item.target, ScalarValue::Int(row_count))?;
             }
-            _ => return Err("only GET DIAGNOSTICS ROW_COUNT is implemented".to_string()),
+            PlPgSqlGetdiagKind::RoutineOid => {
+                let oid = i64::from(estate.func.fn_oid);
+                exec_assign_value_dno(estate, item.target, ScalarValue::Int(oid))?;
+            }
+            _ => {
+                return Err(
+                    "only GET DIAGNOSTICS ROW_COUNT and PG_ROUTINE_OID are implemented"
+                        .to_string(),
+                );
+            }
         }
     }
 
@@ -995,8 +1004,7 @@ fn exec_stmt_perform(
 fn execute_sql_statement(estate: &mut PLpgSQLExecState, sql: &str) -> Result<QueryResult, String> {
     let substituted = substitute_variables(sql, estate)?;
     let statement = parse_statement(&substituted).map_err(|e| e.message)?;
-
-    match statement {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match statement {
         Statement::Query(query) => {
             block_on(execute_query_with_outer(&query, &[], None)).map_err(|e| e.message)
         }
@@ -1004,6 +1012,10 @@ fn execute_sql_statement(estate: &mut PLpgSQLExecState, sql: &str) -> Result<Que
             let planned = plan_statement(other).map_err(|e| e.message)?;
             block_on(execute_planned_query(&planned, &[])).map_err(|e| e.message)
         }
+    }));
+    match result {
+        Ok(outcome) => outcome,
+        Err(_) => Err("internal plpgsql execution panic".to_string()),
     }
 }
 

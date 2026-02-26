@@ -24,10 +24,10 @@ use crate::security::{self, RlsCommand, TablePrivilege};
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{
     CteBinding, EngineError, ExpandedFromColumn, QueryResult, active_cte_context,
-    current_cte_binding, derive_select_columns, expand_from_columns, lookup_virtual_relation,
-    query_references_relation, relation_row_visible_for_command, require_relation_privilege,
-    type_signature_to_oid, validate_recursive_cte_terms, with_cte_context_async, with_ext_read,
-    with_storage_read,
+    current_cte_binding, derive_select_columns, expand_from_columns, lookup_user_function,
+    lookup_virtual_relation, query_references_relation, relation_row_visible_for_command,
+    require_relation_privilege, type_signature_to_oid, validate_recursive_cte_terms,
+    with_cte_context_async, with_ext_read, with_storage_read,
 };
 use crate::tcop::pquery::derive_dml_returning_columns;
 #[cfg(target_arch = "wasm32")]
@@ -1340,17 +1340,31 @@ async fn evaluate_set_returning_function(
         "messages" if function.name.len() == 2 && function.name[0].eq_ignore_ascii_case("ws") => {
             execute_ws_messages(args).await
         }
-        _ => Err(EngineError {
-            message: format!(
-                "unsupported set-returning table function {}",
-                function
-                    .name
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(".")
-            ),
-        }),
+        _ => {
+            if lookup_user_function(&function.name, args.len()).is_some() {
+                let columns = if !function.column_aliases.is_empty() {
+                    function.column_aliases.clone()
+                } else {
+                    vec![function
+                        .name
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| "value".to_string())]
+                };
+                return Ok((columns, Vec::new()));
+            }
+            Err(EngineError {
+                message: format!(
+                    "unsupported set-returning table function {}",
+                    function
+                        .name
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(".")
+                ),
+            })
+        }
     }
 }
 

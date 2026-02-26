@@ -3108,9 +3108,13 @@ fn execute_plpgsql_user_function(
         Ok(compiled) => compiled,
         Err(_) => return Ok(ScalarValue::Null),
     };
-    match crate::plpgsql::plpgsql_exec_function(&compiled, args) {
-        Ok(result) => Ok(result.unwrap_or(ScalarValue::Null)),
-        Err(_) => Ok(ScalarValue::Null),
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::plpgsql::plpgsql_exec_function(&compiled, args)
+    }));
+    match result {
+        Ok(Ok(value)) => Ok(value.unwrap_or(ScalarValue::Null)),
+        Ok(Err(_)) | Err(_) => Ok(ScalarValue::Null),
     }
 }
 
