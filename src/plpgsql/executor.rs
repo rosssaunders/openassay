@@ -1004,18 +1004,44 @@ fn exec_stmt_perform(
 fn execute_sql_statement(estate: &mut PLpgSQLExecState, sql: &str) -> Result<QueryResult, String> {
     let substituted = substitute_variables(sql, estate)?;
     let statement = parse_statement(&substituted).map_err(|e| e.message)?;
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match statement {
-        Statement::Query(query) => {
-            block_on(execute_query_with_outer(&query, &[], None)).map_err(|e| e.message)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Running futures::executor::block_on from inside another executor thread
+        // (for example, the session's Tokio runtime) can panic with EnterError.
+        // Execute nested SQL on a dedicated worker thread to isolate executors.
+        let task = move || -> Result<QueryResult, String> {
+            match statement {
+                Statement::Query(query) => {
+                    block_on(execute_query_with_outer(&query, &[], None)).map_err(|e| e.message)
+                }
+                other => {
+                    let planned = plan_statement(other).map_err(|e| e.message)?;
+                    block_on(execute_planned_query(&planned, &[])).map_err(|e| e.message)
+                }
+            }
+        };
+
+        return match std::thread::spawn(task).join() {
+            Ok(outcome) => outcome,
+            Err(_) => Err("internal plpgsql execution panic".to_string()),
+        };
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match statement {
+            Statement::Query(query) => {
+                block_on(execute_query_with_outer(&query, &[], None)).map_err(|e| e.message)
+            }
+            other => {
+                let planned = plan_statement(other).map_err(|e| e.message)?;
+                block_on(execute_planned_query(&planned, &[])).map_err(|e| e.message)
+            }
+        }));
+        match result {
+            Ok(outcome) => outcome,
+            Err(_) => Err("internal plpgsql execution panic".to_string()),
         }
-        other => {
-            let planned = plan_statement(other).map_err(|e| e.message)?;
-            block_on(execute_planned_query(&planned, &[])).map_err(|e| e.message)
-        }
-    }));
-    match result {
-        Ok(outcome) => outcome,
-        Err(_) => Err("internal plpgsql execution panic".to_string()),
     }
 }
 

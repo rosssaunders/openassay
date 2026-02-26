@@ -1629,35 +1629,77 @@ fn eval_generate_series(
     if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
         return Ok((vec!["generate_series".to_string()], Vec::new()));
     }
-    // Try integer series first
-    let start = match &args[0] {
-        ScalarValue::Int(i) => *i as f64,
-        ScalarValue::Float(f) => *f,
-        _ => {
-            return Err(EngineError {
-                message: format!("{fn_name}() expects numeric arguments"),
-            });
-        }
-    };
-    let stop = match &args[1] {
-        ScalarValue::Int(i) => *i as f64,
-        ScalarValue::Float(f) => *f,
-        _ => {
-            return Err(EngineError {
-                message: format!("{fn_name}() expects numeric arguments"),
-            });
-        }
-    };
-    let step = if args.len() == 3 {
-        match &args[2] {
-            ScalarValue::Int(i) => *i as f64,
-            ScalarValue::Float(f) => *f,
-            _ => {
-                return Err(EngineError {
-                    message: format!("{fn_name}() expects numeric step"),
-                });
+    let int_mode = matches!((&args[0], &args[1]), (ScalarValue::Int(_), ScalarValue::Int(_)))
+        && (args.len() < 3 || matches!(&args[2], ScalarValue::Int(_)));
+
+    let mut rows = Vec::new();
+    let max_rows = 1_000_000;
+    if int_mode {
+        let start = match args[0] {
+            ScalarValue::Int(v) => v,
+            _ => unreachable!(),
+        };
+        let stop = match args[1] {
+            ScalarValue::Int(v) => v,
+            _ => unreachable!(),
+        };
+        let step = if args.len() == 3 {
+            match args[2] {
+                ScalarValue::Int(v) => v,
+                _ => unreachable!(),
             }
+        } else if start <= stop {
+            1
+        } else {
+            -1
+        };
+        if step == 0 {
+            return Err(EngineError {
+                message: "step size cannot be zero".to_string(),
+            });
         }
+
+        let mut current = start;
+        loop {
+            if rows.len() >= max_rows {
+                break;
+            }
+            if step > 0 && current > stop {
+                break;
+            }
+            if step < 0 && current < stop {
+                break;
+            }
+            rows.push(vec![ScalarValue::Int(current)]);
+
+            let Some(next) = current.checked_add(step) else {
+                break;
+            };
+            if next == current {
+                break;
+            }
+            current = next;
+        }
+        return Ok((vec!["generate_series".to_string()], rows));
+    }
+
+    let as_f64 = |value: &ScalarValue| -> Result<f64, EngineError> {
+        match value {
+            ScalarValue::Int(i) => Ok(*i as f64),
+            ScalarValue::Float(f) => Ok(*f),
+            ScalarValue::Numeric(n) => Ok(n.to_string().parse::<f64>().unwrap_or(f64::NAN)),
+            _ => Err(EngineError {
+                message: format!("{fn_name}() expects numeric arguments"),
+            }),
+        }
+    };
+
+    let start = as_f64(&args[0])?;
+    let stop = as_f64(&args[1])?;
+    let step = if args.len() == 3 {
+        as_f64(&args[2]).map_err(|_| EngineError {
+            message: format!("{fn_name}() expects numeric step"),
+        })?
     } else if start <= stop {
         1.0
     } else {
@@ -1668,13 +1710,20 @@ fn eval_generate_series(
             message: "step size cannot be zero".to_string(),
         });
     }
-    let use_int = matches!(
-        (&args[0], &args[1]),
-        (ScalarValue::Int(_), ScalarValue::Int(_))
-    ) && (args.len() < 3 || matches!(&args[2], ScalarValue::Int(_)));
-    let mut rows = Vec::new();
+    if start.is_nan() || stop.is_nan() || step.is_nan() {
+        return Ok((vec!["generate_series".to_string()], Vec::new()));
+    }
+    if !start.is_finite() || !stop.is_finite() || !step.is_finite() {
+        let in_range = !((step > 0.0 && start > stop) || (step < 0.0 && start < stop));
+        let rows = if in_range {
+            vec![vec![ScalarValue::Float(start)]]
+        } else {
+            Vec::new()
+        };
+        return Ok((vec!["generate_series".to_string()], rows));
+    }
+
     let mut current = start;
-    let max_rows = 1_000_000;
     loop {
         if rows.len() >= max_rows {
             break;
@@ -1685,13 +1734,15 @@ fn eval_generate_series(
         if step < 0.0 && current < stop {
             break;
         }
-        if use_int {
-            rows.push(vec![ScalarValue::Int(current as i64)]);
-        } else {
-            rows.push(vec![ScalarValue::Float(current)]);
+        rows.push(vec![ScalarValue::Float(current)]);
+
+        let next = current + step;
+        if next == current || next.is_nan() {
+            break;
         }
-        current += step;
+        current = next;
     }
+
     Ok((vec!["generate_series".to_string()], rows))
 }
 
