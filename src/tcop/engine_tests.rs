@@ -5370,6 +5370,36 @@ fn test_jsonb_contains() {
 }
 
 #[test]
+fn test_jsonb_subscript_reads() {
+    let result = run(
+        "SELECT ('{\"a\":[10,20,{\"k\":\"v\"}]}'::jsonb)['a'][2]['k'] AS v, ('[1, \"2\", null]'::jsonb)[1] AS arr_elem",
+    );
+    assert_eq!(result.columns, vec!["v", "arr_elem"]);
+    assert_eq!(
+        result.rows,
+        vec![vec![
+            ScalarValue::Text("\"v\"".to_string()),
+            ScalarValue::Text("\"2\"".to_string()),
+        ]]
+    );
+
+    let result = run("SELECT ('{\"a\":1}'::jsonb)['missing'] IS NULL AS is_null");
+    assert_eq!(result.rows, vec![vec![ScalarValue::Bool(true)]]);
+}
+
+#[test]
+fn test_jsonb_subscript_slice_errors() {
+    with_isolated_state(|| {
+        let statement =
+            parse_statement("SELECT ('{\"a\":1}'::jsonb)['a':'b']").expect("parse should succeed");
+        let planned = plan_statement(statement).expect("plan should succeed");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("jsonb slices should be rejected");
+        assert!(err.message.contains("jsonb subscript does not support slices"));
+    });
+}
+
+#[test]
 fn test_standalone_values_single_row() {
     let result = run("VALUES (1, 'a')");
     assert_eq!(result.columns, vec!["column1", "column2"]);
