@@ -11,11 +11,11 @@ use crate::parser::ast::{
     CycleClause, DeleteStatement, DiscardStatement, DoStatement, DropBehavior, DropDomainStatement,
     DropExtensionStatement, DropFunctionStatement, DropIndexStatement, DropRoleStatement,
     DropSchemaStatement, DropSequenceStatement, DropSubscriptionStatement, DropTableStatement,
-    DropTypeStatement, DropViewStatement, ExplainStatement, Expr, ForeignKeyAction,
-    ForeignKeyReference, FunctionParam, FunctionParamMode, FunctionReturnType, GrantRoleStatement,
-    GrantStatement, GrantTablePrivilegesStatement, GroupByExpr, InsertSource, InsertStatement,
-    JoinCondition, JoinExpr, JoinType, ListenStatement, MergeStatement, MergeWhenClause,
-    NotifyStatement, OnConflictClause, OrderByExpr, Query, QueryExpr,
+    DropTriggerStatement, DropTypeStatement, DropViewStatement, ExplainStatement, Expr,
+    ForeignKeyAction, ForeignKeyReference, FunctionParam, FunctionParamMode, FunctionReturnType,
+    GrantRoleStatement, GrantStatement, GrantTablePrivilegesStatement, GroupByExpr, InsertSource,
+    InsertStatement, JoinCondition, JoinExpr, JoinType, ListenStatement, MergeStatement,
+    MergeWhenClause, NotifyStatement, OnConflictClause, OrderByExpr, Query, QueryExpr,
     RefreshMaterializedViewStatement, RevokeRoleStatement, RevokeStatement,
     RevokeTablePrivilegesStatement, RoleOption, SearchClause, SelectItem, SelectQuantifier,
     SelectStatement, SetOperator, SetQuantifier, SetStatement, ShowStatement, Statement,
@@ -440,7 +440,7 @@ impl Parser {
             || self.consume_keyword(Keyword::Temp);
         let unlogged = self.consume_ident("unlogged");
 
-        if self.consume_ident("role") {
+        if self.consume_ident("role") || self.consume_ident("user") {
             if temporary || unlogged {
                 return Err(self.error_at_current("unexpected modifier before CREATE ROLE"));
             }
@@ -1341,7 +1341,7 @@ impl Parser {
 
     fn parse_drop_statement(&mut self) -> Result<Statement, ParseError> {
         let materialized = self.consume_keyword(Keyword::Materialized);
-        if !materialized && self.consume_ident("role") {
+        if !materialized && (self.consume_ident("role") || self.consume_ident("user")) {
             return self.parse_drop_role_statement();
         }
         if self.consume_ident("subscription") {
@@ -1511,8 +1511,28 @@ impl Parser {
                 if_exists,
             }));
         }
+        if self.consume_ident("trigger") {
+            let if_exists = if self.consume_keyword(Keyword::If) {
+                self.expect_keyword(Keyword::Exists, "expected EXISTS after IF")?;
+                true
+            } else {
+                false
+            };
+            let name = self.parse_identifier()?;
+            if !(self.consume_keyword(Keyword::On) || self.consume_ident("on")) {
+                return Err(self.error_at_current("expected ON in DROP TRIGGER"));
+            }
+            let table_name = self.parse_qualified_name()?;
+            let behavior = self.parse_drop_behavior()?;
+            return Ok(Statement::DropTrigger(DropTriggerStatement {
+                name,
+                table_name,
+                if_exists,
+                behavior,
+            }));
+        }
         Err(self.error_at_current(
-            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, FUNCTION, SUBSCRIPTION, or EXTENSION after DROP",
+            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, FUNCTION, TRIGGER, SUBSCRIPTION, or EXTENSION after DROP",
         ))
     }
 
@@ -3935,6 +3955,24 @@ impl Parser {
             )?;
             return Ok(Expr::RowConstructor(fields));
         }
+        // INTERVAL typed literals with optional precision and field qualifiers:
+        // INTERVAL '1 day', INTERVAL(2) '1.23', INTERVAL '1' YEAR TO MONTH, ...
+        if self.peek_keyword(Keyword::Interval) {
+            let save = self.idx;
+            self.advance(); // INTERVAL keyword
+            self.consume_optional_type_modifiers();
+            if let Some(TokenKind::String(value)) = self.peek_nth_kind(0) {
+                let value_str = value.clone();
+                self.advance();
+                self.parse_optional_interval_qualifier()?;
+                return Ok(Expr::TypedLiteral {
+                    type_name: "interval".to_string(),
+                    value: value_str,
+                });
+            }
+            self.idx = save;
+        }
+
         // Typed literals with optional precision/timezone modifiers.
         if self.peek_keyword(Keyword::Timestamp) || self.peek_keyword(Keyword::Time) {
             let save = self.idx;
@@ -3944,27 +3982,7 @@ impl Parser {
                 self.advance(); // TIME keyword
                 "time".to_string()
             };
-            if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
-                let mut depth = 1usize;
-                while depth > 0 {
-                    match self.current_kind() {
-                        TokenKind::LParen => {
-                            depth += 1;
-                            self.advance();
-                        }
-                        TokenKind::RParen => {
-                            depth -= 1;
-                            self.advance();
-                        }
-                        TokenKind::Eof => {
-                            return Err(self.error_at_current(
-                                "unterminated type modifier list in typed literal",
-                            ));
-                        }
-                        _ => self.advance(),
-                    }
-                }
-            }
+            self.consume_optional_type_modifiers();
             if self.consume_keyword(Keyword::With) || self.consume_ident("with") {
                 self.expect_token(
                     |k| {
@@ -4020,8 +4038,7 @@ impl Parser {
         // Only match if followed by a string literal (not a parenthesis for function calls)
         if (self.peek_keyword(Keyword::Date)
             || self.peek_keyword(Keyword::Time)
-            || self.peek_keyword(Keyword::Timestamp)
-            || self.peek_keyword(Keyword::Interval))
+            || self.peek_keyword(Keyword::Timestamp))
             && self
                 .peek_nth_kind(1)
                 .is_some_and(|k| matches!(k, TokenKind::String(_)))
@@ -4030,11 +4047,9 @@ impl Parser {
                 "date"
             } else if self.consume_keyword(Keyword::Time) {
                 "time"
-            } else if self.consume_keyword(Keyword::Timestamp) {
-                "timestamp"
             } else {
                 self.advance();
-                "interval"
+                "timestamp"
             };
 
             if let Some(TokenKind::String(value)) = self.peek_nth_kind(0) {
@@ -4230,6 +4245,7 @@ impl Parser {
                     | "jsonb"
                     | "date"
                     | "time"
+                    | "timetz"
                     | "timestamp"
                     | "timestamptz"
                     | "interval"
@@ -4251,6 +4267,7 @@ impl Parser {
                     "float4" | "real" => "real",
                     "numeric" | "decimal" => "numeric",
                     "text" | "varchar" => "text",
+                    "timetz" => "time",
                     "regnamespace" => "regclass",
                     _ => &type_lower,
                 };
@@ -4466,11 +4483,9 @@ impl Parser {
                     self.idx = args_start;
                 }
 
-                self.consume_ident("variadic");
-                args.push(self.parse_expr()?);
+                args.push(self.parse_function_argument_expr()?);
                 while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
-                    self.consume_ident("variadic");
-                    args.push(self.parse_expr()?);
+                    args.push(self.parse_function_argument_expr()?);
                 }
                 if self.consume_keyword(Keyword::Order) {
                     self.expect_keyword(
@@ -4555,6 +4570,23 @@ impl Parser {
         }
 
         Ok(Expr::Identifier(name))
+    }
+
+    fn parse_function_argument_expr(&mut self) -> Result<Expr, ParseError> {
+        self.consume_ident("variadic");
+
+        let named_prefix = matches!(
+            self.current_kind(),
+            TokenKind::Identifier(_) | TokenKind::Keyword(_)
+        ) && self.peek_nth_kind(1).is_some_and(|kind| {
+            matches!(kind, TokenKind::ColonEquals | TokenKind::EqualsGreater)
+        });
+        if named_prefix {
+            self.advance(); // argument name
+            self.advance(); // := or =>
+        }
+
+        self.parse_expr()
     }
 
     fn consume_optional_unicode_escape_clause(&mut self) -> Result<(), ParseError> {
@@ -5298,6 +5330,52 @@ impl Parser {
         Ok(())
     }
 
+    fn consume_optional_type_modifiers(&mut self) {
+        if !self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+            return;
+        }
+        let mut depth = 1usize;
+        while depth > 0 {
+            match self.current_kind() {
+                TokenKind::LParen => {
+                    depth += 1;
+                    self.advance();
+                }
+                TokenKind::RParen => {
+                    depth -= 1;
+                    self.advance();
+                }
+                TokenKind::Eof => break,
+                _ => self.advance(),
+            }
+        }
+    }
+
+    fn consume_interval_field_specifier(&mut self) -> bool {
+        self.consume_ident("year")
+            || self.consume_ident("month")
+            || self.consume_ident("day")
+            || self.consume_ident("hour")
+            || self.consume_ident("minute")
+            || self.consume_ident("second")
+    }
+
+    fn parse_optional_interval_qualifier(&mut self) -> Result<(), ParseError> {
+        if !self.consume_interval_field_specifier() {
+            return Ok(());
+        }
+        self.consume_optional_type_modifiers();
+        if self.consume_keyword(Keyword::To) {
+            if !self.consume_interval_field_specifier() {
+                return Err(
+                    self.error_at_current("expected interval field after TO in INTERVAL literal")
+                );
+            }
+            self.consume_optional_type_modifiers();
+        }
+        Ok(())
+    }
+
     fn skip_optional_parenthesized_tokens(&mut self) {
         if !self.consume_if(|k| matches!(k, TokenKind::LParen)) {
             return;
@@ -5759,6 +5837,24 @@ impl Parser {
 
     fn parse_set_statement(&mut self) -> Result<Statement, ParseError> {
         let is_local = self.consume_keyword(Keyword::Local);
+        if self.consume_ident("session") {
+            if !self.consume_ident("authorization") {
+                return Err(self.error_at_current(
+                    "expected AUTHORIZATION after SET SESSION",
+                ));
+            }
+            let value = self.collect_setting_value_tokens();
+            if value.is_empty() {
+                return Err(self.error_at_current(
+                    "expected role name or DEFAULT after SET SESSION AUTHORIZATION",
+                ));
+            }
+            return Ok(Statement::Set(SetStatement {
+                name: "session_authorization".to_string(),
+                value,
+                is_local,
+            }));
+        }
         let name = self.parse_setting_name()?;
         let has_assignment =
             self.consume_if(|k| matches!(k, TokenKind::Equal)) || self.consume_keyword(Keyword::To);
@@ -5766,7 +5862,49 @@ impl Parser {
         if !has_assignment && !name.eq_ignore_ascii_case("timezone") {
             return Err(self.error_at_current("expected = or TO after SET variable name"));
         }
-        // Collect the rest as value
+        let value = self.collect_setting_value_tokens();
+        Ok(Statement::Set(SetStatement {
+            name,
+            value,
+            is_local,
+        }))
+    }
+
+    fn parse_show_statement(&mut self) -> Result<Statement, ParseError> {
+        let name = if self.consume_keyword(Keyword::All) {
+            "all".to_string()
+        } else {
+            self.parse_identifier()?
+        };
+        Ok(Statement::Show(ShowStatement { name }))
+    }
+
+    fn parse_reset_statement(&mut self) -> Result<Statement, ParseError> {
+        if self.consume_ident("session") {
+            if !self.consume_ident("authorization") {
+                return Err(self.error_at_current(
+                    "expected AUTHORIZATION after RESET SESSION",
+                ));
+            }
+            return Ok(Statement::Set(SetStatement {
+                name: "session_authorization".to_string(),
+                value: "DEFAULT".to_string(),
+                is_local: false,
+            }));
+        }
+        let name = if self.consume_keyword(Keyword::All) {
+            "all".to_string()
+        } else {
+            self.parse_setting_name()?
+        };
+        Ok(Statement::Set(SetStatement {
+            name,
+            value: "DEFAULT".to_string(),
+            is_local: false,
+        }))
+    }
+
+    fn collect_setting_value_tokens(&mut self) -> String {
         let mut value_parts = Vec::new();
         while !matches!(self.current_kind(), TokenKind::Eof)
             && !matches!(self.current_kind(), TokenKind::Semicolon)
@@ -5783,33 +5921,7 @@ impl Parser {
             }
             self.advance();
         }
-        Ok(Statement::Set(SetStatement {
-            name,
-            value: value_parts.join(" "),
-            is_local,
-        }))
-    }
-
-    fn parse_show_statement(&mut self) -> Result<Statement, ParseError> {
-        let name = if self.consume_keyword(Keyword::All) {
-            "all".to_string()
-        } else {
-            self.parse_identifier()?
-        };
-        Ok(Statement::Show(ShowStatement { name }))
-    }
-
-    fn parse_reset_statement(&mut self) -> Result<Statement, ParseError> {
-        let name = if self.consume_keyword(Keyword::All) {
-            "all".to_string()
-        } else {
-            self.parse_setting_name()?
-        };
-        Ok(Statement::Set(SetStatement {
-            name,
-            value: "DEFAULT".to_string(),
-            is_local: false,
-        }))
+        value_parts.join(" ")
     }
 
     fn parse_setting_name(&mut self) -> Result<String, ParseError> {

@@ -130,6 +130,10 @@ pub(crate) fn encode_bytes(input: &[u8], format: &str) -> Result<String, EngineE
             use base64::Engine;
             Ok(base64::engine::general_purpose::STANDARD.encode(input))
         }
+        "base64url" => {
+            use base64::Engine;
+            Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(input))
+        }
         "escape" => Ok(escape_bytes(input)),
         _ => Err(EngineError {
             message: format!("encode() unsupported format {format}"),
@@ -147,6 +151,17 @@ pub(crate) fn decode_bytes(input: &str, format: &str) -> Result<Vec<u8>, EngineE
                 .decode(input.trim())
                 .map_err(|_| EngineError {
                     message: "decode() invalid base64 input".to_string(),
+                })
+        }
+        "base64url" => {
+            use base64::Engine;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(input.trim())
+                .or_else(|_| {
+                    base64::engine::general_purpose::URL_SAFE.decode(input.trim())
+                })
+                .map_err(|_| EngineError {
+                    message: "decode() invalid base64url input".to_string(),
                 })
         }
         "escape" => decode_escape_bytes(input),
