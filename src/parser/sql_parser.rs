@@ -1389,10 +1389,13 @@ impl Parser {
             } else {
                 false
             };
-            let name = self.parse_qualified_name()?;
+            let mut names = vec![self.parse_qualified_name()?];
+            while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                names.push(self.parse_qualified_name()?);
+            }
             let behavior = self.parse_drop_behavior()?;
             return Ok(Statement::DropTable(DropTableStatement {
-                name,
+                names,
                 if_exists,
                 behavior,
             }));
@@ -2837,6 +2840,24 @@ impl Parser {
             None
         };
 
+        // Parse and ignore row-locking clauses such as:
+        //   FOR UPDATE
+        //   FOR UPDATE OF alias[, ...]
+        if self.consume_keyword(Keyword::For) {
+            self.expect_keyword(Keyword::Update, "expected UPDATE after FOR")?;
+            if self.consume_ident("of") {
+                let _ = self.parse_identifier()?;
+                while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    let _ = self.parse_identifier()?;
+                }
+            }
+            // Optional postfixes accepted by PostgreSQL lock clauses.
+            let _ = self.consume_ident("nowait");
+            if self.consume_ident("skip") {
+                let _ = self.consume_ident("locked");
+            }
+        }
+
         Ok(Query {
             with,
             body,
@@ -3787,6 +3808,22 @@ impl Parser {
                 lhs = self.parse_regex_match_expr(lhs, &operator)?;
                 continue;
             }
+            if self.peek_ident("operator")
+                && self
+                    .peek_nth_kind(1)
+                    .is_some_and(|k| matches!(k, TokenKind::LParen))
+            {
+                let l_bp = 5;
+                if l_bp < min_bp {
+                    break;
+                }
+                let operator = self.parse_operator_wrapper_symbol()?;
+                if matches!(operator.as_str(), "~" | "~*" | "!~" | "!~*") {
+                    lhs = self.parse_regex_match_expr(lhs, &operator)?;
+                    continue;
+                }
+                return Err(self.error_at_current("unsupported OPERATOR() expression"));
+            }
             if self.peek_keyword(Keyword::Is) {
                 let l_bp = 5;
                 if l_bp < min_bp {
@@ -4531,6 +4568,11 @@ impl Parser {
             } else {
                 None
             };
+            if (self.consume_ident("respect") || self.consume_ident("ignore"))
+                && !self.consume_ident("nulls")
+            {
+                return Err(self.error_at_current("expected NULLS after RESPECT/IGNORE"));
+            }
             let over = if self.consume_keyword(Keyword::Over) {
                 // OVER can be followed by:
                 // 1. Window name: OVER window_name
@@ -5162,6 +5204,61 @@ impl Parser {
         } else {
             Ok(expr)
         }
+    }
+
+    fn parse_operator_wrapper_symbol(&mut self) -> Result<String, ParseError> {
+        if !self.consume_ident("operator") {
+            return Err(self.error_at_current("expected OPERATOR keyword"));
+        }
+        self.expect_token(
+            |k| matches!(k, TokenKind::LParen),
+            "expected '(' after OPERATOR",
+        )?;
+        let mut symbol: Option<String> = None;
+        loop {
+            match self.current_kind() {
+                TokenKind::Operator(op) => {
+                    symbol = Some(op.clone());
+                    self.advance();
+                }
+                TokenKind::Equal => {
+                    symbol = Some("=".to_string());
+                    self.advance();
+                }
+                TokenKind::NotEquals => {
+                    symbol = Some("<>".to_string());
+                    self.advance();
+                }
+                TokenKind::Less => {
+                    symbol = Some("<".to_string());
+                    self.advance();
+                }
+                TokenKind::LessEquals => {
+                    symbol = Some("<=".to_string());
+                    self.advance();
+                }
+                TokenKind::Greater => {
+                    symbol = Some(">".to_string());
+                    self.advance();
+                }
+                TokenKind::GreaterEquals => {
+                    symbol = Some(">=".to_string());
+                    self.advance();
+                }
+                TokenKind::Dot
+                | TokenKind::Identifier(_)
+                | TokenKind::Keyword(_) => {
+                    self.advance();
+                }
+                TokenKind::RParen => break,
+                _ => return Err(self.error_at_current("invalid OPERATOR() syntax")),
+            }
+        }
+        self.expect_token(
+            |k| matches!(k, TokenKind::RParen),
+            "expected ')' after OPERATOR(...)",
+        )?;
+        symbol.ok_or_else(|| self.error_at_current("expected operator symbol in OPERATOR()"))
     }
 
     /// Returns true if the keyword is unreserved in PostgreSQL and can be used as an identifier.
@@ -7064,6 +7161,27 @@ mod tests {
     }
 
     #[test]
+    fn parses_operator_wrapper_regex_predicate() {
+        let stmt = parse_statement("SELECT 1 WHERE relname OPERATOR(pg_catalog.~) '^foo$'")
+            .expect("parse ok");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        let where_clause = select
+            .where_clause
+            .as_ref()
+            .expect("where clause should exist");
+        match where_clause {
+            Expr::FunctionCall { name, args, .. } => {
+                assert_eq!(name, &vec!["regexp_like".to_string()]);
+                assert_eq!(args.len(), 2);
+            }
+            other => panic!("expected regexp_like call, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_is_distinct_from_predicates() {
         let stmt =
             parse_statement("SELECT 1 WHERE a IS DISTINCT FROM b OR a IS NOT DISTINCT FROM c")
@@ -7679,9 +7797,26 @@ mod tests {
             panic!("expected drop table statement");
         };
 
-        assert_eq!(drop_table.name, vec!["users".to_string()]);
+        assert_eq!(drop_table.names, vec![vec!["users".to_string()]]);
         assert!(drop_table.if_exists);
         assert_eq!(drop_table.behavior, DropBehavior::Restrict);
+    }
+
+    #[test]
+    fn parses_drop_table_with_multiple_relations() {
+        let stmt = parse_statement("DROP TABLE a, public.b CASCADE").expect("parse should succeed");
+        let Statement::DropTable(drop_table) = stmt else {
+            panic!("expected drop table statement");
+        };
+        assert_eq!(
+            drop_table.names,
+            vec![
+                vec!["a".to_string()],
+                vec!["public".to_string(), "b".to_string()]
+            ]
+        );
+        assert!(!drop_table.if_exists);
+        assert_eq!(drop_table.behavior, DropBehavior::Cascade);
     }
 
     #[test]
@@ -9022,6 +9157,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_window_function_with_respect_nulls_modifier() {
+        let stmt = parse_statement("SELECT lag(v) RESPECT NULLS OVER (ORDER BY id) FROM t")
+            .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        if let Expr::FunctionCall { over, .. } = &select.targets[0].expr {
+            assert!(over.is_some());
+        } else {
+            panic!("expected window function call");
+        }
+    }
+
+    #[test]
     fn parses_order_by_using_operator() {
         let stmt = parse_statement("SELECT * FROM users ORDER BY id USING <")
             .expect("parse should succeed");
@@ -9055,6 +9205,16 @@ mod tests {
         assert_eq!(query.order_by.len(), 2);
         assert_eq!(query.order_by[0].using_operator, Some("<".to_string()));
         assert_eq!(query.order_by[1].using_operator, Some(">".to_string()));
+    }
+
+    #[test]
+    fn parses_select_for_update_clause() {
+        let stmt = parse_statement("SELECT * FROM users ORDER BY id FOR UPDATE OF users")
+            .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        assert_eq!(query.order_by.len(), 1);
     }
 
     #[test]

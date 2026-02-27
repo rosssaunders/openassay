@@ -31,33 +31,39 @@ pub fn drop_relations_by_oid_order(
 pub async fn execute_drop_table(
     drop_table: &DropTableStatement,
 ) -> Result<QueryResult, EngineError> {
-    let resolved = with_catalog_read(|catalog| {
-        catalog
-            .resolve_table(&drop_table.name, &SearchPath::default())
-            .cloned()
-    });
-
-    let table = match resolved {
-        Ok(table) => table,
-        Err(_err) if drop_table.if_exists => {
-            return Ok(QueryResult {
-                columns: Vec::new(),
-                rows: Vec::new(),
-                command_tag: "DROP TABLE".to_string(),
-                rows_affected: 0,
-            });
+    let mut base_table_oids = Vec::new();
+    for name in &drop_table.names {
+        let resolved = with_catalog_read(|catalog| {
+            catalog
+                .resolve_table(name, &SearchPath::default())
+                .cloned()
+        });
+        let table = match resolved {
+            Ok(table) => table,
+            Err(_err) if drop_table.if_exists => continue,
+            Err(err) => {
+                return Err(EngineError {
+                    message: err.message,
+                });
+            }
+        };
+        if !base_table_oids.contains(&table.oid()) {
+            base_table_oids.push(table.oid());
         }
-        Err(err) => {
-            return Err(EngineError {
-                message: err.message,
-            });
-        }
-    };
+    }
+    if base_table_oids.is_empty() {
+        return Ok(QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            command_tag: "DROP TABLE".to_string(),
+            rows_affected: 0,
+        });
+    }
 
     let drop_order = with_catalog_read(|catalog| {
         expand_and_order_relation_drop_in_catalog(
             catalog,
-            &[table.oid()],
+            &base_table_oids,
             matches!(drop_table.behavior, DropBehavior::Cascade),
         )
     })
