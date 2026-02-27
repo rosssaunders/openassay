@@ -3697,7 +3697,16 @@ fn eval_array_subscript(
 ) -> Result<ScalarValue, EngineError> {
     // Get the array elements
     let array = match array {
-        ScalarValue::Text(text) => parse_pg_array_literal(&text)?,
+        ScalarValue::Text(text) => match parse_pg_array_literal(&text) {
+            Ok(parsed) => parsed,
+            Err(array_err) => {
+                let json_text = ScalarValue::Text(text.clone());
+                if parse_json_document_arg(&json_text, "json subscript", 1).is_ok() {
+                    return eval_json_get_operator(json_text, index, false);
+                }
+                return Err(array_err);
+            }
+        },
         other => other,
     };
     let elements = match array {
@@ -3746,7 +3755,18 @@ fn eval_array_slice(
 ) -> Result<ScalarValue, EngineError> {
     // Get the array elements
     let array = match array {
-        ScalarValue::Text(text) => parse_pg_array_literal(&text)?,
+        ScalarValue::Text(text) => match parse_pg_array_literal(&text) {
+            Ok(parsed) => parsed,
+            Err(array_err) => {
+                let json_text = ScalarValue::Text(text.clone());
+                if parse_json_document_arg(&json_text, "json subscript", 1).is_ok() {
+                    return Err(EngineError {
+                        message: "jsonb subscript does not support slices".to_string(),
+                    });
+                }
+                return Err(array_err);
+            }
+        },
         other => other,
     };
     let elements = match array {
