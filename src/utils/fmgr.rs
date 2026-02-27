@@ -87,6 +87,22 @@ fn array_values_arg(value: &ScalarValue, message: &str) -> Result<Vec<ScalarValu
     }
 }
 
+fn normalize_make_interval_args(args: &[ScalarValue]) -> Vec<ScalarValue> {
+    let mut normalized = vec![
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Float(0.0),
+    ];
+    for (idx, arg) in args.iter().enumerate() {
+        normalized[idx] = arg.clone();
+    }
+    normalized
+}
+
 fn build_filled_array(fill: &ScalarValue, lengths: &[usize]) -> ScalarValue {
     if lengths.is_empty() {
         return fill.clone();
@@ -280,12 +296,19 @@ pub(crate) async fn eval_scalar_function(
             }
         }
         "jsonb_populate_record_valid" if args.len() == 2 => Ok(ScalarValue::Bool(true)),
-        "jsonb_populate_record" | "jsonb_populate_recordset" if args.len() == 2 => {
+        "json_populate_record"
+        | "json_populate_recordset"
+        | "jsonb_populate_record"
+        | "jsonb_populate_recordset"
+            if args.len() == 2 =>
+        {
             Ok(args[1].clone())
         }
-        "to_tsvector" | "jsonb_to_tsvector" if !args.is_empty() => Ok(ScalarValue::Text(
+        "to_tsvector" | "json_to_tsvector" | "jsonb_to_tsvector" if !args.is_empty() => {
+            Ok(ScalarValue::Text(
             args.last().map_or_else(String::new, ScalarValue::render),
-        )),
+            ))
+        }
         "tsquery" if args.len() == 1 => Ok(args[0].clone()),
         "ts_headline" if args.len() >= 2 => Ok(args[1].clone()),
         "nextval" if args.len() == 1 => {
@@ -667,7 +690,10 @@ pub(crate) async fn eval_scalar_function(
         "to_timestamp" if args.len() == 1 => eval_to_timestamp(&args[0]),
         "to_timestamp" if args.len() == 2 => eval_to_timestamp_with_format(&args[0], &args[1]),
         "to_date" if args.len() == 2 => eval_to_date_with_format(&args[0], &args[1]),
-        "make_interval" if args.len() == 7 => eval_make_interval(args),
+        "make_interval" if args.len() <= 7 => {
+            let normalized = normalize_make_interval_args(args);
+            eval_make_interval(&normalized)
+        }
         "justify_hours" if args.len() == 1 => eval_justify_interval(&args[0], JustifyMode::Hours),
         "justify_days" if args.len() == 1 => eval_justify_interval(&args[0], JustifyMode::Days),
         "justify_interval" if args.len() == 1 => eval_justify_interval(&args[0], JustifyMode::Full),
@@ -1532,6 +1558,25 @@ pub(crate) async fn eval_scalar_function(
                 ScalarValue::Vector(v) => (v.len() as i64) * 4 + 4,
             };
             Ok(ScalarValue::Int(size))
+        }
+        "pg_relation_size" if args.len() == 1 || args.len() == 2 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Int(0))
+        }
+        "pg_total_relation_size" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Int(0))
+        }
+        "pg_size_pretty" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let bytes = parse_i64_scalar(&args[0], "pg_size_pretty() expects integer argument")?;
+            Ok(ScalarValue::Text(format!("{bytes} bytes")))
         }
         "pg_get_userbyid" if args.len() == 1 => Ok(ScalarValue::Text("openassay".to_string())),
         "pg_get_viewdef" if args.len() == 1 => {
