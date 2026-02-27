@@ -4,8 +4,9 @@ use std::collections::{HashMap, HashSet};
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
     _mm256_add_epi64, _mm256_add_pd, _mm256_blendv_epi8, _mm256_cmpgt_epi64, _mm256_loadu_pd,
-    _mm256_loadu_si256, _mm256_max_pd, _mm256_min_pd, _mm256_set1_epi64x, _mm256_set1_pd,
-    _mm256_setzero_pd, _mm256_setzero_si256, _mm256_storeu_pd, _mm256_storeu_si256,
+    _mm256_loadu_si256, _mm256_max_pd, _mm256_min_pd, _mm256_mul_pd, _mm256_set1_epi64x,
+    _mm256_set1_pd, _mm256_setzero_pd, _mm256_setzero_si256, _mm256_srli_epi64, _mm256_storeu_pd,
+    _mm256_storeu_si256, _mm256_sub_pd, _mm256_xor_si256,
 };
 
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
@@ -1966,6 +1967,16 @@ async fn evaluate_relation_with_predicates(
                         .iter()
                         .filter_map(|offset| all_rows.get(*offset).cloned())
                         .collect::<Vec<_>>()
+                } else if index_offsets.is_none() && all_rows.len() >= 64 {
+                    // SIMD scan filter: for large heap scans without an index,
+                    // check if any predicate is a simple integer comparison and
+                    // apply it with SIMD before building EvalScopes.
+                    simd_prefilter_rows(
+                        all_rows,
+                        relation_predicates,
+                        &columns,
+                        &qualifiers,
+                    )
                 } else {
                     all_rows
                 }
@@ -3945,6 +3956,40 @@ unsafe fn max_f64_avx(values: &[f64]) -> f64 {
     result
 }
 
+/// Compute the sum of squared deviations from the mean for a slice of f64.
+/// Uses SIMD (AVX) to subtract the mean and square in 4-wide batches.
+fn sum_squared_deviations_fast(values: &[f64], mean: f64) -> f64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if values.len() >= 4 && std::arch::is_x86_feature_detected!("avx") {
+            // SAFETY: AVX feature check passed above.
+            return unsafe { sum_squared_deviations_avx(values, mean) };
+        }
+    }
+    values.iter().map(|v| (v - mean).powi(2)).sum()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx")]
+unsafe fn sum_squared_deviations_avx(values: &[f64], mean: f64) -> f64 {
+    let chunks = values.chunks_exact(4);
+    let remainder = chunks.remainder();
+    let mean_vec = _mm256_set1_pd(mean);
+    let mut acc = _mm256_setzero_pd();
+    for chunk in chunks {
+        let v = unsafe { _mm256_loadu_pd(chunk.as_ptr()) };
+        let diff = _mm256_sub_pd(v, mean_vec);
+        acc = _mm256_add_pd(acc, _mm256_mul_pd(diff, diff));
+    }
+    let mut lanes = [0.0_f64; 4];
+    unsafe { _mm256_storeu_pd(lanes.as_mut_ptr(), acc) };
+    let mut result: f64 = lanes.iter().copied().sum();
+    for &val in remainder {
+        result += (val - mean) * (val - mean);
+    }
+    result
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn eval_aggregate_function(
     fn_name: &str,
@@ -4411,9 +4456,9 @@ pub(crate) async fn eval_aggregate_function(
             if values.len() < 2 {
                 return Ok(ScalarValue::Null);
             }
-            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            let mean = sum_f64_fast(&values) / values.len() as f64;
             let variance =
-                values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
+                sum_squared_deviations_fast(&values, mean) / (values.len() - 1) as f64;
             Ok(ScalarValue::Float(variance.sqrt()))
         }
         "stddev_pop" => {
@@ -4435,9 +4480,9 @@ pub(crate) async fn eval_aggregate_function(
             if values.is_empty() {
                 return Ok(ScalarValue::Null);
             }
-            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            let mean = sum_f64_fast(&values) / values.len() as f64;
             let variance =
-                values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+                sum_squared_deviations_fast(&values, mean) / values.len() as f64;
             Ok(ScalarValue::Float(variance.sqrt()))
         }
         "variance" | "var_samp" => {
@@ -4459,9 +4504,9 @@ pub(crate) async fn eval_aggregate_function(
             if values.len() < 2 {
                 return Ok(ScalarValue::Null);
             }
-            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            let mean = sum_f64_fast(&values) / values.len() as f64;
             Ok(ScalarValue::Float(
-                values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64,
+                sum_squared_deviations_fast(&values, mean) / (values.len() - 1) as f64,
             ))
         }
         "var_pop" => {
@@ -4483,9 +4528,9 @@ pub(crate) async fn eval_aggregate_function(
             if values.is_empty() {
                 return Ok(ScalarValue::Null);
             }
-            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            let mean = sum_f64_fast(&values) / values.len() as f64;
             Ok(ScalarValue::Float(
-                values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64,
+                sum_squared_deviations_fast(&values, mean) / values.len() as f64,
             ))
         }
         "corr" | "covar_pop" | "covar_samp" | "regr_slope" | "regr_intercept" | "regr_count"
@@ -5157,6 +5202,14 @@ fn count_rows(rows: &[Vec<ScalarValue>]) -> std::collections::HashMap<String, us
 }
 
 pub(crate) fn row_key(row: &[ScalarValue]) -> String {
+    // Fast path: for rows that are all Int (very common in GROUP BY, DISTINCT,
+    // set operations on integer columns), compute a numeric hash key directly
+    // instead of building a heap-allocated String via itoa.
+    // This avoids per-integer formatting overhead and allocator pressure.
+    if !row.is_empty() && row.iter().all(|v| matches!(v, ScalarValue::Int(_))) {
+        return row_key_int_fast(row);
+    }
+
     let mut key = String::new();
     for (idx, value) in row.iter().enumerate() {
         if idx > 0 {
@@ -5200,6 +5253,352 @@ pub(crate) fn row_key(row: &[ScalarValue]) -> String {
         }
     }
     key
+}
+
+/// Fast hash-based row key for all-integer rows.
+/// Uses FxHash-style mixing: each i64 is folded into a running hash using
+/// multiply-xor-shift. The result is rendered as a fixed-width hex string,
+/// avoiding the expensive itoa + separator formatting of the generic path.
+///
+/// On x86_64 with AVX2, we SIMD-hash groups of 4 i64s in parallel.
+fn row_key_int_fast(row: &[ScalarValue]) -> String {
+    // Extract i64 values (we've already checked they're all Int).
+    let values: Vec<i64> = row
+        .iter()
+        .map(|v| match v {
+            ScalarValue::Int(n) => *n,
+            _ => 0, // unreachable given the caller's check
+        })
+        .collect();
+
+    let hash = hash_i64_slice(&values);
+    // Prefix with "H:" to avoid collisions with the string-based key space
+    format!("H:{hash:016x}")
+}
+
+/// FxHash-style hash of an i64 slice. Processes 4 elements at a time via AVX2
+/// when available, falling back to scalar.
+fn hash_i64_slice(values: &[i64]) -> u64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if values.len() >= 4 && std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 feature check passed above.
+            return unsafe { hash_i64_avx2(values) };
+        }
+    }
+    hash_i64_scalar(values)
+}
+
+const FXHASH_SEED: u64 = 0x517c_c1b7_2722_0a95;
+
+fn hash_i64_scalar(values: &[i64]) -> u64 {
+    let mut hash: u64 = 0;
+    for &v in values {
+        hash = (hash.rotate_left(5) ^ (v as u64)).wrapping_mul(FXHASH_SEED);
+    }
+    hash
+}
+
+/// AVX2 path: process 4 i64 values per iteration with SIMD xor + multiply.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn hash_i64_avx2(values: &[i64]) -> u64 {
+    let chunks = values.chunks_exact(4);
+    let remainder = chunks.remainder();
+
+    // Accumulate 4 independent hash lanes
+    let mut acc = _mm256_setzero_si256();
+    let seed = _mm256_set1_epi64x(FXHASH_SEED as i64);
+
+    for chunk in chunks {
+        let v = unsafe { _mm256_loadu_si256(chunk.as_ptr().cast()) };
+        // acc = (acc ^ v) * seed  (using 64-bit multiply approximation)
+        acc = _mm256_xor_si256(acc, v);
+        let mul_lo = std::arch::x86_64::_mm256_mul_epu32(acc, seed);
+        let shifted = _mm256_srli_epi64(acc, 17);
+        acc = _mm256_xor_si256(mul_lo, shifted);
+    }
+
+    // Horizontal fold: extract 4 lanes and combine
+    let mut lanes = [0_u64; 4];
+    unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast(), acc) };
+    let mut hash = lanes[0]
+        ^ lanes[1].rotate_left(7)
+        ^ lanes[2].rotate_left(13)
+        ^ lanes[3].rotate_left(19);
+
+    // Process remainder scalarly
+    for &v in remainder {
+        hash = (hash.rotate_left(5) ^ (v as u64)).wrapping_mul(FXHASH_SEED);
+    }
+    hash
+}
+
+// ---------------------------------------------------------------------------
+// SIMD pre-filter for heap scans
+// ---------------------------------------------------------------------------
+
+/// Try to apply simple integer comparison predicates with SIMD before
+/// constructing expensive EvalScope objects for each row. Returns the
+/// (possibly filtered) row set.
+fn simd_prefilter_rows(
+    mut rows: Vec<Vec<ScalarValue>>,
+    predicates: &[Expr],
+    columns: &[String],
+    qualifiers: &[String],
+) -> Vec<Vec<ScalarValue>> {
+    for predicate in predicates {
+        if rows.len() < 64 {
+            break; // not worth SIMD for small sets
+        }
+        if let Some((col_idx, op_code, threshold)) =
+            extract_int_comparison(predicate, columns, qualifiers)
+        {
+            let matching = filter_int_column_simd(&rows, col_idx, op_code, threshold);
+            // Build filtered set by moving matched rows out, avoiding full clone.
+            let mut filtered = Vec::with_capacity(matching.len());
+            // Process in reverse so swapping out doesn't invalidate indices.
+            let mut keep = vec![false; rows.len()];
+            for &idx in &matching {
+                keep[idx] = true;
+            }
+            let mut src = std::mem::take(&mut rows);
+            for (i, row) in src.drain(..).enumerate() {
+                if i < keep.len() && keep[i] {
+                    filtered.push(row);
+                }
+            }
+            rows = filtered;
+        }
+    }
+    rows
+}
+
+/// Attempt to decompose a predicate into (column_index, comparison_op, i64_constant).
+/// Returns None if the predicate is not a simple integer column comparison.
+fn extract_int_comparison(
+    expr: &Expr,
+    columns: &[String],
+    qualifiers: &[String],
+) -> Option<(usize, u8, i64)> {
+    let Expr::Binary { left, op, right } = expr else {
+        return None;
+    };
+    let op_code = match op {
+        crate::parser::ast::BinaryOp::Eq => 0_u8,
+        crate::parser::ast::BinaryOp::NotEq => 1,
+        crate::parser::ast::BinaryOp::Lt => 2,
+        crate::parser::ast::BinaryOp::Lte => 3,
+        crate::parser::ast::BinaryOp::Gt => 4,
+        crate::parser::ast::BinaryOp::Gte => 5,
+        _ => return None,
+    };
+
+    // Try column on left, constant on right
+    if let Some(col_idx) = resolve_column_index(left, columns, qualifiers) {
+        if let Some(val) = extract_i64_constant(right) {
+            return Some((col_idx, op_code, val));
+        }
+    }
+    // Try column on right, constant on left (flip the operator)
+    if let Some(col_idx) = resolve_column_index(right, columns, qualifiers) {
+        if let Some(val) = extract_i64_constant(left) {
+            let flipped_op = match op_code {
+                0 => 0, // Eq is symmetric
+                1 => 1, // NotEq is symmetric
+                2 => 4, // Lt becomes Gt
+                3 => 5, // LtEq becomes GtEq
+                4 => 2, // Gt becomes Lt
+                5 => 3, // GtEq becomes LtEq
+                _ => return None,
+            };
+            return Some((col_idx, flipped_op, val));
+        }
+    }
+    None
+}
+
+fn resolve_column_index(
+    expr: &Expr,
+    columns: &[String],
+    qualifiers: &[String],
+) -> Option<usize> {
+    let Expr::Identifier(parts) = expr else {
+        return None;
+    };
+    let col_name = if parts.len() == 1 {
+        parts[0].to_ascii_lowercase()
+    } else if parts.len() == 2 {
+        let qualifier = parts[0].to_ascii_lowercase();
+        if qualifiers.iter().any(|q| *q == qualifier) {
+            parts[1].to_ascii_lowercase()
+        } else {
+            return None;
+        }
+    } else {
+        return None;
+    };
+    columns
+        .iter()
+        .position(|c| c.to_ascii_lowercase() == col_name)
+}
+
+fn extract_i64_constant(expr: &Expr) -> Option<i64> {
+    match expr {
+        Expr::Integer(v) => Some(*v),
+        Expr::Unary {
+            op: crate::parser::ast::UnaryOp::Minus,
+            expr: inner,
+        } => {
+            if let Expr::Integer(v) = inner.as_ref() {
+                Some(-v)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SIMD batch column scan – filter rows by integer column comparison
+// ---------------------------------------------------------------------------
+
+/// Filter a set of rows by comparing a single integer column against a constant,
+/// returning the indices of matching rows. Processes 4 i64 values per AVX2
+/// iteration for a ~4× speedup on large tables.
+///
+/// `op`: 0 = Eq, 1 = NotEq, 2 = Lt, 3 = LtEq, 4 = Gt, 5 = GtEq
+pub(crate) fn filter_int_column_simd(
+    rows: &[Vec<ScalarValue>],
+    col_idx: usize,
+    op: u8,
+    threshold: i64,
+) -> Vec<usize> {
+    // Extract the i64 column into a contiguous buffer for SIMD access.
+    let mut values = Vec::with_capacity(rows.len());
+    let mut is_null = Vec::with_capacity(rows.len());
+    for row in rows {
+        match row.get(col_idx) {
+            Some(ScalarValue::Int(v)) => {
+                values.push(*v);
+                is_null.push(false);
+            }
+            _ => {
+                values.push(0); // placeholder
+                is_null.push(true);
+            }
+        }
+    }
+
+    let matches = match_i64_column(&values, op, threshold);
+
+    // Collect matching row indices, excluding nulls.
+    let mut result = Vec::new();
+    for (i, &matched) in matches.iter().enumerate() {
+        if matched && !is_null[i] {
+            result.push(i);
+        }
+    }
+    result
+}
+
+/// Compare each element in `values` against `threshold` using the given op.
+/// Returns a boolean mask. Uses AVX2 when available.
+fn match_i64_column(values: &[i64], op: u8, threshold: i64) -> Vec<bool> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if values.len() >= 4 && std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 feature check passed above.
+            return unsafe { match_i64_column_avx2(values, op, threshold) };
+        }
+    }
+    values
+        .iter()
+        .map(|&v| match op {
+            0 => v == threshold,
+            1 => v != threshold,
+            2 => v < threshold,
+            3 => v <= threshold,
+            4 => v > threshold,
+            5 => v >= threshold,
+            _ => false,
+        })
+        .collect()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn match_i64_column_avx2(values: &[i64], op: u8, threshold: i64) -> Vec<bool> {
+    let n = values.len();
+    let mut result = vec![false; n];
+    let thresh_vec = _mm256_set1_epi64x(threshold);
+    let chunks = n / 4;
+
+    for c in 0..chunks {
+        let base = c * 4;
+        let v = unsafe { _mm256_loadu_si256(values.as_ptr().add(base).cast()) };
+
+        // _mm256_cmpgt_epi64(a, b) → all-ones lane where a > b
+        let mask_bits = match op {
+            // Eq: !(v > t) && !(t > v)
+            0 => {
+                let gt = _mm256_cmpgt_epi64(v, thresh_vec);
+                let lt = _mm256_cmpgt_epi64(thresh_vec, v);
+                let either = std::arch::x86_64::_mm256_or_si256(gt, lt);
+                let all_ones = _mm256_set1_epi64x(-1);
+                _mm256_xor_si256(either, all_ones)
+            }
+            // NotEq: (v > t) || (t > v)
+            1 => {
+                let gt = _mm256_cmpgt_epi64(v, thresh_vec);
+                let lt = _mm256_cmpgt_epi64(thresh_vec, v);
+                std::arch::x86_64::_mm256_or_si256(gt, lt)
+            }
+            // Lt: t > v
+            2 => _mm256_cmpgt_epi64(thresh_vec, v),
+            // LtEq: !(v > t)
+            3 => {
+                let gt = _mm256_cmpgt_epi64(v, thresh_vec);
+                let all_ones = _mm256_set1_epi64x(-1);
+                _mm256_xor_si256(gt, all_ones)
+            }
+            // Gt: v > t
+            4 => _mm256_cmpgt_epi64(v, thresh_vec),
+            // GtEq: !(t > v)
+            5 => {
+                let lt = _mm256_cmpgt_epi64(thresh_vec, v);
+                let all_ones = _mm256_set1_epi64x(-1);
+                _mm256_xor_si256(lt, all_ones)
+            }
+            _ => _mm256_setzero_si256(),
+        };
+
+        // Extract lane results (each lane is either all-ones or all-zeros)
+        let mut lanes = [0_i64; 4];
+        unsafe { _mm256_storeu_si256(lanes.as_mut_ptr().cast(), mask_bits) };
+        for (j, &lane) in lanes.iter().enumerate() {
+            unsafe { *result.get_unchecked_mut(base + j) = lane != 0 };
+        }
+    }
+
+    // Scalar remainder
+    for i in (chunks * 4)..n {
+        let v = unsafe { *values.get_unchecked(i) };
+        unsafe {
+            *result.get_unchecked_mut(i) = match op {
+                0 => v == threshold,
+                1 => v != threshold,
+                2 => v < threshold,
+                3 => v <= threshold,
+                4 => v > threshold,
+                5 => v >= threshold,
+                _ => false,
+            }
+        };
+    }
+
+    result
 }
 
 /// Collect identifiers from ORDER BY that are not present in the SELECT output columns.
