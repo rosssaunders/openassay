@@ -1514,13 +1514,23 @@ fn eval_json_record_table_function(
 
     let mut base = JsonMap::new();
     if populate && !matches!(args[0], ScalarValue::Null) {
-        let base_value = parse_json_document_arg(&args[0], fn_name, 1)?;
-        let JsonValue::Object(base_obj) = base_value else {
-            return Err(EngineError {
-                message: format!("{fn_name}() base argument must be a JSON object"),
-            });
-        };
-        base = base_obj;
+        match parse_json_document_arg(&args[0], fn_name, 1) {
+            Ok(JsonValue::Object(base_obj)) => {
+                base = base_obj;
+            }
+            Ok(_) => {
+                return Err(EngineError {
+                    message: format!("{fn_name}() base argument must be a JSON object"),
+                });
+            }
+            Err(err) => {
+                if matches!(args[0], ScalarValue::Text(_)) {
+                    return Err(err);
+                }
+                // PostgreSQL accepts composite record values here; we currently treat those
+                // as an empty base object when the argument is not JSON text.
+            }
+        }
     }
     let mut output_columns = function.column_aliases.clone();
     if output_columns.is_empty() && !populate {

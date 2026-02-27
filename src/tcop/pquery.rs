@@ -1696,6 +1696,12 @@ fn table_function_output_columns(function: &TableFunctionRef) -> Vec<String> {
             "catcode".to_string(),
             "catdesc".to_string(),
         ],
+        "pg_input_error_info" => vec![
+            "message".to_string(),
+            "detail".to_string(),
+            "hint".to_string(),
+            "sql_error_code".to_string(),
+        ],
         _ => vec!["value".to_string()],
     }
 }
@@ -1729,6 +1735,7 @@ fn table_function_output_type_oids(function: &TableFunctionRef, count: usize) ->
         | "jsonb_populate_record"
         | "json_populate_recordset"
         | "jsonb_populate_recordset" => Vec::new(),
+        "pg_input_error_info" => vec![PG_TEXT_OID, PG_TEXT_OID, PG_TEXT_OID, PG_TEXT_OID],
         _ => vec![PG_TEXT_OID],
     };
     if oids.len() < count {

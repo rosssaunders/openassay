@@ -5,7 +5,9 @@ use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use crate::executor::exec_main::json_value_to_scalar;
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::EngineError;
-use crate::utils::adt::misc::{compare_values_for_predicate, parse_bool_scalar};
+use crate::utils::adt::misc::{
+    compare_values_for_predicate, parse_bool_scalar, parse_pg_array_literal,
+};
 
 pub(crate) fn scalar_to_json_value(value: &ScalarValue) -> Result<JsonValue, EngineError> {
     match value {
@@ -237,12 +239,12 @@ pub(crate) fn eval_json_object(
 
     let pairs = match args.len() {
         1 => {
-            let source = parse_json_document_arg(&args[0], fn_name, 1)?;
+            let source = parse_json_object_source_arg(&args[0], fn_name, 1)?;
             parse_json_object_pairs_from_array(&source, fn_name)?
         }
         2 => {
-            let keys = parse_json_document_arg(&args[0], fn_name, 1)?;
-            let values = parse_json_document_arg(&args[1], fn_name, 2)?;
+            let keys = parse_json_object_source_arg(&args[0], fn_name, 1)?;
+            let values = parse_json_object_source_arg(&args[1], fn_name, 2)?;
             let JsonValue::Array(key_items) = keys else {
                 return Err(EngineError {
                     message: format!("{fn_name}() argument 1 must be a JSON array"),
@@ -281,6 +283,27 @@ pub(crate) fn eval_json_object(
         object.insert(key, JsonValue::String(value));
     }
     Ok(ScalarValue::Text(JsonValue::Object(object).to_string()))
+}
+
+fn parse_json_object_source_arg(
+    value: &ScalarValue,
+    fn_name: &str,
+    arg_index: usize,
+) -> Result<JsonValue, EngineError> {
+    let json_err = match parse_json_document_arg(value, fn_name, arg_index) {
+        Ok(value) => return Ok(value),
+        Err(err) => err,
+    };
+
+    let ScalarValue::Text(text) = value else {
+        return Err(json_err);
+    };
+
+    let Ok(array_value) = parse_pg_array_literal(text) else {
+        return Err(json_err);
+    };
+
+    scalar_to_json_value(&array_value)
 }
 
 pub(crate) fn parse_json_document_arg(

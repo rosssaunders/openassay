@@ -292,11 +292,41 @@ pub(crate) fn eval_make_interval(args: &[ScalarValue]) -> Result<ScalarValue, En
     let hours = parse_i64_scalar(&args[4], "make_interval() expects hours")?;
     let mins = parse_i64_scalar(&args[5], "make_interval() expects mins")?;
     let secs = parse_f64_scalar(&args[6], "make_interval() expects secs")?;
+    let whole_seconds = secs.trunc();
+    if !whole_seconds.is_finite()
+        || whole_seconds < i64::MIN as f64
+        || whole_seconds > i64::MAX as f64
+    {
+        return Err(EngineError {
+            message: "make_interval() seconds out of range".to_string(),
+        });
+    }
+    let whole_seconds = whole_seconds as i64;
+
+    let total_months = years
+        .checked_mul(12)
+        .and_then(|value| value.checked_add(months))
+        .ok_or_else(|| EngineError {
+            message: "make_interval() months out of range".to_string(),
+        })?;
+    let total_days = weeks
+        .checked_mul(7)
+        .and_then(|value| value.checked_add(days))
+        .ok_or_else(|| EngineError {
+            message: "make_interval() days out of range".to_string(),
+        })?;
+    let total_seconds = hours
+        .checked_mul(3_600)
+        .and_then(|value| mins.checked_mul(60).and_then(|mins_secs| value.checked_add(mins_secs)))
+        .and_then(|value| value.checked_add(whole_seconds))
+        .ok_or_else(|| EngineError {
+            message: "make_interval() seconds out of range".to_string(),
+        })?;
 
     let interval = IntervalValue {
-        months: years * 12 + months,
-        days: weeks * 7 + days,
-        seconds: hours * 3_600 + mins * 60 + secs.trunc() as i64,
+        months: total_months,
+        days: total_days,
+        seconds: total_seconds,
     };
     Ok(ScalarValue::Text(format_interval(interval)))
 }
