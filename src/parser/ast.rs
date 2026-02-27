@@ -390,7 +390,7 @@ pub enum DropBehavior {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DropTableStatement {
-    pub name: Vec<String>,
+    pub names: Vec<Vec<String>>,
     pub if_exists: bool,
     pub behavior: DropBehavior,
 }
