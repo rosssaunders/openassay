@@ -34,6 +34,7 @@ pub enum Statement {
     CreateFunction(CreateFunctionStatement),
     DropFunction(DropFunctionStatement),
     CreateTrigger(CreateTriggerStatement),
+    DropTrigger(DropTriggerStatement),
     CreateSubscription(CreateSubscriptionStatement),
     CreateRole(CreateRoleStatement),
     AlterRole(AlterRoleStatement),
@@ -1052,6 +1053,14 @@ pub struct CreateFunctionStatement {
 pub struct DropFunctionStatement {
     pub name: Vec<String>,
     pub if_exists: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropTriggerStatement {
+    pub name: String,
+    pub table_name: Vec<String>,
+    pub if_exists: bool,
+    pub behavior: DropBehavior,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

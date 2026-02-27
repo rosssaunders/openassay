@@ -87,6 +87,7 @@ pub async fn execute_utility_statement(
         Statement::CreateFunction(create) => function::execute_create_function(create).await,
         Statement::DropFunction(drop_fn) => function::execute_drop_function(drop_fn).await,
         Statement::CreateTrigger(create) => trigger::execute_create_trigger(create).await,
+        Statement::DropTrigger(drop_trigger) => trigger::execute_drop_trigger(drop_trigger).await,
         #[cfg(not(target_arch = "wasm32"))]
         Statement::CreateSubscription(create) => {
             subscription::execute_create_subscription(create).await
@@ -144,6 +145,7 @@ pub fn is_utility_statement(statement: &Statement) -> bool {
             | Statement::CreateFunction(_)
             | Statement::DropFunction(_)
             | Statement::CreateTrigger(_)
+            | Statement::DropTrigger(_)
             | Statement::CreateSubscription(_)
             | Statement::DropSubscription(_)
             | Statement::CreateType(_)

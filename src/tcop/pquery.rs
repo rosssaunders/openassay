@@ -1682,6 +1682,10 @@ fn table_function_output_columns(function: &TableFunctionRef) -> Vec<String> {
             vec!["key".to_string(), "value".to_string()]
         }
         "json_object_keys" | "jsonb_object_keys" => vec!["key".to_string()],
+        "json_populate_record"
+        | "jsonb_populate_record"
+        | "json_populate_recordset"
+        | "jsonb_populate_recordset" => Vec::new(),
         "generate_series" => vec!["generate_series".to_string()],
         "unnest" => vec!["unnest".to_string()],
         "regexp_matches" => vec!["regexp_matches".to_string()],
@@ -1721,6 +1725,10 @@ fn table_function_output_type_oids(function: &TableFunctionRef, count: usize) ->
             vec![PG_TEXT_OID, PG_TEXT_OID]
         }
         "json_object_keys" | "jsonb_object_keys" => vec![PG_TEXT_OID],
+        "json_populate_record"
+        | "jsonb_populate_record"
+        | "json_populate_recordset"
+        | "jsonb_populate_recordset" => Vec::new(),
         _ => vec![PG_TEXT_OID],
     };
     if oids.len() < count {

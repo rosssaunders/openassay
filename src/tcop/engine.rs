@@ -237,6 +237,7 @@ pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError>
         Statement::CreateTrigger(_) => {
             (Vec::new(), Vec::new(), false, "CREATE TRIGGER".to_string())
         }
+        Statement::DropTrigger(_) => (Vec::new(), Vec::new(), false, "DROP TRIGGER".to_string()),
         Statement::CreateSubscription(_) => (
             Vec::new(),
             Vec::new(),
