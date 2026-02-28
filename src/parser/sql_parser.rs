@@ -564,6 +564,9 @@ impl Parser {
             let name = self.parse_qualified_name()?;
             self.expect_keyword(Keyword::As, "expected AS after CREATE DOMAIN name")?;
             let base_type = self.parse_type_name()?;
+            if self.consume_ident("constraint") {
+                let _ = self.parse_identifier()?;
+            }
             let check_constraint = if self.consume_keyword(Keyword::Check) {
                 self.expect_token(
                     |k| matches!(k, TokenKind::LParen),
@@ -1509,9 +1512,11 @@ impl Parser {
                     self.advance();
                 }
             }
+            let behavior = self.parse_drop_behavior()?;
             return Ok(Statement::DropFunction(DropFunctionStatement {
                 name,
                 if_exists,
+                behavior,
             }));
         }
         if self.consume_ident("trigger") {
@@ -2734,10 +2739,15 @@ impl Parser {
         // Handle array type suffix: int4[], text[][], etc.
         let mut result_ty = ty;
         while self.consume_if(|k| matches!(k, TokenKind::LBracket)) {
-            self.expect_token(
-                |k| matches!(k, TokenKind::RBracket),
-                "expected ']' after '[' in array type",
-            )?;
+            if !self.consume_if(|k| matches!(k, TokenKind::RBracket)) {
+                if matches!(self.current_kind(), TokenKind::Integer(_)) {
+                    self.advance();
+                }
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RBracket),
+                    "expected ']' after '[' in array type",
+                )?;
+            }
             result_ty = TypeName::Array(Box::new(result_ty));
         }
 
@@ -3944,19 +3954,9 @@ impl Parser {
     fn parse_prefix_expr(&mut self) -> Result<Expr, ParseError> {
         if self.consume_keyword(Keyword::Array) {
             if self.consume_if(|k| matches!(k, TokenKind::LBracket)) {
-                if self.consume_if(|k| matches!(k, TokenKind::RBracket)) {
-                    return Ok(Expr::ArrayConstructor(Vec::new()));
-                }
-                let mut items = Vec::new();
-                items.push(self.parse_expr()?);
-                while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
-                    items.push(self.parse_expr()?);
-                }
-                self.expect_token(
-                    |k| matches!(k, TokenKind::RBracket),
-                    "expected ']' to close ARRAY constructor",
-                )?;
-                return Ok(Expr::ArrayConstructor(items));
+                return Ok(Expr::ArrayConstructor(
+                    self.parse_array_constructor_elements()?,
+                ));
             }
             if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
                 if !self.current_starts_query() {
@@ -4249,6 +4249,35 @@ impl Parser {
             }
             _ => Err(self.error_at_current("expected expression")),
         }
+    }
+
+    fn parse_array_constructor_elements(&mut self) -> Result<Vec<Expr>, ParseError> {
+        if self.consume_if(|k| matches!(k, TokenKind::RBracket)) {
+            return Ok(Vec::new());
+        }
+
+        let mut items = Vec::new();
+        loop {
+            items.push(self.parse_array_constructor_element()?);
+            if self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                continue;
+            }
+            self.expect_token(
+                |k| matches!(k, TokenKind::RBracket),
+                "expected ']' to close ARRAY constructor",
+            )?;
+            break;
+        }
+        Ok(items)
+    }
+
+    fn parse_array_constructor_element(&mut self) -> Result<Expr, ParseError> {
+        if self.consume_if(|k| matches!(k, TokenKind::LBracket)) {
+            return Ok(Expr::ArrayConstructor(
+                self.parse_array_constructor_elements()?,
+            ));
+        }
+        self.parse_expr()
     }
 
     fn parse_identifier_expr(&mut self) -> Result<Expr, ParseError> {
@@ -4999,10 +5028,15 @@ impl Parser {
         // Handle array types like int[], text[]
         let mut final_type = normalized;
         while self.consume_if(|k| matches!(k, TokenKind::LBracket)) {
-            self.expect_token(
-                |k| matches!(k, TokenKind::RBracket),
-                "expected ']' after '[' in array type",
-            )?;
+            if !self.consume_if(|k| matches!(k, TokenKind::RBracket)) {
+                if matches!(self.current_kind(), TokenKind::Integer(_)) {
+                    self.advance();
+                }
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RBracket),
+                    "expected ']' after '[' in array type",
+                )?;
+            }
             final_type = format!("{final_type}[]");
         }
 
@@ -6545,7 +6579,23 @@ impl Parser {
     }
 
     fn parse_do_statement(&mut self) -> Result<Statement, ParseError> {
-        // DO 'body' [LANGUAGE lang]
+        // Accept both:
+        //   DO 'body' [LANGUAGE lang]
+        //   DO LANGUAGE lang 'body'
+        let mut language = "plpgsql".to_string();
+        if self.consume_keyword(Keyword::Language) || self.consume_ident("language") {
+            language = self.parse_identifier()?;
+            let body = match &self.tokens[self.idx].kind {
+                TokenKind::String(s) => {
+                    let b = s.clone();
+                    self.advance();
+                    b
+                }
+                _ => return Err(self.error_at_current("expected string body after DO")),
+            };
+            return Ok(Statement::Do(DoStatement { body, language }));
+        }
+
         let body = match &self.tokens[self.idx].kind {
             TokenKind::String(s) => {
                 let b = s.clone();
@@ -6554,27 +6604,10 @@ impl Parser {
             }
             _ => return Err(self.error_at_current("expected string body after DO")),
         };
-        // Optional LANGUAGE clause
-        let language = if !matches!(self.current_kind(), TokenKind::Eof)
-            && !matches!(self.current_kind(), TokenKind::Semicolon)
-        {
-            if let Some(token) = self.tokens.get(self.idx) {
-                if let TokenKind::Identifier(id) = &token.kind {
-                    if id.eq_ignore_ascii_case("language") {
-                        self.advance();
-                        self.parse_identifier()?
-                    } else {
-                        "plpgsql".to_string()
-                    }
-                } else {
-                    "plpgsql".to_string()
-                }
-            } else {
-                "plpgsql".to_string()
-            }
-        } else {
-            "plpgsql".to_string()
-        };
+
+        if self.consume_keyword(Keyword::Language) || self.consume_ident("language") {
+            language = self.parse_identifier()?;
+        }
         Ok(Statement::Do(DoStatement { body, language }))
     }
 
@@ -7820,6 +7853,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_drop_function_with_cascade() {
+        let stmt = parse_statement("DROP FUNCTION IF EXISTS app.f1(integer) CASCADE")
+            .expect("parse should succeed");
+        let Statement::DropFunction(drop_function) = stmt else {
+            panic!("expected drop function statement");
+        };
+        assert_eq!(
+            drop_function.name,
+            vec!["app".to_string(), "f1".to_string()]
+        );
+        assert!(drop_function.if_exists);
+        assert_eq!(drop_function.behavior, DropBehavior::Cascade);
+    }
+
+    #[test]
     fn parses_create_and_drop_schema_statements() {
         let create =
             parse_statement("CREATE SCHEMA IF NOT EXISTS app").expect("parse should succeed");
@@ -8570,6 +8618,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_do_block_language_before_body() {
+        let stmt = parse_statement("DO LANGUAGE plpgsql $$BEGIN NULL; END$$").unwrap();
+        match stmt {
+            Statement::Do(d) => {
+                assert_eq!(d.language, "plpgsql");
+                assert_eq!(d.body, "BEGIN NULL; END");
+            }
+            _ => panic!("expected DO"),
+        }
+    }
+
+    #[test]
     fn parses_discard_all() {
         let stmt = parse_statement("DISCARD ALL").unwrap();
         assert!(matches!(stmt, Statement::Discard(_)));
@@ -8771,6 +8831,19 @@ mod tests {
             panic!("expected create domain statement");
         };
         assert_eq!(create.name, vec!["posint".to_string()]);
+        assert!(create.check_constraint.is_some());
+    }
+
+    #[test]
+    fn parses_create_domain_with_named_check_constraint() {
+        let stmt = parse_statement(
+            "CREATE DOMAIN orderedarray AS INT[2] CONSTRAINT sorted CHECK (VALUE[1] < VALUE[2])",
+        )
+        .expect("parse should succeed");
+        let Statement::CreateDomain(create) = stmt else {
+            panic!("expected create domain statement");
+        };
+        assert_eq!(create.name, vec!["orderedarray".to_string()]);
         assert!(create.check_constraint.is_some());
     }
 
@@ -9040,6 +9113,21 @@ mod tests {
             &select.targets[0].expr,
             Expr::Cast { type_name, .. } if type_name == "int4[][]"
         ));
+    }
+
+    #[test]
+    fn parses_nested_array_constructor_literal() {
+        let stmt = parse_statement("SELECT ARRAY[[1,2],[3,4]]").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        let Expr::ArrayConstructor(items) = &select.targets[0].expr else {
+            panic!("expected array constructor");
+        };
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], Expr::ArrayConstructor(_)));
+        assert!(matches!(items[1], Expr::ArrayConstructor(_)));
     }
 
     #[test]

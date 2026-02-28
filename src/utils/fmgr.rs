@@ -1669,6 +1669,9 @@ pub(crate) async fn eval_scalar_function(
                 }),
             }
         }
+        "int4range" | "float8range" | "textrange" if args.len() == 2 || args.len() == 3 => {
+            eval_range_constructor(args)
+        }
         "array_append" if args.len() == 2 => {
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
@@ -2136,6 +2139,43 @@ pub(crate) async fn eval_scalar_function(
             message: format!("unsupported function call {fn_name}"),
         }),
     }
+}
+
+fn eval_range_constructor(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
+    if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+        return Ok(ScalarValue::Null);
+    }
+
+    let bounds = if args.len() == 3 {
+        args[2].render()
+    } else {
+        "[)".to_string()
+    };
+    let mut chars = bounds.chars();
+    let Some(lower_bound) = chars.next() else {
+        return Err(EngineError {
+            message: "invalid range bound flags".to_string(),
+        });
+    };
+    let Some(upper_bound) = chars.next() else {
+        return Err(EngineError {
+            message: "invalid range bound flags".to_string(),
+        });
+    };
+    if chars.next().is_some()
+        || !matches!(lower_bound, '[' | '(')
+        || !matches!(upper_bound, ']' | ')')
+    {
+        return Err(EngineError {
+            message: "invalid range bound flags".to_string(),
+        });
+    }
+
+    let lower = args[0].render();
+    let upper = args[1].render();
+    Ok(ScalarValue::Text(format!(
+        "{lower_bound}{lower},{upper}{upper_bound}"
+    )))
 }
 
 /// PostgreSQL-compatible sind() — exact results for multiples of 30 degrees.

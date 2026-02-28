@@ -1053,6 +1053,7 @@ pub struct CreateFunctionStatement {
 pub struct DropFunctionStatement {
     pub name: Vec<String>,
     pub if_exists: bool,
+    pub behavior: DropBehavior,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

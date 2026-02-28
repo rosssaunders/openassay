@@ -647,6 +647,9 @@ impl<'a> BodyParser<'a> {
         if self.is_keyword(PlPgSqlKeyword::Begin) {
             return self.parse_begin_block_statement();
         }
+        if self.is_keyword(PlPgSqlKeyword::Declare) {
+            return self.parse_declared_block_statement();
+        }
         if self.is_keyword(PlPgSqlKeyword::If) {
             return self.parse_if_statement();
         }
@@ -658,6 +661,9 @@ impl<'a> BodyParser<'a> {
         }
         if self.is_keyword(PlPgSqlKeyword::Raise) {
             return self.parse_raise_statement();
+        }
+        if self.is_keyword(PlPgSqlKeyword::Assert) {
+            return self.parse_assert_statement();
         }
         if self.is_keyword(PlPgSqlKeyword::Execute) {
             return self.parse_execute_statement();
@@ -713,6 +719,15 @@ impl<'a> BodyParser<'a> {
         let begin_token = self.current_token().clone();
         self.expect_keyword(PlPgSqlKeyword::Begin, "expected BEGIN")?;
         let block = self.parse_block_after_begin(&begin_token, Vec::new(), true)?;
+        Ok(PlPgSqlStmt::Block(block))
+    }
+
+    fn parse_declared_block_statement(&mut self) -> Result<PlPgSqlStmt, PlPgSqlCompileError> {
+        self.expect_keyword(PlPgSqlKeyword::Declare, "expected DECLARE")?;
+        let initvarnos = self.parse_declare_section()?;
+        let begin_token = self.current_token().clone();
+        self.expect_keyword(PlPgSqlKeyword::Begin, "expected BEGIN after DECLARE section")?;
+        let block = self.parse_block_after_begin(&begin_token, initvarnos, true)?;
         Ok(PlPgSqlStmt::Block(block))
     }
 
@@ -1020,13 +1035,28 @@ impl<'a> BodyParser<'a> {
             elog_level = 1;
         }
 
-        let mut parts = Vec::new();
-        if !matches!(self.current_kind(), PlPgSqlTokenKind::Semicolon) {
-            parts = self.extract_comma_expressions_until_semicolon()?;
+        let followed_by_using_or_semicolon =
+            matches!(self.peek_kind(1), Some(PlPgSqlTokenKind::Semicolon))
+                || matches!(
+                    self.peek_kind(1),
+                    Some(PlPgSqlTokenKind::Identifier(next)) if next.eq_ignore_ascii_case("using")
+                );
+        if condname.is_none()
+            && let PlPgSqlTokenKind::Identifier(word) = self.current_kind().clone()
+            && !word.eq_ignore_ascii_case("using")
+            && followed_by_using_or_semicolon
+        {
+            condname = Some(word);
+            self.advance();
         }
-        self.expect_semicolon()?;
 
-        let message = parts.first().cloned();
+        let mut parts = Vec::new();
+        if !matches!(self.current_kind(), PlPgSqlTokenKind::Semicolon)
+            && !self.peek_identifier_word("using")
+        {
+            parts = self.extract_comma_expressions_until_semicolon_or_using()?;
+        }
+        let mut message = parts.first().cloned();
         let params = parts
             .iter()
             .skip(1)
@@ -1035,7 +1065,48 @@ impl<'a> BodyParser<'a> {
             .collect::<Vec<_>>();
 
         let mut options = Vec::new();
-        if let Some(msg) = &message {
+        if self.consume_identifier_word("using") {
+            while !matches!(
+                self.current_kind(),
+                PlPgSqlTokenKind::Semicolon | PlPgSqlTokenKind::Eof
+            ) {
+                let option_name = self.expect_identifier("expected RAISE option name after USING")?;
+                if !matches!(
+                    self.current_kind(),
+                    PlPgSqlTokenKind::Equals | PlPgSqlTokenKind::Assign
+                ) {
+                    return Err(self.error_at_current("expected = in RAISE USING option"));
+                }
+                self.advance();
+                let expr = self.extract_expression_until_comma_or_semicolon()?;
+                let opt_type = match option_name.to_ascii_lowercase().as_str() {
+                    "message" => PlPgSqlRaiseOptionType::Message,
+                    "detail" => PlPgSqlRaiseOptionType::Detail,
+                    "hint" => PlPgSqlRaiseOptionType::Hint,
+                    "errcode" => PlPgSqlRaiseOptionType::Errcode,
+                    "column" => PlPgSqlRaiseOptionType::Column,
+                    "constraint" => PlPgSqlRaiseOptionType::Constraint,
+                    "datatype" => PlPgSqlRaiseOptionType::Datatype,
+                    "table" => PlPgSqlRaiseOptionType::Table,
+                    "schema" => PlPgSqlRaiseOptionType::Schema,
+                    _ => PlPgSqlRaiseOptionType::Detail,
+                };
+                if matches!(opt_type, PlPgSqlRaiseOptionType::Message) {
+                    message = Some(expr.clone());
+                }
+                options.push(PlPgSqlRaiseOption {
+                    opt_type,
+                    expr: self.make_expr(expr),
+                });
+                if matches!(self.current_kind(), PlPgSqlTokenKind::Comma) {
+                    self.advance();
+                }
+            }
+        }
+
+        self.expect_semicolon()?;
+
+        if options.is_empty() && let Some(msg) = &message {
             options.push(PlPgSqlRaiseOption {
                 opt_type: PlPgSqlRaiseOptionType::Message,
                 expr: self.make_expr(msg.clone()),
@@ -1051,6 +1122,30 @@ impl<'a> BodyParser<'a> {
             message,
             params,
             options,
+        }))
+    }
+
+    fn parse_assert_statement(&mut self) -> Result<PlPgSqlStmt, PlPgSqlCompileError> {
+        let token = self.current_token().clone();
+        self.expect_keyword(PlPgSqlKeyword::Assert, "expected ASSERT")?;
+        let cond = self.extract_expression_until_comma_or_semicolon()?;
+
+        let message = if matches!(self.current_kind(), PlPgSqlTokenKind::Comma) {
+            self.advance();
+            let (expr, end_idx) = extract_sql_expression(&self.tokens, self.source, self.idx)?;
+            self.idx = end_idx;
+            Some(self.make_expr(expr))
+        } else {
+            None
+        };
+        self.expect_semicolon()?;
+
+        Ok(PlPgSqlStmt::Assert(crate::plpgsql::types::PlPgSqlStmtAssert {
+            cmd_type: PlPgSqlStmtType::Assert,
+            lineno: i32::try_from(token.span.line).unwrap_or(i32::MAX),
+            stmtid: self.alloc_stmtid(),
+            cond: self.make_expr(cond),
+            message,
         }))
     }
 
@@ -1172,21 +1267,46 @@ impl<'a> BodyParser<'a> {
         self.expect_keyword(PlPgSqlKeyword::Open, "expected OPEN")?;
         let cursor_name = self.expect_identifier("expected cursor variable after OPEN")?;
         let curvar = self.lookup_cursor_varno(&cursor_name)?;
-        if !self.consume_keyword(PlPgSqlKeyword::For) {
-            self.expect_identifier_word("for", "expected FOR in OPEN statement")?;
-        }
-
-        let (query, dynquery) = if self.is_keyword(PlPgSqlKeyword::Execute) {
-            self.advance();
-            let (dynquery_text, end_idx) =
-                extract_sql_expression(&self.tokens, self.source, self.idx)?;
-            self.idx = end_idx;
-            (None, Some(self.make_expr(dynquery_text)))
+        let (query, dynquery) = if self.consume_keyword(PlPgSqlKeyword::For)
+            || self.consume_identifier_word("for")
+        {
+            if self.is_keyword(PlPgSqlKeyword::Execute) {
+                self.advance();
+                let (dynquery_text, end_idx) =
+                    extract_sql_expression(&self.tokens, self.source, self.idx)?;
+                self.idx = end_idx;
+                (None, Some(self.make_expr(dynquery_text)))
+            } else {
+                let (query_text, end_idx) =
+                    extract_sql_expression(&self.tokens, self.source, self.idx)?;
+                self.idx = end_idx;
+                (Some(self.make_expr(query_text)), None)
+            }
         } else {
-            let (query_text, end_idx) =
-                extract_sql_expression(&self.tokens, self.source, self.idx)?;
-            self.idx = end_idx;
-            (Some(self.make_expr(query_text)), None)
+            if matches!(self.current_kind(), PlPgSqlTokenKind::LParen) {
+                self.advance();
+                let mut depth = 1usize;
+                while depth > 0 {
+                    match self.current_kind() {
+                        PlPgSqlTokenKind::LParen => {
+                            depth += 1;
+                            self.advance();
+                        }
+                        PlPgSqlTokenKind::RParen => {
+                            depth -= 1;
+                            self.advance();
+                        }
+                        PlPgSqlTokenKind::Eof => {
+                            return Err(self.error_at_current("unterminated OPEN argument list"));
+                        }
+                        _ => self.advance(),
+                    }
+                }
+            }
+            (
+                Some(self.make_expr("SELECT NULL WHERE FALSE".to_string())),
+                None,
+            )
         };
         self.expect_semicolon()?;
 
@@ -1602,7 +1722,12 @@ impl<'a> BodyParser<'a> {
             .as_ref()
             .map(|t| t.typname.to_ascii_lowercase())
             .unwrap_or_default();
-        if type_name != "refcursor" && type_name != "cursor" {
+        let is_cursor = type_name == "refcursor"
+            || type_name == "cursor"
+            || type_name.starts_with("cursor")
+            || type_name.contains(" refcursor")
+            || type_name.contains(" cursor");
+        if !is_cursor {
             return Err(PlPgSqlCompileError {
                 message: format!("variable \"{name}\" must be of type cursor or refcursor"),
                 position: self.current_token().span.start,
@@ -1633,7 +1758,12 @@ impl<'a> BodyParser<'a> {
             .as_ref()
             .map(|t| t.typname.to_ascii_lowercase())
             .unwrap_or_default();
-        if type_name == "refcursor" || type_name == "cursor" {
+        let is_cursor = type_name == "refcursor"
+            || type_name == "cursor"
+            || type_name.starts_with("cursor")
+            || type_name.contains(" refcursor")
+            || type_name.contains(" cursor");
+        if is_cursor {
             Some(dno)
         } else {
             None
@@ -1748,7 +1878,7 @@ impl<'a> BodyParser<'a> {
         Err(self.error_at_current("unterminated expression"))
     }
 
-    fn extract_comma_expressions_until_semicolon(
+    fn extract_comma_expressions_until_semicolon_or_using(
         &mut self,
     ) -> Result<Vec<String>, PlPgSqlCompileError> {
         let mut parts = Vec::new();
@@ -1757,14 +1887,29 @@ impl<'a> BodyParser<'a> {
         let mut depth = 0usize;
 
         while idx < self.tokens.len() {
-            match self.tokens[idx].kind {
+            match &self.tokens[idx].kind {
                 PlPgSqlTokenKind::LParen => depth += 1,
                 PlPgSqlTokenKind::RParen => depth = depth.saturating_sub(1),
                 PlPgSqlTokenKind::Comma if depth == 0 => {
                     let start = self.tokens[part_start].span.start;
                     let end = self.tokens[idx].span.start;
-                    parts.push(self.source[start..end].trim().to_string());
+                    let part = self.source[start..end].trim().to_string();
+                    if !part.is_empty() {
+                        parts.push(part);
+                    }
                     part_start = idx + 1;
+                }
+                PlPgSqlTokenKind::Identifier(word) if depth == 0 => {
+                    if word.eq_ignore_ascii_case("using") {
+                        let start = self.tokens[part_start].span.start;
+                        let end = self.tokens[idx].span.start;
+                        let part = self.source[start..end].trim().to_string();
+                        if !part.is_empty() {
+                            parts.push(part);
+                        }
+                        self.idx = idx;
+                        return Ok(parts);
+                    }
                 }
                 PlPgSqlTokenKind::Semicolon if depth == 0 => {
                     let start = self.tokens[part_start].span.start;
@@ -1783,6 +1928,35 @@ impl<'a> BodyParser<'a> {
         }
 
         Err(self.error_at_current("unterminated RAISE expression list"))
+    }
+
+    fn extract_expression_until_comma_or_semicolon(
+        &mut self,
+    ) -> Result<String, PlPgSqlCompileError> {
+        let start_idx = self.idx;
+        let mut idx = self.idx;
+        let mut depth = 0usize;
+
+        while idx < self.tokens.len() {
+            match self.tokens[idx].kind {
+                PlPgSqlTokenKind::LParen => depth += 1,
+                PlPgSqlTokenKind::RParen => depth = depth.saturating_sub(1),
+                PlPgSqlTokenKind::Comma | PlPgSqlTokenKind::Semicolon if depth == 0 => {
+                    if idx == start_idx {
+                        return Err(self.error_at_current("expected expression"));
+                    }
+                    let start = self.tokens[start_idx].span.start;
+                    let end = self.tokens[idx].span.start;
+                    self.idx = idx;
+                    return Ok(self.source[start..end].trim().to_string());
+                }
+                PlPgSqlTokenKind::Eof => break,
+                _ => {}
+            }
+            idx += 1;
+        }
+
+        Err(self.error_at_current("unterminated expression"))
     }
 
     fn make_expr(&self, query: String) -> PlPgSqlExpr {
@@ -1928,6 +2102,13 @@ impl<'a> BodyParser<'a> {
             return true;
         }
         false
+    }
+
+    fn peek_identifier_word(&self, expected: &str) -> bool {
+        matches!(
+            self.current_kind(),
+            PlPgSqlTokenKind::Identifier(word) if word.eq_ignore_ascii_case(expected)
+        )
     }
 
     fn expect_identifier_word(

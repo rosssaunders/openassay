@@ -133,6 +133,9 @@ const KNOWN_FUNCTIONS: &[(&str, usize, usize)] = &[
     ("array_append", 2, 2),
     ("array_prepend", 2, 2),
     ("cardinality", 1, 1),
+    ("int4range", 2, 3),
+    ("float8range", 2, 3),
+    ("textrange", 2, 3),
     // JSON functions
     ("json_build_object", 0, 255),
     ("jsonb_build_object", 0, 255),
