@@ -349,7 +349,7 @@ fn parse_json_path_segments(
     Ok(Some(out))
 }
 
-fn extract_json_path_value<'a>(root: &'a JsonValue, path: &[String]) -> Option<&'a JsonValue> {
+pub(crate) fn extract_json_path_value<'a>(root: &'a JsonValue, path: &[String]) -> Option<&'a JsonValue> {
     let mut current = root;
     for segment in path {
         current = match current {

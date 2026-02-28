@@ -1532,6 +1532,190 @@ fn executes_lateral_http_get() {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn json_table_with_path() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    with_isolated_state(|| {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(err) => panic!("listener should bind: {err}"),
+        };
+        let addr = listener.local_addr().expect("listener local addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("should accept connection");
+            let mut request_buf = [0u8; 2048];
+            let _ = stream.read(&mut request_buf);
+            let body = r#"{"result":[{"name":"BTC","type":"crypto"},{"name":"ETH","type":"crypto"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+        });
+
+        let sql = format!(
+            "SELECT * FROM json_table('http://{}/api', 'result') ORDER BY name",
+            addr
+        );
+        let result = run_statement(&sql, &[]);
+        assert_eq!(result.columns, vec!["name", "type"]);
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![
+                    ScalarValue::Text("BTC".to_string()),
+                    ScalarValue::Text("crypto".to_string()),
+                ],
+                vec![
+                    ScalarValue::Text("ETH".to_string()),
+                    ScalarValue::Text("crypto".to_string()),
+                ],
+            ]
+        );
+
+        handle.join().expect("http server thread should finish");
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn json_table_top_level_array() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    with_isolated_state(|| {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(err) => panic!("listener should bind: {err}"),
+        };
+        let addr = listener.local_addr().expect("listener local addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("should accept connection");
+            let mut request_buf = [0u8; 2048];
+            let _ = stream.read(&mut request_buf);
+            let body = r#"[{"id":1,"val":"a"},{"id":2,"val":"b"}]"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+        });
+
+        let sql = format!(
+            "SELECT * FROM json_table('http://{}/api') ORDER BY id",
+            addr
+        );
+        let result = run_statement(&sql, &[]);
+        assert_eq!(result.columns, vec!["id", "val"]);
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())],
+                vec![ScalarValue::Int(2), ScalarValue::Text("b".to_string())],
+            ]
+        );
+
+        handle.join().expect("http server thread should finish");
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn json_table_specific_columns() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    with_isolated_state(|| {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(err) => panic!("listener should bind: {err}"),
+        };
+        let addr = listener.local_addr().expect("listener local addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("should accept connection");
+            let mut request_buf = [0u8; 2048];
+            let _ = stream.read(&mut request_buf);
+            let body = r#"{"data":[{"x":10,"y":20,"z":30}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+        });
+
+        let sql = format!(
+            "SELECT x, z FROM json_table('http://{}/api', 'data')",
+            addr
+        );
+        let result = run_statement(&sql, &[]);
+        assert_eq!(result.columns, vec!["x", "z"]);
+        assert_eq!(
+            result.rows,
+            vec![vec![ScalarValue::Int(10), ScalarValue::Int(30)]]
+        );
+
+        handle.join().expect("http server thread should finish");
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn json_table_primitive_array() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    with_isolated_state(|| {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(err) => panic!("listener should bind: {err}"),
+        };
+        let addr = listener.local_addr().expect("listener local addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("should accept connection");
+            let mut request_buf = [0u8; 2048];
+            let _ = stream.read(&mut request_buf);
+            let body = r#"{"items":["alpha","beta","gamma"]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+        });
+
+        let sql = format!(
+            "SELECT * FROM json_table('http://{}/api', 'items') ORDER BY value",
+            addr
+        );
+        let result = run_statement(&sql, &[]);
+        assert_eq!(result.columns, vec!["value"]);
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![ScalarValue::Text("alpha".to_string())],
+                vec![ScalarValue::Text("beta".to_string())],
+                vec![ScalarValue::Text("gamma".to_string())],
+            ]
+        );
+
+        handle.join().expect("http server thread should finish");
+    });
+}
+
 #[test]
 fn executes_array_constructors() {
     with_isolated_state(|| {

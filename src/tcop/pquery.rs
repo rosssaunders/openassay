@@ -1694,7 +1694,8 @@ fn table_function_output_columns(function: &TableFunctionRef) -> Vec<String> {
         "json_populate_record"
         | "jsonb_populate_record"
         | "json_populate_recordset"
-        | "jsonb_populate_recordset" => Vec::new(),
+        | "jsonb_populate_recordset"
+        | "json_table" => Vec::new(),
         "generate_series" => vec!["generate_series".to_string()],
         "unnest" => vec!["unnest".to_string()],
         "regexp_matches" => vec!["regexp_matches".to_string()],
