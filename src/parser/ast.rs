@@ -1085,6 +1085,7 @@ pub enum TriggerEvent {
     Insert,
     Update,
     Delete,
+    Truncate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

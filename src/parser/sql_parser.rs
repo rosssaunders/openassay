@@ -6273,9 +6273,11 @@ impl Parser {
                 events.push(TriggerEvent::Update);
             } else if self.consume_keyword(Keyword::Delete) {
                 events.push(TriggerEvent::Delete);
+            } else if self.consume_keyword(Keyword::Truncate) {
+                events.push(TriggerEvent::Truncate);
             } else {
                 return Err(self.error_at_current(
-                    "expected INSERT, UPDATE, or DELETE in CREATE TRIGGER event list",
+                    "expected INSERT, UPDATE, DELETE, or TRUNCATE in CREATE TRIGGER event list",
                 ));
             }
 
@@ -7974,6 +7976,20 @@ mod tests {
         assert!(create_cast.function_name.is_some());
         assert!(create_cast.as_assignment);
         assert!(!create_cast.as_implicit);
+    }
+
+    #[test]
+    fn parses_create_trigger_with_truncate_event() {
+        let stmt = parse_statement(
+            "CREATE TRIGGER t AFTER TRUNCATE OR UPDATE ON demo FOR EACH STATEMENT EXECUTE FUNCTION f()",
+        )
+        .expect("parse should succeed");
+        let Statement::CreateTrigger(trigger) = stmt else {
+            panic!("expected create trigger statement");
+        };
+        assert_eq!(trigger.events.len(), 2);
+        assert!(trigger.events.contains(&TriggerEvent::Truncate));
+        assert!(trigger.events.contains(&TriggerEvent::Update));
     }
 
     #[test]
