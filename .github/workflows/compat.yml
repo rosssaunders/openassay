@@ -30,17 +30,8 @@ jobs:
 
       - name: Run PG18 compatibility suite
         run: |
-          # Start pg_server in background
-          target/release/pg_server 127.0.0.1:55432 &
-          PG_PID=$!
-          sleep 3
-
-          # Run the full regression suite
+          # run_tests.py manages the server lifecycle itself
           python3 tests/regression/pg_compat/run_tests.py .
-          EXIT_CODE=$?
-
-          # Kill server
-          kill $PG_PID 2>/dev/null || true
 
           # Show results
           echo "=== RESULTS ==="
