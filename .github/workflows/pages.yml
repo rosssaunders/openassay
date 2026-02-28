@@ -36,6 +36,9 @@ jobs:
       - name: Build WASM bundle
         run: scripts/build_wasm.sh
 
+      - name: Generate Rust docs
+        run: cargo doc --no-deps
+
       - name: Prepare Pages artifact
         run: |
           mkdir -p _site
@@ -44,6 +47,7 @@ jobs:
           cp -r notebook/* _site/notebook/
           cp -r web/pkg _site/notebook/pkg
           cp web/worker.js _site/notebook/worker.js
+          cp -r target/doc _site/docs
           touch _site/.nojekyll
 
       - name: Configure Pages
