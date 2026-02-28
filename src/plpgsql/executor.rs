@@ -626,16 +626,11 @@ fn exec_stmt_forc(
         .var
         .as_ref()
         .ok_or_else(|| "FOR cursor variable is missing".to_string())?;
-    if !estate.cursor_states.contains_key(&stmt.curvar) {
-        estate.cursor_states.insert(
-            stmt.curvar,
-            CursorState {
+    estate.cursor_states.entry(stmt.curvar).or_insert_with(|| CursorState {
                 columns: Vec::new(),
                 rows: Vec::new(),
                 position: 0,
-            },
-        );
-    }
+            });
 
     let mut found = false;
     loop {

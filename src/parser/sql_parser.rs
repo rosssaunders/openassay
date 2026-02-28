@@ -6244,11 +6244,10 @@ impl Parser {
                     self.error_at_current("expected FUNCTION or INOUT after WITH in CREATE CAST")
                 );
             }
-        } else if self.consume_ident("without") {
-            if !(self.consume_keyword(Keyword::Function) || self.consume_ident("function")) {
+        } else if self.consume_ident("without")
+            && !(self.consume_keyword(Keyword::Function) || self.consume_ident("function")) {
                 return Err(self.error_at_current("expected FUNCTION after WITHOUT in CREATE CAST"));
             }
-        }
 
         let mut as_assignment = false;
         let mut as_implicit = false;

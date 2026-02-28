@@ -377,7 +377,7 @@ pub fn extract_sql_expression(
             PlPgSqlTokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
             PlPgSqlTokenKind::Operator(ref op) if op == "[" => bracket_depth += 1,
             PlPgSqlTokenKind::Operator(ref op) if op == "]" => {
-                bracket_depth = bracket_depth.saturating_sub(1)
+                bracket_depth = bracket_depth.saturating_sub(1);
             }
             PlPgSqlTokenKind::Semicolon if paren_depth == 0 && bracket_depth == 0 => {
                 let start = tokens[start_idx].span.start;

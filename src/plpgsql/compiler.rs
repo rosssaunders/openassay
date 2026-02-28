@@ -1873,7 +1873,7 @@ impl<'a> BodyParser<'a> {
                 PlPgSqlTokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
                 PlPgSqlTokenKind::Operator(ref op) if op == "[" => bracket_depth += 1,
                 PlPgSqlTokenKind::Operator(ref op) if op == "]" => {
-                    bracket_depth = bracket_depth.saturating_sub(1)
+                    bracket_depth = bracket_depth.saturating_sub(1);
                 }
                 PlPgSqlTokenKind::Keyword(keyword)
                     if paren_depth == 0 && bracket_depth == 0 && keywords.contains(&keyword) =>
@@ -1916,7 +1916,7 @@ impl<'a> BodyParser<'a> {
                 PlPgSqlTokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
                 PlPgSqlTokenKind::Operator(op) if op == "[" => bracket_depth += 1,
                 PlPgSqlTokenKind::Operator(op) if op == "]" => {
-                    bracket_depth = bracket_depth.saturating_sub(1)
+                    bracket_depth = bracket_depth.saturating_sub(1);
                 }
                 PlPgSqlTokenKind::Comma if paren_depth == 0 && bracket_depth == 0 => {
                     let start = self.tokens[part_start].span.start;
@@ -1972,7 +1972,7 @@ impl<'a> BodyParser<'a> {
                 PlPgSqlTokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
                 PlPgSqlTokenKind::Operator(ref op) if op == "[" => bracket_depth += 1,
                 PlPgSqlTokenKind::Operator(ref op) if op == "]" => {
-                    bracket_depth = bracket_depth.saturating_sub(1)
+                    bracket_depth = bracket_depth.saturating_sub(1);
                 }
                 PlPgSqlTokenKind::Comma | PlPgSqlTokenKind::Semicolon
                     if paren_depth == 0 && bracket_depth == 0 =>
