@@ -5395,7 +5395,10 @@ fn test_jsonb_subscript_slice_errors() {
         let planned = plan_statement(statement).expect("plan should succeed");
         let err = block_on(execute_planned_query(&planned, &[]))
             .expect_err("jsonb slices should be rejected");
-        assert!(err.message.contains("jsonb subscript does not support slices"));
+        assert!(
+            err.message
+                .contains("jsonb subscript does not support slices")
+        );
     });
 }
 

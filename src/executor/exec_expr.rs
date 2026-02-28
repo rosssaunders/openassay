@@ -1448,23 +1448,9 @@ async fn eval_window_function(
                 Ok(ScalarValue::Null)
             }
         }
-        "sum"
-        | "count"
-        | "avg"
-        | "min"
-        | "max"
-        | "string_agg"
-        | "array_agg"
-        | "any_value"
-        | "bool_and"
-        | "bool_or"
-        | "every"
-        | "stddev"
-        | "stddev_samp"
-        | "stddev_pop"
-        | "variance"
-        | "var_samp"
-        | "var_pop" => {
+        "sum" | "count" | "avg" | "min" | "max" | "string_agg" | "array_agg" | "any_value"
+        | "bool_and" | "bool_or" | "every" | "stddev" | "stddev_samp" | "stddev_pop"
+        | "variance" | "var_samp" | "var_pop" => {
             let frame_rows = window_frame_rows(
                 &resolved_window,
                 &partition,
@@ -1945,7 +1931,9 @@ async fn window_first_order_numeric_key(
     params: &[Option<String>],
 ) -> Result<f64, EngineError> {
     if let Some(value) = order_keys.get(pos).and_then(|keys| keys.first()) {
-        return Ok(parse_f64_scalar(value, "RANGE frame ORDER BY key must be numeric").unwrap_or(0.0));
+        return Ok(
+            parse_f64_scalar(value, "RANGE frame ORDER BY key must be numeric").unwrap_or(0.0),
+        );
     }
     let expr = &window.order_by[0].expr;
     let value = eval_expr(expr, &all_rows[row_idx], params).await?;

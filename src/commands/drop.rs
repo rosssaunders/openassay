@@ -34,9 +34,7 @@ pub async fn execute_drop_table(
     let mut base_table_oids = Vec::new();
     for name in &drop_table.names {
         let resolved = with_catalog_read(|catalog| {
-            catalog
-                .resolve_table(name, &SearchPath::default())
-                .cloned()
+            catalog.resolve_table(name, &SearchPath::default()).cloned()
         });
         let table = match resolved {
             Ok(table) => table,

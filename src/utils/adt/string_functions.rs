@@ -157,9 +157,7 @@ pub(crate) fn decode_bytes(input: &str, format: &str) -> Result<Vec<u8>, EngineE
             use base64::Engine;
             base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .decode(input.trim())
-                .or_else(|_| {
-                    base64::engine::general_purpose::URL_SAFE.decode(input.trim())
-                })
+                .or_else(|_| base64::engine::general_purpose::URL_SAFE.decode(input.trim()))
                 .map_err(|_| EngineError {
                     message: "decode() invalid base64url input".to_string(),
                 })
