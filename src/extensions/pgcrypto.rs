@@ -149,7 +149,7 @@ fn eval_gen_random_bytes(args: &[ScalarValue]) -> Result<ScalarValue, EngineErro
         }
     };
     let mut buf = vec![0u8; len];
-    getrandom::getrandom(&mut buf).map_err(|e| EngineError {
+    getrandom::fill(&mut buf).map_err(|e| EngineError {
         message: format!("gen_random_bytes() failed: {e}"),
     })?;
     Ok(ScalarValue::Text(hex_encode(&buf)))
@@ -203,7 +203,7 @@ fn eval_gen_salt(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     match kind.as_str() {
         "bf" => {
             let mut salt_bytes = [0u8; 16];
-            let _ = getrandom::getrandom(&mut salt_bytes);
+            let _ = getrandom::fill(&mut salt_bytes);
             let encoded = STANDARD_NO_PAD.encode(salt_bytes);
             // bcrypt salts are 22 characters
             let salt = format!("$2b$04${}", &encoded[..22.min(encoded.len())]);
@@ -211,12 +211,12 @@ fn eval_gen_salt(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
         }
         "md5" => {
             let mut salt_bytes = [0u8; 8];
-            let _ = getrandom::getrandom(&mut salt_bytes);
+            let _ = getrandom::fill(&mut salt_bytes);
             Ok(ScalarValue::Text(format!("md5{}", hex_encode(&salt_bytes))))
         }
         "des" => {
             let mut salt_bytes = [0u8; 2];
-            let _ = getrandom::getrandom(&mut salt_bytes);
+            let _ = getrandom::fill(&mut salt_bytes);
             Ok(ScalarValue::Text(hex_encode(&salt_bytes)))
         }
         other => Err(EngineError {

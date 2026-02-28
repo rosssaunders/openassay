@@ -562,7 +562,7 @@ pub(crate) mod ws_native {
     pub fn send_message(handle: &NativeWsHandle, msg: &str) -> Result<(), String> {
         let mut guard = handle.writer.lock().unwrap();
         if let Some(ref mut ws) = *guard {
-            ws.write(tungstenite::Message::Text(msg.to_string()))
+            ws.write(tungstenite::Message::Text(msg.to_string().into()))
                 .map_err(|e| format!("WebSocket send failed: {e}"))?;
             ws.flush()
                 .map_err(|e| format!("WebSocket flush failed: {e}"))?;

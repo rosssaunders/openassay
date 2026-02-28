@@ -7,10 +7,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use hmac::{Hmac, Mac};
 use pbkdf2::pbkdf2_hmac_array;
-#[cfg(not(target_arch = "wasm32"))]
-use rand::RngCore;
-#[cfg(not(target_arch = "wasm32"))]
-use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
 use crate::access::transam::visibility::VisibilityMode;
@@ -3186,7 +3182,7 @@ fn scram_hmac(key: &[u8], data: &[u8]) -> Result<[u8; 32], SessionError> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fill_random_bytes(out: &mut [u8]) {
-    OsRng.fill_bytes(out);
+    let _ = getrandom::fill(out);
 }
 
 #[cfg(target_arch = "wasm32")]
