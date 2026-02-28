@@ -2465,16 +2465,21 @@ fn resolve_insert_target_indexes(
     let mut seen = HashSet::new();
     for column_name in target_columns {
         let normalized = column_name.to_ascii_lowercase();
-        if !seen.insert(normalized.clone()) {
+        let has_path_suffix = normalized.contains('.') || normalized.contains('[');
+        if !has_path_suffix && !seen.insert(normalized.clone()) {
             return Err(EngineError {
                 message: format!("column \"{column_name}\" specified more than once"),
             });
         }
+        let base_column = normalized
+            .split(['.', '['])
+            .next()
+            .unwrap_or(normalized.as_str());
         let Some((idx, _)) = table
             .columns()
             .iter()
             .enumerate()
-            .find(|(_, column)| column.name() == normalized)
+            .find(|(_, column)| column.name() == base_column)
         else {
             return Err(EngineError {
                 message: format!(

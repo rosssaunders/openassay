@@ -184,6 +184,52 @@ pub(crate) fn eval_date_trunc(
     Ok(ScalarValue::Text(format_timestamp(datetime)))
 }
 
+pub(crate) fn eval_date_bin(
+    stride: &ScalarValue,
+    source: &ScalarValue,
+    origin: &ScalarValue,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(stride, ScalarValue::Null)
+        || matches!(source, ScalarValue::Null)
+        || matches!(origin, ScalarValue::Null)
+    {
+        return Ok(ScalarValue::Null);
+    }
+
+    let stride_iv = parse_interval_text(&stride.render())?;
+    if stride_iv.months != 0 {
+        return Err(EngineError {
+            message: "date_bin() stride cannot contain months or years".to_string(),
+        });
+    }
+    let stride_us = i128::from(stride_iv.days) * 86_400_000_000i128
+        + i128::from(stride_iv.seconds) * 1_000_000i128;
+    if stride_us <= 0 {
+        return Err(EngineError {
+            message: "date_bin() stride must be greater than zero".to_string(),
+        });
+    }
+
+    let source_dt = parse_datetime_scalar(source)?;
+    let origin_dt = parse_datetime_scalar(origin)?;
+    let source_us = i128::from(datetime_to_epoch_seconds(source_dt)) * 1_000_000i128
+        + i128::from(source_dt.microsecond);
+    let origin_us = i128::from(datetime_to_epoch_seconds(origin_dt)) * 1_000_000i128
+        + i128::from(origin_dt.microsecond);
+    let delta_us = source_us - origin_us;
+    let binned_us = origin_us + delta_us.div_euclid(stride_us) * stride_us;
+
+    let binned_secs = binned_us.div_euclid(1_000_000i128);
+    if binned_secs < i128::from(i64::MIN) || binned_secs > i128::from(i64::MAX) {
+        return Err(EngineError {
+            message: "date_bin() result out of range".to_string(),
+        });
+    }
+    let mut binned = datetime_from_epoch_seconds(binned_secs as i64);
+    binned.microsecond = binned_us.rem_euclid(1_000_000i128) as u32;
+    Ok(ScalarValue::Text(format_timestamp(binned)))
+}
+
 pub(crate) fn eval_date_add_sub(
     date_value: &ScalarValue,
     day_delta: &ScalarValue,
@@ -2261,5 +2307,30 @@ mod tests {
             day: 9,
         };
         assert_eq!(format_date(date), "1957-04-09");
+    }
+
+    #[test]
+    fn test_date_bin_buckets_to_stride_origin() {
+        let binned = eval_date_bin(
+            &ScalarValue::Text("15 minutes".to_string()),
+            &ScalarValue::Text("2020-02-11 15:44:17".to_string()),
+            &ScalarValue::Text("2001-01-01 00:00:00".to_string()),
+        )
+        .expect("date_bin should succeed");
+        assert_eq!(binned, ScalarValue::Text("2020-02-11 15:30:00".to_string()));
+    }
+
+    #[test]
+    fn test_date_bin_rejects_month_stride() {
+        let err = eval_date_bin(
+            &ScalarValue::Text("1 month".to_string()),
+            &ScalarValue::Text("2020-02-11 15:44:17".to_string()),
+            &ScalarValue::Text("2001-01-01 00:00:00".to_string()),
+        )
+        .expect_err("date_bin should reject month/year stride");
+        assert!(
+            err.message
+                .contains("stride cannot contain months or years")
+        );
     }
 }

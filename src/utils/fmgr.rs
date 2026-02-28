@@ -3,6 +3,7 @@ use std::sync::{OnceLock, RwLock};
 
 use serde_json::Value as JsonValue;
 
+use crate::catalog::with_catalog_read;
 use crate::commands::sequence::{
     normalize_sequence_name_from_text, sequence_next_value, set_sequence_value,
     with_sequences_read, with_sequences_write,
@@ -12,7 +13,7 @@ use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{EngineError, with_ext_read};
 use crate::utils::adt::datetime::{
     JustifyMode, current_date_string, current_timestamp_string, eval_age, eval_date_add_sub,
-    eval_date_function, eval_date_trunc, eval_extract_or_date_part, eval_isfinite,
+    eval_date_bin, eval_date_function, eval_date_trunc, eval_extract_or_date_part, eval_isfinite,
     eval_justify_interval, eval_make_interval, eval_make_time, eval_timestamp_function,
     eval_to_date_with_format, eval_to_timestamp, eval_to_timestamp_with_format,
 };
@@ -143,6 +144,40 @@ fn scalar_cmp_fallback(left: &ScalarValue, right: &ScalarValue) -> Ordering {
     compare_values_for_predicate(left, right).unwrap_or_else(|_| left.render().cmp(&right.render()))
 }
 
+fn lookup_pg_indexdef(index_name: &str) -> Option<String> {
+    let lookup = index_name
+        .trim()
+        .trim_matches('"')
+        .rsplit('.')
+        .next()
+        .unwrap_or(index_name)
+        .trim()
+        .to_ascii_lowercase();
+    if lookup.is_empty() {
+        return None;
+    }
+
+    with_catalog_read(|catalog| {
+        for schema in catalog.schemas() {
+            for table in schema.tables() {
+                for index in table.indexes() {
+                    if index.name.eq_ignore_ascii_case(&lookup) {
+                        let unique_prefix = if index.unique { "UNIQUE " } else { "" };
+                        let columns = index.columns.join(", ");
+                        return Some(format!(
+                            "CREATE {unique_prefix}INDEX {} ON {}.{} USING btree ({columns})",
+                            index.name,
+                            schema.name(),
+                            table.name()
+                        ));
+                    }
+                }
+            }
+        }
+        None
+    })
+}
+
 fn json_parse_arg(value: &ScalarValue, fn_name: &str) -> Result<JsonValue, EngineError> {
     let text = value.render();
     serde_json::from_str::<JsonValue>(&text).map_err(|err| EngineError {
@@ -157,6 +192,14 @@ fn stable_hash_i64(input: &str) -> i64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash as i64
+}
+
+fn render_bytes_as_bytea_hex(bytes: &[u8]) -> String {
+    let mut output = String::from("\\x");
+    for byte in bytes {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output
 }
 
 pub(crate) async fn eval_scalar_function(
@@ -692,6 +735,14 @@ pub(crate) async fn eval_scalar_function(
         "now" | "current_timestamp" if args.is_empty() => {
             Ok(ScalarValue::Text(current_timestamp_string()?))
         }
+        "current_timestamp" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            // PostgreSQL accepts optional precision argument; keep second-level precision for now.
+            let _ = parse_i64_scalar(&args[0], "current_timestamp() precision")?;
+            Ok(ScalarValue::Text(current_timestamp_string()?))
+        }
         "clock_timestamp" if args.is_empty() => Ok(ScalarValue::Text(current_timestamp_string()?)),
         "pg_sleep" if args.len() == 1 => {
             if matches!(args[0], ScalarValue::Null) {
@@ -713,6 +764,7 @@ pub(crate) async fn eval_scalar_function(
         "age" if args.len() == 1 || args.len() == 2 => eval_age(args),
         "extract" | "date_part" if args.len() == 2 => eval_extract_or_date_part(&args[0], &args[1]),
         "date_trunc" if args.len() == 2 => eval_date_trunc(&args[0], &args[1]),
+        "date_bin" if args.len() == 3 => eval_date_bin(&args[0], &args[1], &args[2]),
         "date_add" if args.len() == 2 => eval_date_add_sub(&args[0], &args[1], true),
         "date_sub" if args.len() == 2 => eval_date_add_sub(&args[0], &args[1], false),
         "to_timestamp" if args.len() == 1 => eval_to_timestamp(&args[0]),
@@ -1632,6 +1684,16 @@ pub(crate) async fn eval_scalar_function(
             let pretty = parse_bool_scalar(&args[1], "pg_get_viewdef() pretty")?;
             Ok(ScalarValue::Text(pg_get_viewdef(&view_name, pretty)?))
         }
+        "pg_get_indexdef" if (1..=3).contains(&args.len()) => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let index_name = args[0].render();
+            Ok(match lookup_pg_indexdef(&index_name) {
+                Some(def) => ScalarValue::Text(def),
+                None => ScalarValue::Null,
+            })
+        }
         "has_table_privilege" if args.len() == 2 || args.len() == 3 => Ok(ScalarValue::Bool(true)),
         "has_column_privilege" if args.len() == 3 || args.len() == 4 => Ok(ScalarValue::Bool(true)),
         "has_schema_privilege" if args.len() == 2 || args.len() == 3 => Ok(ScalarValue::Bool(true)),
@@ -2156,6 +2218,85 @@ pub(crate) async fn eval_scalar_function(
             let hash = stable_hash_i64(&args[0].render());
             Ok(ScalarValue::Int(hash & 0x7fff_ffff))
         }
+        "float4send" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let value = parse_f64_numeric_scalar(&args[0], "float4send() expects numeric input")?;
+            let bytes = (value as f32).to_be_bytes();
+            Ok(ScalarValue::Text(render_bytes_as_bytea_hex(&bytes)))
+        }
+        "float8send" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let value = parse_f64_numeric_scalar(&args[0], "float8send() expects numeric input")?;
+            Ok(ScalarValue::Text(render_bytes_as_bytea_hex(
+                &value.to_be_bytes(),
+            )))
+        }
+        "float8" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let value = parse_f64_numeric_scalar(&args[0], "float8() expects numeric input")?;
+            Ok(ScalarValue::Float(value))
+        }
+        "booland_statefunc" if args.len() == 2 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let left = parse_bool_scalar(&args[0], "booland_statefunc() expects boolean values")?;
+            let right = parse_bool_scalar(&args[1], "booland_statefunc() expects boolean values")?;
+            Ok(ScalarValue::Bool(left && right))
+        }
+        "boolor_statefunc" if args.len() == 2 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let left = parse_bool_scalar(&args[0], "boolor_statefunc() expects boolean values")?;
+            let right = parse_bool_scalar(&args[1], "boolor_statefunc() expects boolean values")?;
+            Ok(ScalarValue::Bool(left || right))
+        }
+        "float8_accum" if args.len() == 2 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(args[0].clone())
+        }
+        "float8_regr_accum" if args.len() == 3 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(args[0].clone())
+        }
+        "erf" | "erfc" | "gamma" | "lgamma" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let value = parse_f64_numeric_scalar(&args[0], "function expects numeric input")?;
+            Ok(ScalarValue::Float(value))
+        }
+        "fipshash" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let digest = sha256_hex(&args[0].render());
+            Ok(ScalarValue::Text(digest.chars().take(32).collect()))
+        }
+        "grouping" => Ok(ScalarValue::Int(0)),
+        "merge_action" if args.is_empty() => Ok(ScalarValue::Text("INSERT".to_string())),
+        "aggfns" | "aggfstr" if args.len() == 3 => Ok(ScalarValue::Null),
+        "pg_get_serial_sequence" if args.len() == 2 => Ok(ScalarValue::Null),
+        "interval_hash" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            Ok(ScalarValue::Int(stable_hash_i64(&args[0].render())))
+        }
+        "json_object_agg_unique" if args.len() == 2 => Ok(ScalarValue::Text("{}".to_string())),
+        "json_array" => Ok(ScalarValue::Text(json_build_array_value(args)?.to_string())),
+        "enum_range" if args.len() <= 2 => Ok(ScalarValue::Array(Vec::new())),
         "sha224" | "sha384" | "sha512" if args.len() == 1 => {
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);

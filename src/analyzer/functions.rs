@@ -113,8 +113,9 @@ const KNOWN_FUNCTIONS: &[(&str, usize, usize)] = &[
     // Date/time functions
     ("now", 0, 0),
     ("current_date", 0, 0),
-    ("current_timestamp", 0, 0),
+    ("current_timestamp", 0, 1),
     ("date_trunc", 2, 2),
+    ("date_bin", 3, 3),
     ("date_part", 2, 2),
     ("extract", 2, 2),
     ("age", 1, 2),

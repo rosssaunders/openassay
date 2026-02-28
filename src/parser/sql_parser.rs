@@ -857,17 +857,28 @@ impl Parser {
         let table_name = self.parse_qualified_name()?;
         let table_alias = self.parse_insert_table_alias()?;
         let columns = if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
-            let mut out = vec![self.parse_identifier()?];
-            self.skip_array_subscripts();
-            while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
-                out.push(self.parse_identifier()?);
-                self.skip_array_subscripts();
+            // INSERT INTO t (SELECT ...) is query source wrapped in parens, not a column list.
+            let looks_like_parenthesized_query = self.peek_keyword(Keyword::Select)
+                || self.peek_keyword(Keyword::With)
+                || self.peek_keyword(Keyword::Values)
+                || self.peek_keyword(Keyword::Table)
+                || self.peek_keyword(Keyword::Insert)
+                || self.peek_keyword(Keyword::Update)
+                || self.peek_keyword(Keyword::Delete);
+            if looks_like_parenthesized_query {
+                self.idx -= 1;
+                Vec::new()
+            } else {
+                let mut out = vec![self.parse_insert_target_column()?];
+                while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    out.push(self.parse_insert_target_column()?);
+                }
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after INSERT column list",
+                )?;
+                out
             }
-            self.expect_token(
-                |k| matches!(k, TokenKind::RParen),
-                "expected ')' after INSERT column list",
-            )?;
-            out
         } else {
             Vec::new()
         };
@@ -3328,7 +3339,17 @@ impl Parser {
             return Ok(inner);
         }
 
-        let name = self.parse_qualified_name()?;
+        let only = self.consume_ident("only");
+        let name = if only && self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+            let qualified = self.parse_qualified_name()?;
+            self.expect_token(
+                |k| matches!(k, TokenKind::RParen),
+                "expected ')' after ONLY relation name",
+            )?;
+            qualified
+        } else {
+            self.parse_qualified_name()?
+        };
         let _inherit = self.consume_if(|k| matches!(k, TokenKind::Star));
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
             let mut args = Vec::new();
@@ -5603,26 +5624,57 @@ impl Parser {
         }
     }
 
-    /// Skip optional array subscripts like [1], [1:2], [1:2][3:4], etc.
-    /// Used in INSERT column lists where subscripts are accepted but we ignore them.
-    fn skip_array_subscripts(&mut self) {
-        while self.consume_if(|k| matches!(k, TokenKind::LBracket)) {
-            let mut depth = 1usize;
-            while depth > 0 {
-                match self.current_kind() {
-                    TokenKind::LBracket => {
-                        depth += 1;
-                        self.advance();
-                    }
-                    TokenKind::RBracket => {
-                        depth -= 1;
-                        self.advance();
-                    }
-                    TokenKind::Eof => break,
-                    _ => self.advance(),
-                }
+    /// Parse an INSERT target column reference.
+    ///
+    /// PostgreSQL allows column-path targets like:
+    /// - f2[1]
+    /// - f3.if1
+    /// - f4[1].if2[2]
+    ///
+    /// OpenAssay applies these assignments at the base-column level today, so we
+    /// preserve the path suffix syntactically for duplicate-target handling while
+    /// still resolving writes against the base column name at execution time.
+    fn parse_insert_target_column(&mut self) -> Result<String, ParseError> {
+        let mut target = self.parse_identifier()?;
+
+        loop {
+            if self.consume_if(|k| matches!(k, TokenKind::Dot)) {
+                let field = self.parse_identifier()?;
+                target.push('.');
+                target.push_str(&field);
+                continue;
             }
+
+            if self.consume_if(|k| matches!(k, TokenKind::LBracket)) {
+                let mut depth = 1usize;
+                while depth > 0 {
+                    match self.current_kind() {
+                        TokenKind::LBracket => {
+                            depth += 1;
+                            self.advance();
+                        }
+                        TokenKind::RBracket => {
+                            depth -= 1;
+                            self.advance();
+                        }
+                        TokenKind::Eof => {
+                            return Err(self.error_at_current(
+                                "expected ']' to close INSERT target subscript",
+                            ));
+                        }
+                        _ => self.advance(),
+                    }
+                }
+                // Preserve that this target used subscripting, even if we don't
+                // yet support field-level writes inside the base column.
+                target.push_str("[]");
+                continue;
+            }
+
+            break;
         }
+
+        Ok(target)
     }
 
     fn take_keyword_or_identifier(&mut self) -> Option<String> {
@@ -6185,24 +6237,25 @@ impl Parser {
                 continue;
             }
             if self.consume_keyword(Keyword::As) {
-                let text = match self.current_kind() {
-                    TokenKind::String(s) => {
-                        let out = s.clone();
-                        self.advance();
-                        out
-                    }
-                    _ => {
-                        return Err(
-                            self.error_at_current("expected dollar-quoted or string function body")
-                        );
-                    }
-                };
+                let text = self.parse_create_function_as_fragment()?;
                 body = Some(text);
-                if self.consume_if(|k| matches!(k, TokenKind::Comma))
-                    && matches!(self.current_kind(), TokenKind::String(_))
-                {
-                    self.advance();
+                if self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    // C-language form: AS 'library', 'symbol'
+                    // We only persist the main body/library token for now.
+                    let _ = self.parse_create_function_as_fragment();
                 }
+                continue;
+            }
+            if self.consume_ident("return") {
+                // SQL-standard CREATE FUNCTION ... RETURN expr
+                // Normalize to a SQL body that can run through the existing SQL
+                // user-function execution path.
+                let expr = self.parse_expr()?;
+                let body_sql = format!(
+                    "SELECT {}",
+                    crate::utils::adt::misc::render_expr_to_sql(&expr)
+                );
+                body = Some(body_sql);
                 continue;
             }
             if self.consume_keyword(Keyword::Language) || self.consume_ident("language") {
@@ -6225,6 +6278,36 @@ impl Parser {
             language,
             or_replace,
         }))
+    }
+
+    fn parse_create_function_as_fragment(&mut self) -> Result<String, ParseError> {
+        match self.current_kind() {
+            TokenKind::String(value) => {
+                let out = value.clone();
+                self.advance();
+                Ok(out)
+            }
+            TokenKind::Colon => {
+                // psql variable interpolation (e.g. AS :'regresslib', 'symbol')
+                self.advance();
+                match self.current_kind() {
+                    TokenKind::String(value) | TokenKind::Identifier(value) => {
+                        let out = value.clone();
+                        self.advance();
+                        Ok(out)
+                    }
+                    TokenKind::Keyword(keyword) => {
+                        let out = format!("{keyword:?}").to_ascii_lowercase();
+                        self.advance();
+                        Ok(out)
+                    }
+                    _ => Err(self.error_at_current(
+                        "expected psql variable name or quoted variable after ':'",
+                    )),
+                }
+            }
+            _ => Err(self.error_at_current("expected dollar-quoted or string function body")),
+        }
     }
 
     fn parse_create_cast(&mut self) -> Result<Statement, ParseError> {
@@ -6814,6 +6897,20 @@ mod tests {
         let select = as_select(&query);
         assert_eq!(select.targets.len(), 1);
         assert_eq!(select.targets[0].expr, Expr::Integer(1));
+    }
+
+    #[test]
+    fn parses_select_from_only_relation() {
+        let stmt = parse_statement("SELECT * FROM ONLY student").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert_eq!(select.from.len(), 1);
+        let TableExpression::Relation(relation) = &select.from[0] else {
+            panic!("expected relation in FROM");
+        };
+        assert_eq!(relation.name, vec!["student".to_string()]);
     }
 
     #[test]
@@ -7665,6 +7762,70 @@ mod tests {
             },
             other => panic!("expected query source, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_insert_parenthesized_select_source() {
+        let stmt = parse_statement("INSERT INTO users (SELECT id, name FROM staging)")
+            .expect("parse should succeed");
+        let Statement::Insert(insert) = stmt else {
+            panic!("expected insert statement");
+        };
+        assert!(insert.columns.is_empty());
+        match insert.source {
+            InsertSource::Query(query) => match query.body {
+                QueryExpr::Select(_) | QueryExpr::Nested(_) => {}
+                other => panic!("expected select query source, got {other:?}"),
+            },
+            other => panic!("expected query source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_insert_target_paths() {
+        let stmt = parse_statement(
+            "INSERT INTO inserttest (f3.if1, f4[1].if2[2], f2[1]) VALUES (1, 2, 3)",
+        )
+        .expect("parse should succeed");
+        let Statement::Insert(insert) = stmt else {
+            panic!("expected insert statement");
+        };
+        assert_eq!(
+            insert.columns,
+            vec![
+                "f3.if1".to_string(),
+                "f4[].if2[]".to_string(),
+                "f2[]".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_create_function_sql_return_syntax() {
+        let stmt = parse_statement(
+            "create function fipshash(bytea) returns text strict immutable return substr(encode(sha256($1), 'hex'), 1, 32)",
+        )
+        .expect("parse should succeed");
+        let Statement::CreateFunction(create) = stmt else {
+            panic!("expected create function statement");
+        };
+        assert_eq!(create.name, vec!["fipshash".to_string()]);
+        assert_eq!(create.language, "sql".to_string());
+        assert!(create.body.starts_with("SELECT "));
+    }
+
+    #[test]
+    fn parses_create_function_with_psql_variable_library() {
+        let stmt = parse_statement(
+            "CREATE FUNCTION binary_coercible(oid, oid) RETURNS bool AS :'regresslib', 'binary_coercible' LANGUAGE C",
+        )
+        .expect("parse should succeed");
+        let Statement::CreateFunction(create) = stmt else {
+            panic!("expected create function statement");
+        };
+        assert_eq!(create.name, vec!["binary_coercible".to_string()]);
+        assert_eq!(create.body, "regresslib".to_string());
+        assert_eq!(create.language, "c".to_string());
     }
 
     #[test]

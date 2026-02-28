@@ -573,6 +573,9 @@ fn postgresql_compatibility_suite() {
                         continue;
                     }
                     stmt_err += 1;
+                    println!(
+                        "\n[REGRESSION-ERROR] file={test_name}\nSQL:\n{statement}\nERROR:\n{error}\n"
+                    );
                     if error_messages.len() < MAX_RECORDED_ERRORS {
                         error_messages.push(format!(
                             "SQL: {}... => {}",
@@ -584,6 +587,9 @@ fn postgresql_compatibility_suite() {
                 StatementExecution::Panicked => {
                     // Statement caused a panic — treat as error and recreate session
                     stmt_err += 1;
+                    println!(
+                        "\n[REGRESSION-PANIC] file={test_name}\nSQL:\n{statement}\nERROR:\npanic while executing statement\n"
+                    );
                     if error_messages.len() < MAX_RECORDED_ERRORS {
                         error_messages.push(format!(
                             "PANIC in: {}...",
@@ -595,6 +601,10 @@ fn postgresql_compatibility_suite() {
                 StatementExecution::TimedOut => {
                     stmt_timeout += 1;
                     stmt_err += 1;
+                    println!(
+                        "\n[REGRESSION-TIMEOUT] file={test_name}\nSQL:\n{statement}\nERROR:\nstatement execution exceeded {} seconds\n",
+                        STATEMENT_TIMEOUT.as_secs()
+                    );
                     if error_messages.len() < MAX_RECORDED_ERRORS {
                         error_messages.push(format!(
                             "TIMEOUT (>{}s) in: {}...",
