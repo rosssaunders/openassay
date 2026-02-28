@@ -1,5 +1,3 @@
-#[cfg(target_arch = "wasm32")]
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -30,11 +28,6 @@ use crate::tcop::engine::{
 pub type PgType = u32;
 
 const UNNAMED: &str = "";
-
-#[cfg(target_arch = "wasm32")]
-thread_local! {
-    static WASM_RANDOM_STATE: Cell<u64> = const { Cell::new(0xA5A5_5A5A_DEAD_BEEF) };
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowDescriptionField {
@@ -3180,23 +3173,8 @@ fn scram_hmac(key: &[u8], data: &[u8]) -> Result<[u8; 32], SessionError> {
     Ok(out)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn fill_random_bytes(out: &mut [u8]) {
-    let _ = getrandom::fill(out);
-}
-
-#[cfg(target_arch = "wasm32")]
-fn fill_random_bytes(out: &mut [u8]) {
-    WASM_RANDOM_STATE.with(|state| {
-        let mut value = state.get();
-        for byte in out.iter_mut() {
-            value = value
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            *byte = (value >> 32) as u8;
-        }
-        state.set(value);
-    });
+    crate::utils::random::fill_random_bytes(out);
 }
 
 fn encode_result_data_row_message(

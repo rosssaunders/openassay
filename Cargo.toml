@@ -9,7 +9,6 @@ bytes = "1.11.1"
 criterion = "0.8"
 crossterm = "0.29"
 futures = "0.3.32"
-getrandom = "0.4"
 hmac = "0.12.1"
 js-sys = "0.3.91"
 md-5 = "0.10.6"
@@ -44,9 +43,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 base64.workspace = true
-bcrypt.workspace = true
 futures.workspace = true
-getrandom = { workspace = true, features = ["wasm_js"] }
 hmac.workspace = true
 md-5.workspace = true
 pbkdf2.workspace = true
@@ -61,10 +58,11 @@ uuid = { workspace = true, features = ["v1", "v4", "v5"] }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 js-sys.workspace = true
-web-sys = { workspace = true, features = ["CloseEvent", "ErrorEvent", "Headers", "MessageEvent", "RequestInit", "Response", "WebSocket", "Window"] }
+web-sys = { workspace = true, features = ["CloseEvent", "Crypto", "ErrorEvent", "Headers", "MessageEvent", "RequestInit", "Response", "WebSocket", "Window"] }
 uuid = { workspace = true, features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+bcrypt.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
 byteorder.workspace = true
 bytes.workspace = true

@@ -13,7 +13,7 @@ static NODE_ID: OnceLock<[u8; 6]> = OnceLock::new();
 fn node_id() -> [u8; 6] {
     *NODE_ID.get_or_init(|| {
         let mut bytes = [0u8; 6];
-        let _ = getrandom::fill(&mut bytes);
+        crate::utils::random::fill_random_bytes(&mut bytes);
         if bytes.iter().all(|b| *b == 0) {
             bytes[0] = 1;
         }

@@ -149,9 +149,7 @@ fn eval_gen_random_bytes(args: &[ScalarValue]) -> Result<ScalarValue, EngineErro
         }
     };
     let mut buf = vec![0u8; len];
-    getrandom::fill(&mut buf).map_err(|e| EngineError {
-        message: format!("gen_random_bytes() failed: {e}"),
-    })?;
+    crate::utils::random::fill_random_bytes(&mut buf);
     Ok(ScalarValue::Text(hex_encode(&buf)))
 }
 
@@ -162,29 +160,36 @@ fn eval_crypt(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     let password = args[0].render();
     let salt = args[1].render();
     if salt.starts_with("$2") {
-        // Extract cost from bcrypt salt/hash: "$2b$XX$..."
-        let cost = salt
-            .split('$')
-            .nth(2)
-            .and_then(|c| c.parse::<u32>().ok())
-            .unwrap_or(4);
-        if salt.len() >= 60 {
-            // Salt is a full bcrypt hash — verify by re-hashing with same params.
-            // bcrypt::verify handles extracting the salt internally.
-            if matches!(bcrypt::verify(&password, &salt), Ok(true)) {
-                return Ok(ScalarValue::Text(salt));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Extract cost from bcrypt salt/hash: "$2b$XX$..."
+            let cost = salt
+                .split('$')
+                .nth(2)
+                .and_then(|c| c.parse::<u32>().ok())
+                .unwrap_or(4);
+            if salt.len() >= 60 {
+                // Salt is a full bcrypt hash — verify by re-hashing with same params.
+                // bcrypt::verify handles extracting the salt internally.
+                if matches!(bcrypt::verify(&password, &salt), Ok(true)) {
+                    return Ok(ScalarValue::Text(salt));
+                }
+                // Password doesn't match — hash with extracted cost (new salt).
+                let hashed = bcrypt::hash(&password, cost).map_err(|e| EngineError {
+                    message: format!("crypt() bcrypt error: {e}"),
+                })?;
+                return Ok(ScalarValue::Text(hashed));
             }
-            // Password doesn't match — hash with extracted cost (new salt).
+            // Salt is a raw bcrypt salt prefix — hash with extracted cost.
             let hashed = bcrypt::hash(&password, cost).map_err(|e| EngineError {
                 message: format!("crypt() bcrypt error: {e}"),
             })?;
             return Ok(ScalarValue::Text(hashed));
         }
-        // Salt is a raw bcrypt salt prefix — hash with extracted cost.
-        let hashed = bcrypt::hash(&password, cost).map_err(|e| EngineError {
-            message: format!("crypt() bcrypt error: {e}"),
-        })?;
-        return Ok(ScalarValue::Text(hashed));
+        #[cfg(target_arch = "wasm32")]
+        return Err(EngineError {
+            message: "crypt() with bcrypt is not supported on wasm".to_string(),
+        });
     }
     if salt.to_ascii_lowercase().starts_with("md5") {
         let salt_body = salt.trim_start_matches("md5");
@@ -203,7 +208,7 @@ fn eval_gen_salt(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
     match kind.as_str() {
         "bf" => {
             let mut salt_bytes = [0u8; 16];
-            let _ = getrandom::fill(&mut salt_bytes);
+            crate::utils::random::fill_random_bytes(&mut salt_bytes);
             let encoded = STANDARD_NO_PAD.encode(salt_bytes);
             // bcrypt salts are 22 characters
             let salt = format!("$2b$04${}", &encoded[..22.min(encoded.len())]);
@@ -211,12 +216,12 @@ fn eval_gen_salt(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
         }
         "md5" => {
             let mut salt_bytes = [0u8; 8];
-            let _ = getrandom::fill(&mut salt_bytes);
+            crate::utils::random::fill_random_bytes(&mut salt_bytes);
             Ok(ScalarValue::Text(format!("md5{}", hex_encode(&salt_bytes))))
         }
         "des" => {
             let mut salt_bytes = [0u8; 2];
-            let _ = getrandom::fill(&mut salt_bytes);
+            crate::utils::random::fill_random_bytes(&mut salt_bytes);
             Ok(ScalarValue::Text(hex_encode(&salt_bytes)))
         }
         other => Err(EngineError {
