@@ -3276,6 +3276,8 @@ impl Parser {
 
         let group_by = if self.consume_keyword(Keyword::Group) {
             self.expect_keyword(Keyword::By, "expected BY after GROUP")?;
+            let _grouping_quantifier =
+                self.consume_keyword(Keyword::Distinct) || self.consume_keyword(Keyword::All);
             self.parse_group_by_list()?
         } else {
             Vec::new()
@@ -3734,6 +3736,18 @@ impl Parser {
             if self.consume_keyword(Keyword::Grouping) {
                 self.expect_keyword(Keyword::Sets, "expected SETS after GROUPING")?;
                 items.push(GroupByExpr::GroupingSets(self.parse_grouping_sets()?));
+            } else if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+                if self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+                    // GROUP BY () is equivalent to a single empty grouping set.
+                    items.push(GroupByExpr::GroupingSets(vec![Vec::new()]));
+                } else {
+                    let exprs = self.parse_expr_list()?;
+                    self.expect_token(
+                        |k| matches!(k, TokenKind::RParen),
+                        "expected ')' to close GROUP BY grouping set",
+                    )?;
+                    items.push(GroupByExpr::GroupingSets(vec![exprs]));
+                }
             } else if self.consume_keyword(Keyword::Rollup) {
                 self.expect_token(
                     |k| matches!(k, TokenKind::LParen),
@@ -7369,6 +7383,33 @@ mod tests {
         assert_eq!(query.order_by.len(), 1);
         assert!(query.limit.is_some());
         assert!(query.offset.is_some());
+    }
+
+    #[test]
+    fn parses_group_by_empty_grouping_set() {
+        let stmt = parse_statement("SELECT 1 FROM b GROUP BY ()").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert_eq!(select.group_by.len(), 1);
+        assert!(matches!(
+            &select.group_by[0],
+            GroupByExpr::GroupingSets(sets) if sets.len() == 1 && sets[0].is_empty()
+        ));
+    }
+
+    #[test]
+    fn parses_group_by_distinct_grouping_sets() {
+        let stmt =
+            parse_statement("SELECT 1 AS x FROM b GROUP BY DISTINCT GROUPING SETS ((), (x))")
+                .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        assert_eq!(select.group_by.len(), 1);
+        assert!(matches!(&select.group_by[0], GroupByExpr::GroupingSets(_)));
     }
 
     #[test]
