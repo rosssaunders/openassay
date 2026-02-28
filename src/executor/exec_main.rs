@@ -472,8 +472,14 @@ async fn execute_select(
                 out_columns.push(alias.clone());
             } else {
                 let name = match &target.expr {
-                    Expr::Identifier(parts) => parts.last().cloned().unwrap_or_else(|| "?column?".to_string()),
-                    Expr::FunctionCall { name, .. } => name.last().cloned().unwrap_or_else(|| "?column?".to_string()),
+                    Expr::Identifier(parts) => parts
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| "?column?".to_string()),
+                    Expr::FunctionCall { name, .. } => name
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| "?column?".to_string()),
                     _ => "?column?".to_string(),
                 };
                 out_columns.push(name);
@@ -1769,7 +1775,9 @@ async fn eval_json_table_function(
                 return Ok((vec!["value".to_string()], Vec::new()));
             }
             // Check if array of objects → auto-discover columns
-            let first_obj = items.iter().find(|item| matches!(item, JsonValue::Object(_)));
+            let first_obj = items
+                .iter()
+                .find(|item| matches!(item, JsonValue::Object(_)));
             if let Some(JsonValue::Object(_)) = first_obj {
                 // Auto-discover column names from all objects
                 let mut column_names = Vec::new();

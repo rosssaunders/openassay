@@ -1550,7 +1550,8 @@ fn json_table_with_path() {
             let (mut stream, _) = listener.accept().expect("should accept connection");
             let mut request_buf = [0u8; 2048];
             let _ = stream.read(&mut request_buf);
-            let body = r#"{"result":[{"name":"BTC","type":"crypto"},{"name":"ETH","type":"crypto"}]}"#;
+            let body =
+                r#"{"result":[{"name":"BTC","type":"crypto"},{"name":"ETH","type":"crypto"}]}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -1655,10 +1656,7 @@ fn json_table_specific_columns() {
             stream.write_all(response.as_bytes()).expect("write");
         });
 
-        let sql = format!(
-            "SELECT x, z FROM json_table('http://{}/api', 'data')",
-            addr
-        );
+        let sql = format!("SELECT x, z FROM json_table('http://{}/api', 'data')", addr);
         let result = run_statement(&sql, &[]);
         assert_eq!(result.columns, vec!["x", "z"]);
         assert_eq!(
