@@ -15,15 +15,15 @@ use crate::parser::ast::{
     ExplainStatement, Expr, ForeignKeyAction, ForeignKeyReference, FunctionParam,
     FunctionParamMode, FunctionReturnType, GrantRoleStatement, GrantStatement,
     GrantTablePrivilegesStatement, GroupByExpr, InsertSource, InsertStatement, JoinCondition,
-    JoinExpr, JoinType, ListenStatement, MergeStatement, MergeWhenClause, NotifyStatement,
-    OnConflictClause, OrderByExpr, Query, QueryExpr, RefreshMaterializedViewStatement,
-    RevokeRoleStatement, RevokeStatement, RevokeTablePrivilegesStatement, RoleOption, SearchClause,
-    SelectItem, SelectQuantifier, SelectStatement, SetOperator, SetQuantifier, SetStatement,
-    ShowStatement, Statement, SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression,
-    TableFunctionRef, TablePrivilegeKind, TableRef, TransactionStatement, TriggerEvent,
-    TriggerTiming, TruncateStatement, TypeName, UnaryOp, UnlistenStatement, UpdateStatement,
-    WindowDefinition, WindowFrame, WindowFrameBound, WindowFrameExclusion, WindowFrameUnits,
-    WindowSpec, WithClause,
+    JoinExpr, JoinType, ListenStatement, MergeStatement, MergeWhenClause, NoOpStatement,
+    NotifyStatement, OnConflictClause, OrderByExpr, Query, QueryExpr,
+    RefreshMaterializedViewStatement, RevokeRoleStatement, RevokeStatement,
+    RevokeTablePrivilegesStatement, RoleOption, SearchClause, SelectItem, SelectQuantifier,
+    SelectStatement, SetOperator, SetQuantifier, SetStatement, ShowStatement, Statement,
+    SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression, TableFunctionRef,
+    TablePrivilegeKind, TableRef, TransactionStatement, TriggerEvent, TriggerTiming,
+    TruncateStatement, TypeName, UnaryOp, UnlistenStatement, UpdateStatement, WindowDefinition,
+    WindowFrame, WindowFrameBound, WindowFrameExclusion, WindowFrameUnits, WindowSpec, WithClause,
 };
 use crate::parser::lexer::{Keyword, LexError, Token, TokenKind, lex_sql};
 
@@ -594,10 +594,15 @@ impl Parser {
                 check_constraint,
             }));
         }
-        self.expect_keyword(
-            Keyword::Table,
-            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, FUNCTION, TRIGGER, CAST, TYPE, DOMAIN, or SUBSCRIPTION after CREATE",
-        )?;
+        if !self.consume_keyword(Keyword::Table) {
+            let Some(object_kind) = self.take_keyword_or_identifier_upper() else {
+                return Err(self.error_at_current(
+                    "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, FUNCTION, TRIGGER, CAST, TYPE, DOMAIN, or SUBSCRIPTION after CREATE",
+                ));
+            };
+            self.skip_to_statement_end();
+            return Ok(self.make_noop_statement("CREATE", object_kind));
+        }
 
         // Parse optional IF NOT EXISTS clause
         let if_not_exists = if self.consume_keyword(Keyword::If) {
@@ -645,6 +650,7 @@ impl Parser {
                 name,
                 columns: Vec::new(),
                 constraints: Vec::new(),
+                inherits: Vec::new(),
                 if_not_exists,
                 temporary,
                 unlogged,
@@ -659,6 +665,7 @@ impl Parser {
                 name,
                 columns: Vec::new(),
                 constraints: Vec::new(),
+                inherits: Vec::new(),
                 if_not_exists,
                 temporary,
                 unlogged,
@@ -697,6 +704,8 @@ impl Parser {
             )?;
         }
 
+        let inherits = self.parse_optional_inherits_clause()?;
+
         // Parse optional WITH (...) storage parameters — ignore
         if self.consume_keyword(Keyword::With)
             && self.consume_if(|k| matches!(k, TokenKind::LParen))
@@ -718,11 +727,31 @@ impl Parser {
             name,
             columns,
             constraints,
+            inherits,
             if_not_exists,
             temporary,
             unlogged,
             as_select: None,
         }))
+    }
+
+    fn parse_optional_inherits_clause(&mut self) -> Result<Vec<Vec<String>>, ParseError> {
+        if !self.consume_ident("inherits") {
+            return Ok(Vec::new());
+        }
+        self.expect_token(
+            |k| matches!(k, TokenKind::LParen),
+            "expected '(' after INHERITS",
+        )?;
+        let mut parents = vec![self.parse_qualified_name()?];
+        while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+            parents.push(self.parse_qualified_name()?);
+        }
+        self.expect_token(
+            |k| matches!(k, TokenKind::RParen),
+            "expected ')' after INHERITS table list",
+        )?;
+        Ok(parents)
     }
 
     fn parse_like_table_element(&mut self) -> Result<bool, ParseError> {
@@ -806,10 +835,12 @@ impl Parser {
         if self.consume_keyword(Keyword::Primary) {
             self.expect_keyword(Keyword::Key, "expected KEY after PRIMARY")?;
             let columns = self.parse_identifier_list_in_parens()?;
+            self.consume_optional_constraint_timing_clauses();
             return Ok(TableConstraint::PrimaryKey { name, columns });
         }
         if self.consume_keyword(Keyword::Unique) {
             let columns = self.parse_identifier_list_in_parens()?;
+            self.consume_optional_constraint_timing_clauses();
             return Ok(TableConstraint::Unique { name, columns });
         }
         if self.consume_keyword(Keyword::Foreign) {
@@ -834,6 +865,7 @@ impl Parser {
                 Vec::new()
             };
             let (on_delete, on_update) = self.parse_optional_fk_actions()?;
+            self.consume_optional_constraint_timing_clauses();
             return Ok(TableConstraint::ForeignKey {
                 name,
                 columns,
@@ -845,6 +877,28 @@ impl Parser {
         }
 
         Err(self.error_at_current("expected PRIMARY KEY, UNIQUE, or FOREIGN KEY table constraint"))
+    }
+
+    fn consume_optional_constraint_timing_clauses(&mut self) {
+        loop {
+            if self.consume_ident("deferrable") {
+                continue;
+            }
+
+            let save = self.idx;
+            if self.consume_keyword(Keyword::Not) {
+                if self.consume_ident("deferrable") {
+                    continue;
+                }
+                self.idx = save;
+            }
+
+            if self.consume_ident("initially") {
+                let _ = self.consume_ident("immediate") || self.consume_ident("deferred");
+                continue;
+            }
+            break;
+        }
     }
 
     fn parse_insert_statement(&mut self) -> Result<Statement, ParseError> {
@@ -1558,6 +1612,10 @@ impl Parser {
                 behavior,
             }));
         }
+        if let Some(object_kind) = self.take_keyword_or_identifier_upper() {
+            self.skip_to_statement_end();
+            return Ok(self.make_noop_statement("DROP", object_kind));
+        }
         Err(self.error_at_current(
             "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, FUNCTION, TRIGGER, SUBSCRIPTION, or EXTENSION after DROP",
         ))
@@ -1962,6 +2020,10 @@ impl Parser {
         }
         if self.consume_keyword(Keyword::Sequence) {
             return self.parse_alter_sequence_statement();
+        }
+        if let Some(object_kind) = self.take_keyword_or_identifier_upper() {
+            self.skip_to_statement_end();
+            return Ok(self.make_noop_statement("ALTER", object_kind));
         }
         Err(self.error_at_current("expected TABLE, VIEW, or SEQUENCE after ALTER"))
     }
@@ -5747,6 +5809,12 @@ impl Parser {
             }
             _ => None,
         }
+    }
+
+    fn make_noop_statement(&self, command: &str, object_kind: String) -> Statement {
+        Statement::NoOp(NoOpStatement {
+            command_tag: format!("{command} {object_kind}"),
+        })
     }
 
     fn parse_role_identifier_with_message(

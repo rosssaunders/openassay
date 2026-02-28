@@ -1,4 +1,6 @@
-use crate::catalog::{ColumnSpec, TableKind, TypeSignature, with_catalog_write};
+use crate::catalog::{
+    ColumnSpec, SearchPath, TableKind, TypeSignature, with_catalog_read, with_catalog_write,
+};
 use crate::commands::sequence::{SequenceState, with_sequences_read, with_sequences_write};
 use crate::parser::ast::{CreateTableStatement, Expr, TableConstraint, TypeName};
 use crate::security;
@@ -70,6 +72,7 @@ pub async fn execute_create_table(
         .iter()
         .map(column_spec_from_ast)
         .collect::<Result<Vec<_>, _>>()?;
+    let column_specs = merge_inherited_column_specs(column_specs, create)?;
     let key_specs = key_constraint_specs_from_ast(&create.constraints)?;
     let foreign_key_specs = foreign_key_constraint_specs_from_ast(&create.constraints)?;
 
@@ -136,6 +139,53 @@ pub async fn execute_create_table(
         command_tag: "CREATE TABLE".to_string(),
         rows_affected: 0,
     })
+}
+
+fn merge_inherited_column_specs(
+    mut column_specs: Vec<ColumnSpec>,
+    create: &CreateTableStatement,
+) -> Result<Vec<ColumnSpec>, EngineError> {
+    if create.inherits.is_empty() {
+        return Ok(column_specs);
+    }
+
+    let mut existing_columns = column_specs
+        .iter()
+        .map(|column| column.name.to_ascii_lowercase())
+        .collect::<std::collections::HashSet<_>>();
+
+    let inherited_columns = with_catalog_read(|catalog| {
+        let mut out = Vec::new();
+        for parent_name in &create.inherits {
+            let parent = catalog
+                .resolve_table(parent_name, &SearchPath::default())
+                .map_err(|err| EngineError {
+                    message: err.message,
+                })?;
+            for parent_column in parent.columns() {
+                out.push(ColumnSpec {
+                    name: parent_column.name().to_string(),
+                    type_signature: parent_column.type_signature(),
+                    nullable: parent_column.nullable(),
+                    unique: false,
+                    primary_key: false,
+                    references: None,
+                    check: parent_column.check().cloned(),
+                    default: parent_column.default().cloned(),
+                });
+            }
+        }
+        Ok::<Vec<ColumnSpec>, EngineError>(out)
+    })?;
+
+    for inherited in inherited_columns {
+        let normalized = inherited.name.to_ascii_lowercase();
+        if existing_columns.insert(normalized) {
+            column_specs.push(inherited);
+        }
+    }
+
+    Ok(column_specs)
 }
 
 pub(crate) fn relation_name_for_create(name: &[String]) -> Result<(String, String), EngineError> {

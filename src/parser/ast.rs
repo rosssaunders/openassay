@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, PartialEq)]
 pub enum Statement {
     Query(Query),
+    NoOp(NoOpStatement),
     CreateTable(CreateTableStatement),
     CreateSchema(CreateSchemaStatement),
     CreateIndex(CreateIndexStatement),
@@ -48,6 +49,11 @@ pub enum Statement {
     CreateDomain(CreateDomainStatement),
     DropType(DropTypeStatement),
     DropDomain(DropDomainStatement),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoOpStatement {
+    pub command_tag: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -276,6 +282,7 @@ pub struct CreateTableStatement {
     pub name: Vec<String>,
     pub columns: Vec<ColumnDefinition>,
     pub constraints: Vec<TableConstraint>,
+    pub inherits: Vec<Vec<String>>,
     pub if_not_exists: bool,
     pub temporary: bool,
     pub unlogged: bool,

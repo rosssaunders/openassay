@@ -12,6 +12,12 @@ pub async fn execute_utility_statement(
     params: &[Option<String>],
 ) -> Result<QueryResult, EngineError> {
     match statement {
+        Statement::NoOp(noop) => Ok(QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            command_tag: noop.command_tag.clone(),
+            rows_affected: 0,
+        }),
         Statement::CreateTable(create) => create_table::execute_create_table(create).await,
         Statement::CreateSchema(create) => schema::execute_create_schema(create).await,
         Statement::CreateIndex(create) => index::execute_create_index(create).await,
@@ -118,7 +124,8 @@ pub async fn execute_utility_statement(
 pub fn is_utility_statement(statement: &Statement) -> bool {
     matches!(
         statement,
-        Statement::CreateTable(_)
+        Statement::NoOp(_)
+            | Statement::CreateTable(_)
             | Statement::CreateSchema(_)
             | Statement::CreateIndex(_)
             | Statement::CreateSequence(_)

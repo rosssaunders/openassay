@@ -106,6 +106,7 @@ pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError>
                 "SELECT".to_string(),
             )
         }
+        Statement::NoOp(noop) => (Vec::new(), Vec::new(), false, noop.command_tag.clone()),
         Statement::CreateTable(_) => (Vec::new(), Vec::new(), false, "CREATE TABLE".to_string()),
         Statement::CreateSchema(_) => (Vec::new(), Vec::new(), false, "CREATE SCHEMA".to_string()),
         Statement::CreateIndex(_) => (Vec::new(), Vec::new(), false, "CREATE INDEX".to_string()),

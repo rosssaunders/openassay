@@ -7,6 +7,7 @@ use std::time::Duration;
 
 const STATEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RECORDED_ERRORS: usize = 200;
+const VERBOSE_ENV: &str = "OPENASSAY_REGRESSION_VERBOSE";
 const SHARED_REGRESSION_FIXTURE_SQL: &str = r#"
 CREATE TABLE CHAR_TBL (f1 char(4));
 INSERT INTO CHAR_TBL (f1) VALUES ('a'), ('ab'), ('abcd'), ('abcd    ');
@@ -517,6 +518,12 @@ fn postgresql_compatibility_suite() {
     let mut passed = 0;
     let mut failed = 0;
     let mut skipped = 0;
+    let verbose_errors = std::env::var(VERBOSE_ENV).is_ok_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "off" | "no"
+        )
+    });
 
     println!("Running {} PostgreSQL compatibility tests...", tests.len());
 
@@ -573,9 +580,11 @@ fn postgresql_compatibility_suite() {
                         continue;
                     }
                     stmt_err += 1;
-                    println!(
-                        "\n[REGRESSION-ERROR] file={test_name}\nSQL:\n{statement}\nERROR:\n{error}\n"
-                    );
+                    if verbose_errors {
+                        println!(
+                            "\n[REGRESSION-ERROR] file={test_name}\nSQL:\n{statement}\nERROR:\n{error}\n"
+                        );
+                    }
                     if error_messages.len() < MAX_RECORDED_ERRORS {
                         error_messages.push(format!(
                             "SQL: {}... => {}",
@@ -587,9 +596,11 @@ fn postgresql_compatibility_suite() {
                 StatementExecution::Panicked => {
                     // Statement caused a panic — treat as error and recreate session
                     stmt_err += 1;
-                    println!(
-                        "\n[REGRESSION-PANIC] file={test_name}\nSQL:\n{statement}\nERROR:\npanic while executing statement\n"
-                    );
+                    if verbose_errors {
+                        println!(
+                            "\n[REGRESSION-PANIC] file={test_name}\nSQL:\n{statement}\nERROR:\npanic while executing statement\n"
+                        );
+                    }
                     if error_messages.len() < MAX_RECORDED_ERRORS {
                         error_messages.push(format!(
                             "PANIC in: {}...",
@@ -601,10 +612,12 @@ fn postgresql_compatibility_suite() {
                 StatementExecution::TimedOut => {
                     stmt_timeout += 1;
                     stmt_err += 1;
-                    println!(
-                        "\n[REGRESSION-TIMEOUT] file={test_name}\nSQL:\n{statement}\nERROR:\nstatement execution exceeded {} seconds\n",
-                        STATEMENT_TIMEOUT.as_secs()
-                    );
+                    if verbose_errors {
+                        println!(
+                            "\n[REGRESSION-TIMEOUT] file={test_name}\nSQL:\n{statement}\nERROR:\nstatement execution exceeded {} seconds\n",
+                            STATEMENT_TIMEOUT.as_secs()
+                        );
+                    }
                     if error_messages.len() < MAX_RECORDED_ERRORS {
                         error_messages.push(format!(
                             "TIMEOUT (>{}s) in: {}...",
