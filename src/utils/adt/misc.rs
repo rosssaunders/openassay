@@ -1540,6 +1540,8 @@ fn unary_op_to_sql(op: &crate::parser::ast::UnaryOp) -> &'static str {
         UnaryOp::Plus => "+",
         UnaryOp::Minus => "-",
         UnaryOp::Not => "NOT",
+        UnaryOp::Sqrt => "|/",
+        UnaryOp::Cbrt => "||/",
     }
 }
 

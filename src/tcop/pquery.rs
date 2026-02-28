@@ -266,6 +266,7 @@ fn infer_expr_type_oid(
         Expr::Unary { op, expr } => match op {
             UnaryOp::Not => PG_BOOL_OID,
             UnaryOp::Plus | UnaryOp::Minus => infer_expr_type_oid(expr, scope, ctes),
+            UnaryOp::Sqrt | UnaryOp::Cbrt => PG_FLOAT8_OID,
         },
         Expr::Binary { left, op, right } => {
             let left_oid = infer_expr_type_oid(left, scope, ctes);

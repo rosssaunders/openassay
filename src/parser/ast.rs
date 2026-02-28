@@ -971,6 +971,8 @@ pub enum UnaryOp {
     Plus,
     Minus,
     Not,
+    Sqrt,
+    Cbrt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

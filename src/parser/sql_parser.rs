@@ -3183,12 +3183,37 @@ impl Parser {
     }
 
     fn parse_target_list(&mut self) -> Result<Vec<SelectItem>, ParseError> {
+        if self.current_can_start_empty_select_targets() {
+            return Ok(Vec::new());
+        }
+
         let mut targets = Vec::new();
         targets.push(self.parse_target_item()?);
         while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
             targets.push(self.parse_target_item()?);
         }
         Ok(targets)
+    }
+
+    fn current_can_start_empty_select_targets(&self) -> bool {
+        matches!(
+            self.current_kind(),
+            TokenKind::Keyword(
+                Keyword::From
+                    | Keyword::Where
+                    | Keyword::Group
+                    | Keyword::Having
+                    | Keyword::Window
+                    | Keyword::Union
+                    | Keyword::Intersect
+                    | Keyword::Except
+                    | Keyword::Order
+                    | Keyword::Limit
+                    | Keyword::Offset
+            ) | TokenKind::RParen
+                | TokenKind::Semicolon
+                | TokenKind::Eof
+        )
     }
 
     fn parse_target_item(&mut self) -> Result<SelectItem, ParseError> {
@@ -4229,6 +4254,21 @@ impl Parser {
             let expr = self.parse_expr_bp(11)?;
             return Ok(Expr::Unary {
                 op: UnaryOp::Minus,
+                expr: Box::new(expr),
+            });
+        }
+        if let TokenKind::Operator(op) = self.current_kind()
+            && (op == "|/" || op == "||/")
+        {
+            let op = op.clone();
+            self.advance();
+            let expr = self.parse_expr_bp(11)?;
+            return Ok(Expr::Unary {
+                op: if op == "|/" {
+                    UnaryOp::Sqrt
+                } else {
+                    UnaryOp::Cbrt
+                },
                 expr: Box::new(expr),
             });
         }
@@ -9646,6 +9686,61 @@ mod tests {
         };
         assert_eq!(name, &vec!["extract".to_string()]);
         assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn parses_select_with_empty_target_list_and_from_clause() {
+        let stmt =
+            parse_statement("SELECT FROM generate_series(1,5)").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        assert!(select.targets.is_empty());
+        assert_eq!(select.from.len(), 1);
+    }
+
+    #[test]
+    fn parses_set_operation_with_empty_select_targets() {
+        let stmt = parse_statement("SELECT UNION SELECT").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::SetOperation { left, right, .. } = &query.body else {
+            panic!("expected set operation");
+        };
+        let QueryExpr::Select(left_select) = left.as_ref() else {
+            panic!("expected left SELECT");
+        };
+        let QueryExpr::Select(right_select) = right.as_ref() else {
+            panic!("expected right SELECT");
+        };
+        assert!(left_select.targets.is_empty());
+        assert!(right_select.targets.is_empty());
+    }
+
+    #[test]
+    fn parses_unary_sqrt_and_cbrt_operators() {
+        let stmt = parse_statement("SELECT |/ 64, ||/ 27").expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        assert_eq!(select.targets.len(), 2);
+
+        let Expr::Unary { op, .. } = &select.targets[0].expr else {
+            panic!("expected unary expression");
+        };
+        assert_eq!(*op, UnaryOp::Sqrt);
+
+        let Expr::Unary { op, .. } = &select.targets[1].expr else {
+            panic!("expected unary expression");
+        };
+        assert_eq!(*op, UnaryOp::Cbrt);
     }
 
     #[test]

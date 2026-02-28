@@ -2375,6 +2375,17 @@ pub(crate) fn eval_unary(op: UnaryOp, value: ScalarValue) -> Result<ScalarValue,
                 message: "invalid unary operation".to_string(),
             })
         }
+        (UnaryOp::Sqrt, ScalarValue::Null) | (UnaryOp::Cbrt, ScalarValue::Null) => {
+            Ok(ScalarValue::Null)
+        }
+        (UnaryOp::Sqrt, value) => {
+            let numeric = parse_f64_scalar(&value, "square root operator expects numeric value")?;
+            Ok(ScalarValue::Float(numeric.sqrt()))
+        }
+        (UnaryOp::Cbrt, value) => {
+            let numeric = parse_f64_scalar(&value, "cube root operator expects numeric value")?;
+            Ok(ScalarValue::Float(numeric.cbrt()))
+        }
         _ => Err(EngineError {
             message: "invalid unary operation".to_string(),
         }),

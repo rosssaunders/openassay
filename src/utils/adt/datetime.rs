@@ -96,6 +96,12 @@ pub(crate) fn eval_extract_or_date_part(
         "year" => ScalarValue::Int(datetime.date.year as i64),
         "month" => ScalarValue::Int(datetime.date.month as i64),
         "day" => ScalarValue::Int(datetime.date.day as i64),
+        "quarter" => ScalarValue::Int(((datetime.date.month - 1) / 3 + 1) as i64),
+        "week" => ScalarValue::Int(iso_week_number(datetime.date) as i64),
+        "isoyear" => ScalarValue::Int(iso_week_year(datetime.date) as i64),
+        "decade" => ScalarValue::Int(datetime.date.year.div_euclid(10) as i64),
+        "century" => ScalarValue::Int(century_from_year(datetime.date.year) as i64),
+        "millennium" => ScalarValue::Int(millennium_from_year(datetime.date.year) as i64),
         "hour" => ScalarValue::Int(datetime.hour as i64),
         "minute" => ScalarValue::Int(datetime.minute as i64),
         "second" => {
@@ -104,25 +110,37 @@ pub(crate) fn eval_extract_or_date_part(
                 datetime.second as f64 + (datetime.microsecond as f64 / 1_000_000.0);
             ScalarValue::Float(total_seconds)
         }
-        "millisecond" => {
+        "millisecond" | "milliseconds" => {
             // Return milliseconds including seconds part
             let total_ms =
                 (datetime.second as f64 * 1000.0) + (datetime.microsecond as f64 / 1000.0);
             ScalarValue::Float(total_ms)
         }
-        "microsecond" => {
+        "microsecond" | "microseconds" => {
             // Return microseconds including seconds part
             let total_us = (datetime.second as i64 * 1_000_000) + datetime.microsecond as i64;
             ScalarValue::Int(total_us)
         }
         "dow" => ScalarValue::Int(day_of_week(datetime.date) as i64),
+        "isodow" => ScalarValue::Int(iso_day_of_week(datetime.date) as i64),
         "doy" => ScalarValue::Int(day_of_year(datetime.date) as i64),
+        "julian" => {
+            let base = days_from_civil(datetime.date.year, datetime.date.month, datetime.date.day)
+                + 2_440_588;
+            let frac = (datetime.hour as f64 * 3_600.0
+                + datetime.minute as f64 * 60.0
+                + datetime.second as f64
+                + datetime.microsecond as f64 / 1_000_000.0)
+                / 86_400.0;
+            ScalarValue::Float(base as f64 + frac)
+        }
         "epoch" => {
             // Return epoch with fractional seconds
             let base_epoch = datetime_to_epoch_seconds(datetime);
             let frac = datetime.microsecond as f64 / 1_000_000.0;
             ScalarValue::Float(base_epoch as f64 + frac)
         }
+        "timezone" | "timezone_hour" | "timezone_minute" => ScalarValue::Int(0),
         _ => {
             return Err(EngineError {
                 message: format!("unsupported date/time field {field_name}"),
@@ -157,6 +175,48 @@ pub(crate) fn eval_date_trunc(
             datetime.second = 0;
             datetime.microsecond = 0;
         }
+        "quarter" => {
+            datetime.date.month = ((datetime.date.month - 1) / 3) * 3 + 1;
+            datetime.date.day = 1;
+            datetime.hour = 0;
+            datetime.minute = 0;
+            datetime.second = 0;
+            datetime.microsecond = 0;
+        }
+        "week" => {
+            datetime.date = add_days(datetime.date, 1 - i64::from(iso_day_of_week(datetime.date)));
+            datetime.hour = 0;
+            datetime.minute = 0;
+            datetime.second = 0;
+            datetime.microsecond = 0;
+        }
+        "decade" => {
+            datetime.date.year = datetime.date.year.div_euclid(10) * 10;
+            datetime.date.month = 1;
+            datetime.date.day = 1;
+            datetime.hour = 0;
+            datetime.minute = 0;
+            datetime.second = 0;
+            datetime.microsecond = 0;
+        }
+        "century" => {
+            datetime.date.year = century_start_year(datetime.date.year);
+            datetime.date.month = 1;
+            datetime.date.day = 1;
+            datetime.hour = 0;
+            datetime.minute = 0;
+            datetime.second = 0;
+            datetime.microsecond = 0;
+        }
+        "millennium" => {
+            datetime.date.year = millennium_start_year(datetime.date.year);
+            datetime.date.month = 1;
+            datetime.date.day = 1;
+            datetime.hour = 0;
+            datetime.minute = 0;
+            datetime.second = 0;
+            datetime.microsecond = 0;
+        }
         "day" => {
             datetime.hour = 0;
             datetime.minute = 0;
@@ -175,6 +235,10 @@ pub(crate) fn eval_date_trunc(
         "second" => {
             datetime.microsecond = 0;
         }
+        "millisecond" | "milliseconds" => {
+            datetime.microsecond = (datetime.microsecond / 1_000) * 1_000;
+        }
+        "microsecond" | "microseconds" => {}
         _ => {
             return Err(EngineError {
                 message: format!("unsupported date_trunc field {field_name}"),
@@ -1488,6 +1552,66 @@ fn day_of_week(date: DateValue) -> u32 {
     (days + 4).rem_euclid(7) as u32
 }
 
+fn iso_day_of_week(date: DateValue) -> u32 {
+    match day_of_week(date) {
+        0 => 7,
+        dow => dow,
+    }
+}
+
+fn iso_week_year(date: DateValue) -> i32 {
+    let iso_day = i64::from(iso_day_of_week(date));
+    let thursday = add_days(date, 4 - iso_day);
+    thursday.year
+}
+
+fn iso_week_number(date: DateValue) -> u32 {
+    let iso_year = iso_week_year(date);
+    let jan4 = DateValue {
+        year: iso_year,
+        month: 1,
+        day: 4,
+    };
+    let week1_monday = add_days(jan4, 1 - i64::from(iso_day_of_week(jan4)));
+    let days_since_week1 = days_from_civil(date.year, date.month, date.day)
+        - days_from_civil(week1_monday.year, week1_monday.month, week1_monday.day);
+    (days_since_week1.div_euclid(7) + 1) as u32
+}
+
+fn century_from_year(year: i32) -> i32 {
+    if year > 0 {
+        (year - 1).div_euclid(100) + 1
+    } else {
+        year.div_euclid(100)
+    }
+}
+
+fn millennium_from_year(year: i32) -> i32 {
+    if year > 0 {
+        (year - 1).div_euclid(1_000) + 1
+    } else {
+        year.div_euclid(1_000)
+    }
+}
+
+fn century_start_year(year: i32) -> i32 {
+    let century = century_from_year(year);
+    if century > 0 {
+        (century - 1) * 100 + 1
+    } else {
+        century * 100 + 1
+    }
+}
+
+fn millennium_start_year(year: i32) -> i32 {
+    let millennium = millennium_from_year(year);
+    if millennium > 0 {
+        (millennium - 1) * 1_000 + 1
+    } else {
+        millennium * 1_000 + 1
+    }
+}
+
 fn add_days(date: DateValue, days: i64) -> DateValue {
     let day_number = days_from_civil(date.year, date.month, date.day);
     civil_from_days(day_number + days)
@@ -2260,6 +2384,66 @@ mod tests {
         // Verify the timestamp formats correctly with microseconds
         let ts = format_timestamp(dt);
         assert!(ts.contains(".575401"));
+    }
+
+    #[test]
+    fn test_extract_iso_fields() {
+        let source = ScalarValue::Text("2021-01-01 12:00:00".to_string());
+        let isoyear = eval_extract_or_date_part(&ScalarValue::Text("isoyear".to_string()), &source)
+            .expect("extract isoyear should succeed");
+        let week = eval_extract_or_date_part(&ScalarValue::Text("week".to_string()), &source)
+            .expect("extract week should succeed");
+        let isodow = eval_extract_or_date_part(&ScalarValue::Text("isodow".to_string()), &source)
+            .expect("extract isodow should succeed");
+
+        assert_eq!(isoyear, ScalarValue::Int(2020));
+        assert_eq!(week, ScalarValue::Int(53));
+        assert_eq!(isodow, ScalarValue::Int(5));
+    }
+
+    #[test]
+    fn test_extract_century_millennium_and_julian() {
+        let source = ScalarValue::Text("2001-01-01 12:00:00".to_string());
+        let century = eval_extract_or_date_part(&ScalarValue::Text("century".to_string()), &source)
+            .expect("extract century should succeed");
+        let millennium =
+            eval_extract_or_date_part(&ScalarValue::Text("millennium".to_string()), &source)
+                .expect("extract millennium should succeed");
+        let julian = eval_extract_or_date_part(&ScalarValue::Text("julian".to_string()), &source)
+            .expect("extract julian should succeed");
+
+        assert_eq!(century, ScalarValue::Int(21));
+        assert_eq!(millennium, ScalarValue::Int(3));
+        assert_eq!(julian, ScalarValue::Float(2_451_911.5));
+    }
+
+    #[test]
+    fn test_date_trunc_week_quarter_and_century() {
+        let week = eval_date_trunc(
+            &ScalarValue::Text("week".to_string()),
+            &ScalarValue::Text("2024-01-03 10:11:12".to_string()),
+        )
+        .expect("date_trunc week should succeed");
+        let quarter = eval_date_trunc(
+            &ScalarValue::Text("quarter".to_string()),
+            &ScalarValue::Text("2024-05-17 10:11:12".to_string()),
+        )
+        .expect("date_trunc quarter should succeed");
+        let century = eval_date_trunc(
+            &ScalarValue::Text("century".to_string()),
+            &ScalarValue::Text("2024-05-17 10:11:12".to_string()),
+        )
+        .expect("date_trunc century should succeed");
+
+        assert_eq!(week, ScalarValue::Text("2024-01-01 00:00:00".to_string()));
+        assert_eq!(
+            quarter,
+            ScalarValue::Text("2024-04-01 00:00:00".to_string())
+        );
+        assert_eq!(
+            century,
+            ScalarValue::Text("2001-01-01 00:00:00".to_string())
+        );
     }
 
     #[test]
