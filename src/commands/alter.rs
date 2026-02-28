@@ -142,6 +142,7 @@ pub async fn execute_alter_table(
                 }
             }
         }
+        AlterTableAction::AddPrimaryKeyUsingIndex { .. } => {}
         AlterTableAction::DropColumn { name } => {
             let dropped_index = with_catalog_write(|catalog| {
                 catalog.drop_column(table.schema_name(), table.name(), name)

@@ -13,7 +13,9 @@ use std::arch::x86_64::{
 };
 
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
-use crate::commands::sequence::{normalize_sequence_name_from_text, with_sequences_read};
+use crate::commands::sequence::{
+    normalize_sequence_name, normalize_sequence_name_from_text, with_sequences_read,
+};
 use crate::executor::exec_expr::{
     EngineFuture, EvalScope, eval_any_all, eval_between_predicate, eval_binary, eval_cast_scalar,
     eval_expr, eval_expr_with_window, eval_is_distinct_from, eval_like_predicate, eval_unary,
@@ -2657,6 +2659,34 @@ async fn evaluate_relation_with_predicates(
     let table = match resolved_table {
         Ok(table) => table,
         Err(err) => {
+            if let Ok(sequence_name) = normalize_sequence_name(&rel.name)
+                && let Some(state) = with_sequences_read(|sequences| {
+                    sequences.get(&sequence_name).cloned()
+                })
+            {
+                let columns = vec![
+                    "last_value".to_string(),
+                    "log_cnt".to_string(),
+                    "is_called".to_string(),
+                ];
+                let row = vec![
+                    ScalarValue::Int(state.current),
+                    ScalarValue::Int(32),
+                    ScalarValue::Bool(state.called),
+                ];
+                let qualifiers = if let Some(alias) = &rel.alias {
+                    vec![alias.to_ascii_lowercase()]
+                } else {
+                    vec![relation_lookup_name(&rel.name)]
+                };
+                let null_values = vec![ScalarValue::Null; columns.len()];
+                let null_scope = scope_from_row(&columns, &null_values, &qualifiers, &columns);
+                return Ok(TableEval {
+                    rows: vec![scope_from_row(&columns, &row, &qualifiers, &columns)],
+                    columns,
+                    null_scope,
+                });
+            }
             if let Some(columns) = regression_fixture_relation_columns(&rel.name) {
                 let qualifiers = if let Some(alias) = &rel.alias {
                     vec![alias.to_ascii_lowercase()]

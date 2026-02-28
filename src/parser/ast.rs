@@ -602,6 +602,9 @@ pub struct AlterViewStatement {
 pub enum AlterTableAction {
     AddColumn(ColumnDefinition),
     AddConstraint(TableConstraint),
+    AddPrimaryKeyUsingIndex {
+        index_name: String,
+    },
     DropColumn {
         name: String,
     },

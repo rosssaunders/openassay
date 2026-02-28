@@ -2089,6 +2089,19 @@ impl Parser {
         let action = if self.consume_keyword(Keyword::Add) {
             if self.consume_keyword(Keyword::Column) {
                 AlterTableAction::AddColumn(self.parse_column_definition()?)
+            } else if self.peek_keyword(Keyword::Primary)
+                && self.peek_nth_keyword(1, Keyword::Key)
+                && self.peek_nth_keyword(2, Keyword::Using)
+            {
+                self.advance(); // PRIMARY
+                self.advance(); // KEY
+                self.advance(); // USING
+                if !self.consume_keyword(Keyword::Index) && !self.consume_ident("index") {
+                    return Err(self.error_at_current("expected INDEX after USING"));
+                }
+                AlterTableAction::AddPrimaryKeyUsingIndex {
+                    index_name: self.parse_identifier()?,
+                }
             } else if self.peek_keyword(Keyword::Constraint)
                 || self.peek_keyword(Keyword::Primary)
                 || self.peek_keyword(Keyword::Unique)
@@ -8786,6 +8799,22 @@ mod tests {
                 assert_eq!(columns, vec!["email".to_string()]);
             }
             other => panic!("expected add constraint action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_alter_table_add_primary_key_using_index_statement() {
+        let stmt = parse_statement("ALTER TABLE users ADD PRIMARY KEY USING INDEX users_pkey")
+            .expect("parse should succeed");
+        let Statement::AlterTable(alter) = stmt else {
+            panic!("expected alter table statement");
+        };
+
+        match alter.action {
+            AlterTableAction::AddPrimaryKeyUsingIndex { index_name } => {
+                assert_eq!(index_name, "users_pkey");
+            }
+            other => panic!("expected add primary key using index action, got {other:?}"),
         }
     }
 

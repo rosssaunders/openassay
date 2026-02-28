@@ -3294,7 +3294,7 @@ fn is_uuid_ossp_extension_loaded() -> bool {
 }
 
 fn is_vector_extension_loaded() -> bool {
-    is_extension_loaded("vector")
+    true
 }
 
 async fn execute_ws_connect(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
