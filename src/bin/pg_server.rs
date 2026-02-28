@@ -8,10 +8,8 @@ use openassay::protocol::messages::{
 };
 use openassay::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
 use rcgen::generate_simple_self_signed;
-use rustls::ServerConfig;
-use rustls::StreamOwned;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::ServerConnection;
+use rustls::{Certificate, PrivateKey, ServerConfig, StreamOwned};
 
 fn main() {
     let addr = std::env::args()
@@ -45,17 +43,17 @@ fn main() {
 }
 
 fn build_tls_config() -> io::Result<Arc<ServerConfig>> {
-    let certified =
-        generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
-            .map_err(|err| io::Error::other(format!("rcgen: {err}")))?;
-    let cert_der = CertificateDer::from(certified.cert.der().to_vec());
-    let key_der = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(
-        certified.signing_key.serialize_der(),
-    ));
+    let cert = generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+        .map_err(|err| io::Error::other(format!("rcgen: {err}")))?;
+    let cert_der = cert
+        .serialize_der()
+        .map_err(|err| io::Error::other(format!("rcgen cert serialize: {err}")))?;
+    let key_der = cert.serialize_private_key_der();
 
     let config = ServerConfig::builder()
+        .with_safe_defaults()
         .with_no_client_auth()
-        .with_single_cert(vec![cert_der], key_der)
+        .with_single_cert(vec![Certificate(cert_der)], PrivateKey(key_der))
         .map_err(|err| io::Error::other(format!("rustls: {err}")))?;
     Ok(Arc::new(config))
 }

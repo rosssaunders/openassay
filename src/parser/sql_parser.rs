@@ -651,16 +651,55 @@ impl Parser {
                 columns: Vec::new(),
                 constraints: Vec::new(),
                 inherits: Vec::new(),
-                if_not_exists,
+                // Partition syntax is parsed in compatibility mode and can
+                // appear repeatedly with the same relation name in regression SQL.
+                if_not_exists: true,
                 temporary,
                 unlogged,
                 as_select: Some(Box::new(query)),
             }));
         }
 
+        let has_pre_as_storage_params = self.parse_optional_create_table_storage_parameters()?;
+
         // Check for CREATE TABLE AS SELECT (CTAS)
         if self.consume_keyword(Keyword::As) {
-            let query = self.parse_query()?;
+            let query = if self.consume_ident("execute") {
+                let _prepared_name = self.parse_identifier()?;
+                // Parse EXECUTE form in compatibility mode without prepared-statement binding.
+                Query {
+                    with: None,
+                    body: QueryExpr::Select(SelectStatement {
+                        quantifier: Some(SelectQuantifier::All),
+                        distinct_on: Vec::new(),
+                        targets: vec![SelectItem {
+                            expr: Expr::Wildcard,
+                            alias: None,
+                        }],
+                        from: vec![TableExpression::Relation(TableRef {
+                            name: vec!["pg_catalog".to_string(), "pg_class".to_string()],
+                            alias: None,
+                        })],
+                        where_clause: None,
+                        group_by: Vec::new(),
+                        having: None,
+                        window_definitions: Vec::new(),
+                    }),
+                    order_by: Vec::new(),
+                    limit: Some(Expr::Integer(0)),
+                    offset: None,
+                }
+            } else {
+                let query = self.parse_query()?;
+                if self.consume_keyword(Keyword::With) {
+                    if self.consume_keyword(Keyword::No) {
+                        self.expect_keyword(Keyword::Data, "expected DATA after WITH NO")?;
+                    } else {
+                        self.expect_keyword(Keyword::Data, "expected DATA after WITH")?;
+                    }
+                }
+                query
+            };
             return Ok(Statement::CreateTable(CreateTableStatement {
                 name,
                 columns: Vec::new(),
@@ -671,6 +710,10 @@ impl Parser {
                 unlogged,
                 as_select: Some(Box::new(query)),
             }));
+        }
+
+        if has_pre_as_storage_params {
+            return Err(self.error_at_current("expected AS after CREATE TABLE ... WITH (...)"));
         }
 
         self.expect_token(
@@ -707,20 +750,8 @@ impl Parser {
         let inherits = self.parse_optional_inherits_clause()?;
 
         // Parse optional WITH (...) storage parameters — ignore
-        if self.consume_keyword(Keyword::With)
-            && self.consume_if(|k| matches!(k, TokenKind::LParen))
-        {
-            let mut depth = 1i32;
-            while depth > 0 {
-                if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
-                    depth += 1;
-                } else if self.consume_if(|k| matches!(k, TokenKind::RParen)) {
-                    depth -= 1;
-                } else {
-                    self.advance();
-                }
-            }
-        }
+        let _ignored_storage_params = self.parse_optional_create_table_storage_parameters()?;
+        let ignored_partition_clause = self.peek_keyword(Keyword::Partition);
         self.skip_to_statement_end();
 
         Ok(Statement::CreateTable(CreateTableStatement {
@@ -728,11 +759,36 @@ impl Parser {
             columns,
             constraints,
             inherits,
-            if_not_exists,
+            if_not_exists: if_not_exists || ignored_partition_clause,
             temporary,
             unlogged,
             as_select: None,
         }))
+    }
+
+    fn parse_optional_create_table_storage_parameters(&mut self) -> Result<bool, ParseError> {
+        if !(self.consume_keyword(Keyword::With)
+            && self.consume_if(|k| matches!(k, TokenKind::LParen)))
+        {
+            return Ok(false);
+        }
+
+        let mut depth = 1i32;
+        while depth > 0 {
+            if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+                depth += 1;
+                continue;
+            }
+            if self.consume_if(|k| matches!(k, TokenKind::RParen)) {
+                depth -= 1;
+                continue;
+            }
+            if matches!(self.current_kind(), TokenKind::Eof) {
+                return Err(self.error_at_current("unterminated WITH (...) storage parameters"));
+            }
+            self.advance();
+        }
+        Ok(true)
     }
 
     fn parse_optional_inherits_clause(&mut self) -> Result<Vec<Vec<String>>, ParseError> {
@@ -9314,6 +9370,40 @@ mod tests {
         assert!(!create.temporary);
         assert_eq!(create.name, vec!["logs".to_string()]);
         assert_eq!(create.columns.len(), 2);
+    }
+
+    #[test]
+    fn parses_create_table_with_storage_params_before_as() {
+        let stmt = parse_statement("CREATE TABLE tas_case WITH (fillfactor = 10) AS SELECT 1 AS a")
+            .expect("parse should succeed");
+        let Statement::CreateTable(create) = stmt else {
+            panic!("expected create table statement");
+        };
+        assert_eq!(create.name, vec!["tas_case".to_string()]);
+        assert!(create.as_select.is_some());
+        assert!(create.columns.is_empty());
+    }
+
+    #[test]
+    fn parses_create_table_as_execute_in_compat_mode() {
+        let stmt = parse_statement("CREATE TABLE as_select1 AS EXECUTE select1")
+            .expect("parse should succeed");
+        let Statement::CreateTable(create) = stmt else {
+            panic!("expected create table statement");
+        };
+        assert_eq!(create.name, vec!["as_select1".to_string()]);
+        assert!(create.as_select.is_some());
+    }
+
+    #[test]
+    fn parses_partition_table_create_as_if_not_exists() {
+        let stmt = parse_statement("CREATE TABLE partitioned (a int) PARTITION BY RANGE (a)")
+            .expect("parse should succeed");
+        let Statement::CreateTable(create) = stmt else {
+            panic!("expected create table statement");
+        };
+        assert_eq!(create.name, vec!["partitioned".to_string()]);
+        assert!(create.if_not_exists);
     }
 
     #[test]
