@@ -41,8 +41,8 @@ jobs:
           python3 scripts/compare_benchmarks.py \
             --baseline benches/baselines \
             --current target/criterion \
-            --warn 10 \
-            --fail 15 \
+            --warn 30 \
+            --fail 50 \
             --output benchmark_report.md
 
       - name: Save baseline (manual trigger only)

@@ -6253,9 +6253,10 @@ impl Parser {
                 );
             }
         } else if self.consume_ident("without")
-            && !(self.consume_keyword(Keyword::Function) || self.consume_ident("function")) {
-                return Err(self.error_at_current("expected FUNCTION after WITHOUT in CREATE CAST"));
-            }
+            && !(self.consume_keyword(Keyword::Function) || self.consume_ident("function"))
+        {
+            return Err(self.error_at_current("expected FUNCTION after WITHOUT in CREATE CAST"));
+        }
 
         let mut as_assignment = false;
         let mut as_implicit = false;

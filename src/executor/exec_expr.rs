@@ -2083,7 +2083,8 @@ pub(crate) fn eval_cast_scalar(
                 Ok(ScalarValue::Int(int_val))
             }
             _ => {
-                let val = parse_i64_scalar(&value, "cannot cast value to smallint").unwrap_or_default();
+                let val =
+                    parse_i64_scalar(&value, "cannot cast value to smallint").unwrap_or_default();
                 crate::utils::adt::int_arithmetic::validate_int2(val)?;
                 Ok(ScalarValue::Int(val))
             }
@@ -2101,7 +2102,8 @@ pub(crate) fn eval_cast_scalar(
                 Ok(ScalarValue::Int(int_val))
             }
             _ => {
-                let val = parse_i64_scalar(&value, "cannot cast value to integer").unwrap_or_default();
+                let val =
+                    parse_i64_scalar(&value, "cannot cast value to integer").unwrap_or_default();
                 crate::utils::adt::int_arithmetic::validate_int4(val)?;
                 Ok(ScalarValue::Int(val))
             }

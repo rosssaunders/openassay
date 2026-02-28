@@ -46,6 +46,31 @@ use crate::utils::adt::string_functions::{
 
 static LAST_SEQUENCE_VALUE: OnceLock<RwLock<Option<i64>>> = OnceLock::new();
 
+#[cfg(not(target_arch = "wasm32"))]
+async fn sleep_for_duration(duration: std::time::Duration) {
+    tokio::time::sleep(duration).await;
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn sleep_for_duration(duration: std::time::Duration) {
+    let ms = duration.as_millis().min(i32::MAX as u128) as i32;
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let global = js_sys::global();
+        let set_timeout =
+            js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("setTimeout"))
+                .expect("setTimeout not found on global");
+        let set_timeout: js_sys::Function = set_timeout.into();
+        set_timeout
+            .call2(
+                &wasm_bindgen::JsValue::NULL,
+                &resolve,
+                &wasm_bindgen::JsValue::from_f64(f64::from(ms)),
+            )
+            .expect("setTimeout call failed");
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
 fn with_last_sequence_value_read<T>(f: impl FnOnce(&Option<i64>) -> T) -> T {
     let guard = LAST_SEQUENCE_VALUE
         .get_or_init(|| RwLock::new(None))
@@ -680,7 +705,7 @@ pub(crate) async fn eval_scalar_function(
             }
             if seconds > 0.0 {
                 let sleep_for = std::time::Duration::from_secs_f64(seconds.min(60.0));
-                tokio::time::sleep(sleep_for).await;
+                sleep_for_duration(sleep_for).await;
             }
             Ok(ScalarValue::Null)
         }

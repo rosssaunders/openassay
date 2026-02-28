@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Pre-commit hook: catch compile and lint failures before commit.
+set -euo pipefail
+
+echo "[pre-commit] Running cargo check..."
+cargo check
+
+echo "[pre-commit] Running cargo clippy..."
+cargo clippy -- -D warnings
+
+echo "[pre-commit] Checks passed."
