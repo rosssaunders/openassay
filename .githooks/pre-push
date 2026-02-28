@@ -1,9 +1,14 @@
-#!/bin/bash
-# Pre-push hook: block pushes if clippy or build fails
-set -e
+#!/usr/bin/env bash
+# Pre-push hook: block pushes if native/wasm build or clippy fails.
+set -euo pipefail
 
-echo "🔨 Running cargo build..."
-cargo build 2>&1
-echo "📎 Running cargo clippy..."
-cargo clippy -- -D warnings 2>&1
-echo "✅ Build and clippy passed. Pushing..."
+echo "[pre-push] Running cargo build..."
+cargo build
+
+echo "[pre-push] Running cargo build for wasm32 library..."
+cargo build --lib --target wasm32-unknown-unknown
+
+echo "[pre-push] Running cargo clippy..."
+cargo clippy -- -D warnings
+
+echo "[pre-push] Checks passed."
