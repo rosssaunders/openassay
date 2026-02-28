@@ -189,6 +189,8 @@ const KNOWN_FUNCTIONS: &[(&str, usize, usize)] = &[
     ("jsonb_exists", 2, 2),
     ("jsonb_exists_any", 2, 2),
     ("jsonb_exists_all", 2, 2),
+    // Convenience table functions
+    ("json_table", 1, 255), // url + optional variadic path segments
     // HTTP extension functions
     ("http_get", 1, 2),
     ("http_post", 2, 3),

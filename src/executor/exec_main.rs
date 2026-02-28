@@ -33,7 +33,8 @@ use crate::tcop::engine::{
 use crate::tcop::engine::{drain_wasm_ws_messages, sync_wasm_ws_state};
 use crate::tcop::pquery::derive_dml_returning_columns;
 use crate::utils::adt::json::{
-    json_value_text_output, jsonb_path_query_values, parse_json_document_arg, scalar_to_json_value,
+    eval_http_get, extract_json_path_value, json_value_text_output, jsonb_path_query_values,
+    parse_json_document_arg, scalar_to_json_value,
 };
 use crate::utils::adt::misc::{
     compare_values_for_predicate, eval_regexp_matches_set_function,
@@ -341,6 +342,21 @@ async fn execute_values(
     })
 }
 
+/// Check if any FROM table function has dynamic columns (unknown until execution).
+fn from_has_dynamic_columns(from: &[TableExpression]) -> bool {
+    const DYNAMIC_FUNCTIONS: &[&str] = &["json_table"];
+    for item in from {
+        if let TableExpression::Function(f) = item
+            && f.column_aliases.is_empty()
+            && let Some(name) = f.name.last()
+            && DYNAMIC_FUNCTIONS.contains(&name.to_ascii_lowercase().as_str())
+        {
+            return true;
+        }
+    }
+    false
+}
+
 async fn execute_select(
     select: &SelectStatement,
     params: &[Option<String>],
@@ -354,12 +370,17 @@ async fn execute_select(
         .targets
         .iter()
         .any(|target| matches!(target.expr, Expr::Wildcard | Expr::QualifiedWildcard(_)));
-    let wildcard_columns = if has_wildcard {
+    let has_dynamic_from = has_wildcard && from_has_dynamic_columns(&select.from);
+    let wildcard_columns = if has_wildcard && !has_dynamic_from {
         Some(expand_from_columns(&select.from, &cte_columns)?)
     } else {
         None
     };
-    let columns = derive_select_columns(select, &cte_columns)?;
+    let columns = if has_dynamic_from {
+        Vec::new()
+    } else {
+        derive_select_columns(select, &cte_columns)?
+    };
     let mut rows = Vec::new();
 
     let has_aggregate = select
@@ -392,11 +413,86 @@ async fn execute_select(
         });
     }
 
-    // Predicate pushdown: when there are multiple FROM tables and a WHERE clause,
-    // decompose the WHERE into conjuncts and push applicable predicates into the
-    // FROM clause evaluation, applying them incrementally as tables are joined.
-    // This avoids computing the full cartesian product before filtering.
-    let (mut source_rows, remaining_predicate) = if select.from.len() >= 2
+    // For dynamic-column table functions (e.g. json_table), evaluate FROM first
+    // to discover columns, then derive wildcard_columns and output columns.
+    // This avoids a double evaluation — the source_rows are captured here.
+    let (wildcard_columns, columns, dynamic_source) = if has_dynamic_from {
+        let mut discovered_columns = Vec::new();
+        let mut all_rows = vec![EvalScope::default()];
+        for item in &select.from {
+            let table_eval = evaluate_table_expression(item, params, outer_scope).await?;
+            let qualifier = match item {
+                TableExpression::Function(f) => f
+                    .alias
+                    .as_ref()
+                    .map(|a| a.to_ascii_lowercase())
+                    .or_else(|| f.name.last().map(|n| n.to_ascii_lowercase())),
+                _ => None,
+            };
+            for col in &table_eval.columns {
+                let lookup_parts = if let Some(q) = &qualifier {
+                    vec![q.clone(), col.clone()]
+                } else {
+                    vec![col.clone()]
+                };
+                discovered_columns.push(ExpandedFromColumn {
+                    label: col.clone(),
+                    lookup_parts,
+                });
+            }
+            // Cross-join with accumulated rows
+            let mut next = Vec::new();
+            for lhs in &all_rows {
+                for rhs in &table_eval.rows {
+                    next.push(combine_scopes(lhs, rhs, &HashSet::new()));
+                }
+            }
+            all_rows = next;
+        }
+        // Build output columns from wildcard expansion
+        let mut out_columns = Vec::new();
+        for target in &select.targets {
+            if matches!(target.expr, Expr::Wildcard) {
+                for col in &discovered_columns {
+                    out_columns.push(col.label.clone());
+                }
+            } else if let Expr::QualifiedWildcard(qualifier) = &target.expr {
+                let qualifier_lower = qualifier
+                    .last()
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_default();
+                for col in &discovered_columns {
+                    if col.lookup_parts.len() >= 2
+                        && col.lookup_parts[0].to_ascii_lowercase() == qualifier_lower
+                    {
+                        out_columns.push(col.label.clone());
+                    }
+                }
+            } else if let Some(alias) = &target.alias {
+                out_columns.push(alias.clone());
+            } else {
+                let name = match &target.expr {
+                    Expr::Identifier(parts) => parts
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| "?column?".to_string()),
+                    Expr::FunctionCall { name, .. } => name
+                        .last()
+                        .cloned()
+                        .unwrap_or_else(|| "?column?".to_string()),
+                    _ => "?column?".to_string(),
+                };
+                out_columns.push(name);
+            }
+        }
+        (Some(discovered_columns), out_columns, Some(all_rows))
+    } else {
+        (wildcard_columns, columns, None)
+    };
+
+    let (mut source_rows, remaining_predicate) = if let Some(rows) = dynamic_source {
+        (rows, select.where_clause.clone())
+    } else if select.from.len() >= 2
         && let Some(where_clause) = select.where_clause.as_ref()
     {
         let conjuncts = decompose_and_conjuncts(where_clause);
@@ -1322,6 +1418,7 @@ async fn evaluate_set_returning_function(
         "generate_series" => eval_generate_series(args, &fn_name),
         "unnest" => eval_unnest_set_function(args, &fn_name),
         "pg_input_error_info" => eval_pg_input_error_info_set_function(args, &fn_name),
+        "json_table" => eval_json_table_function(args, &fn_name).await,
         "pg_get_keywords" => eval_pg_get_keywords(),
         "messages" if function.name.len() == 2 && function.name[0].eq_ignore_ascii_case("ws") => {
             execute_ws_messages(args).await
@@ -1613,6 +1710,128 @@ fn eval_json_record_table_function(
     }
 
     Ok((output_columns, rows))
+}
+
+async fn eval_json_table_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if args.is_empty() {
+        return Err(EngineError {
+            message: format!("{fn_name}() requires at least 1 argument (URL)"),
+        });
+    }
+
+    // 1. Fetch URL
+    let response_value = eval_http_get(&args[0]).await?;
+    if matches!(response_value, ScalarValue::Null) {
+        return Ok((vec!["value".to_string()], Vec::new()));
+    }
+
+    // 2. Parse the HTTP response JSON to extract the "content" field
+    let response_json = parse_json_document_arg(&response_value, fn_name, 1)?;
+    let content_str = match response_json.get("content") {
+        Some(JsonValue::String(s)) => s.clone(),
+        _ => {
+            return Err(EngineError {
+                message: format!("{fn_name}(): HTTP response missing 'content' field"),
+            });
+        }
+    };
+
+    // 3. Parse the body content as JSON
+    let body: JsonValue = serde_json::from_str(&content_str).map_err(|err| EngineError {
+        message: format!("{fn_name}(): response body is not valid JSON: {err}"),
+    })?;
+
+    // 4. Navigate path segments if provided
+    let path_segments: Vec<String> = args[1..]
+        .iter()
+        .map(|arg| match arg {
+            ScalarValue::Text(s) => Ok(s.clone()),
+            ScalarValue::Int(i) => Ok(i.to_string()),
+            ScalarValue::Null => Err(EngineError {
+                message: format!("{fn_name}(): path segment cannot be NULL"),
+            }),
+            other => Ok(other.render()),
+        })
+        .collect::<Result<_, _>>()?;
+
+    let target = if path_segments.is_empty() {
+        &body
+    } else {
+        extract_json_path_value(&body, &path_segments).ok_or_else(|| EngineError {
+            message: format!(
+                "{fn_name}(): path '{}' not found in response",
+                path_segments.join(".")
+            ),
+        })?
+    };
+
+    // 5. Convert result to rows
+    match target {
+        JsonValue::Array(items) => {
+            if items.is_empty() {
+                return Ok((vec!["value".to_string()], Vec::new()));
+            }
+            // Check if array of objects → auto-discover columns
+            let first_obj = items
+                .iter()
+                .find(|item| matches!(item, JsonValue::Object(_)));
+            if let Some(JsonValue::Object(_)) = first_obj {
+                // Auto-discover column names from all objects
+                let mut column_names = Vec::new();
+                let mut seen = HashSet::new();
+                for item in items {
+                    if let JsonValue::Object(map) = item {
+                        for key in map.keys() {
+                            if seen.insert(key.clone()) {
+                                column_names.push(key.clone());
+                            }
+                        }
+                    }
+                }
+                let mut rows = Vec::with_capacity(items.len());
+                for item in items {
+                    if let JsonValue::Object(map) = item {
+                        let row: Vec<ScalarValue> = column_names
+                            .iter()
+                            .map(|col| {
+                                map.get(col)
+                                    .map(json_value_to_scalar)
+                                    .unwrap_or(ScalarValue::Null)
+                            })
+                            .collect();
+                        rows.push(row);
+                    } else {
+                        // Mixed array: non-object items get nulls for all columns
+                        rows.push(vec![ScalarValue::Null; column_names.len()]);
+                    }
+                }
+                Ok((column_names, rows))
+            } else {
+                // Array of primitives → single "value" column
+                let rows: Vec<Vec<ScalarValue>> = items
+                    .iter()
+                    .map(|item| vec![json_value_to_scalar(item)])
+                    .collect();
+                Ok((vec!["value".to_string()], rows))
+            }
+        }
+        JsonValue::Object(map) => {
+            // Single object → one row with columns from keys
+            let column_names: Vec<String> = map.keys().cloned().collect();
+            let row: Vec<ScalarValue> = map.values().map(json_value_to_scalar).collect();
+            Ok((column_names, vec![row]))
+        }
+        _ => {
+            // Scalar → single "value" column, single row
+            Ok((
+                vec!["value".to_string()],
+                vec![vec![json_value_to_scalar(target)]],
+            ))
+        }
+    }
 }
 
 fn eval_generate_series(
