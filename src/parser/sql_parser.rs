@@ -6050,6 +6050,9 @@ impl Parser {
             TokenKind::Caret => Some((BinaryOp::Pow, 13, 14)),
             TokenKind::Operator(op) if op == "<<" => Some((BinaryOp::ShiftLeft, 9, 10)),
             TokenKind::Operator(op) if op == ">>" => Some((BinaryOp::ShiftRight, 9, 10)),
+            TokenKind::Operator(op) if op == "<<|" => Some((BinaryOp::Lt, 5, 6)),
+            TokenKind::Operator(op) if op == "|>>" => Some((BinaryOp::Gt, 5, 6)),
+            TokenKind::Operator(op) if op == "~=" => Some((BinaryOp::Eq, 5, 6)),
             TokenKind::Operator(op) if op == "->" => Some((BinaryOp::JsonGet, 11, 12)),
             TokenKind::Operator(op) if op == "->>" => Some((BinaryOp::JsonGetText, 11, 12)),
             TokenKind::Operator(op) if op == "#>" => Some((BinaryOp::JsonPath, 11, 12)),
@@ -8916,6 +8919,30 @@ mod tests {
                 other => panic!("expected binary expression target, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn parses_geometric_binary_operators() {
+        let stmt = parse_statement("SELECT p <<| '(0,0)', p |>> '(0,0)', p ~= '(1,1)' FROM t")
+            .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        let Expr::Binary { op: op1, .. } = &select.targets[0].expr else {
+            panic!("expected binary expression");
+        };
+        let Expr::Binary { op: op2, .. } = &select.targets[1].expr else {
+            panic!("expected binary expression");
+        };
+        let Expr::Binary { op: op3, .. } = &select.targets[2].expr else {
+            panic!("expected binary expression");
+        };
+        assert_eq!(*op1, BinaryOp::Lt);
+        assert_eq!(*op2, BinaryOp::Gt);
+        assert_eq!(*op3, BinaryOp::Eq);
     }
 
     #[test]

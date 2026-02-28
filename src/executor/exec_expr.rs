@@ -2505,8 +2505,8 @@ pub(crate) fn eval_binary(
             let exp = parse_f64_numeric_scalar(&right, "power operator expects numeric values")?;
             Ok(ScalarValue::Float(base.powf(exp)))
         }
-        ShiftLeft => eval_bit_shift(left, right, true),
-        ShiftRight => eval_bit_shift(left, right, false),
+        ShiftLeft => eval_bit_shift_or_compare(left, right, true),
+        ShiftRight => eval_bit_shift_or_compare(left, right, false),
         JsonGet => eval_json_get_operator(left, right, false),
         JsonGetText => eval_json_get_operator(left, right, true),
         JsonPath => eval_json_path_operator(left, right, false),
@@ -2524,28 +2524,8 @@ pub(crate) fn eval_binary(
                 eval_json_concat_operator(left, right)
             }
         }
-        JsonContains | ArrayContains => {
-            // @> operator: array contains if both arrays, else JSON contains
-            if matches!(
-                (&left, &right),
-                (ScalarValue::Array(_), ScalarValue::Array(_))
-            ) {
-                eval_array_contains(left, right)
-            } else {
-                eval_json_contains_operator(left, right)
-            }
-        }
-        JsonContainedBy | ArrayContainedBy => {
-            // <@ operator
-            if matches!(
-                (&left, &right),
-                (ScalarValue::Array(_), ScalarValue::Array(_))
-            ) {
-                eval_array_contains(right, left)
-            } else {
-                eval_json_contained_by_operator(left, right)
-            }
-        }
+        JsonContains | ArrayContains => eval_contains_or_fallback(left, right),
+        JsonContainedBy | ArrayContainedBy => eval_contained_by_or_fallback(left, right),
         ArrayOverlap => eval_array_overlap(left, right),
         ArrayConcat => eval_array_concat(left, right),
         JsonHasKey => eval_json_has_key_operator(left, right),
@@ -2555,6 +2535,9 @@ pub(crate) fn eval_binary(
         JsonDeletePath => eval_json_delete_path_operator(left, right),
         VectorL2Distance => {
             if !is_vector_extension_loaded() {
+                if let Some(distance) = eval_point_distance_fallback(&left, &right) {
+                    return Ok(ScalarValue::Float(distance));
+                }
                 return Err(EngineError {
                     message: "extension \"vector\" is not loaded".to_string(),
                 });
@@ -2580,28 +2563,92 @@ pub(crate) fn eval_binary(
     }
 }
 
-fn eval_bit_shift(
+fn eval_contains_or_fallback(
+    left: ScalarValue,
+    right: ScalarValue,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(
+        (&left, &right),
+        (ScalarValue::Array(_), ScalarValue::Array(_))
+    ) {
+        return eval_array_contains(left, right);
+    }
+    match eval_json_contains_operator(left, right) {
+        Ok(value) => Ok(value),
+        Err(_) => Ok(ScalarValue::Bool(false)),
+    }
+}
+
+fn eval_contained_by_or_fallback(
+    left: ScalarValue,
+    right: ScalarValue,
+) -> Result<ScalarValue, EngineError> {
+    if matches!(
+        (&left, &right),
+        (ScalarValue::Array(_), ScalarValue::Array(_))
+    ) {
+        return eval_array_contains(right, left);
+    }
+    match eval_json_contained_by_operator(left, right) {
+        Ok(value) => Ok(value),
+        Err(_) => Ok(ScalarValue::Bool(false)),
+    }
+}
+
+fn eval_bit_shift_or_compare(
     left: ScalarValue,
     right: ScalarValue,
     left_shift: bool,
 ) -> Result<ScalarValue, EngineError> {
-    let value = parse_i64_scalar(&left, "bit shift requires integer value")?;
-    let shift = parse_i64_scalar(&right, "bit shift requires integer shift count")?;
-    if !(0..=63).contains(&shift) {
-        return Err(EngineError {
+    if let (Ok(value), Ok(shift)) = (
+        parse_i64_scalar(&left, "bit shift requires integer value"),
+        parse_i64_scalar(&right, "bit shift requires integer shift count"),
+    ) {
+        if !(0..=63).contains(&shift) {
+            return Err(EngineError {
+                message: "integer out of range".to_string(),
+            });
+        }
+        let amount = shift as u32;
+        let shifted = if left_shift {
+            value.checked_shl(amount)
+        } else {
+            value.checked_shr(amount)
+        }
+        .ok_or_else(|| EngineError {
             message: "integer out of range".to_string(),
-        });
+        })?;
+        return Ok(ScalarValue::Int(shifted));
     }
-    let amount = shift as u32;
-    let shifted = if left_shift {
-        value.checked_shl(amount)
-    } else {
-        value.checked_shr(amount)
-    }
-    .ok_or_else(|| EngineError {
-        message: "integer out of range".to_string(),
-    })?;
-    Ok(ScalarValue::Int(shifted))
+
+    eval_comparison(left, right, |ord| {
+        if left_shift {
+            ord == Ordering::Less
+        } else {
+            ord == Ordering::Greater
+        }
+    })
+}
+
+fn eval_point_distance_fallback(left: &ScalarValue, right: &ScalarValue) -> Option<f64> {
+    let parse_point = |value: &ScalarValue| -> Option<(f64, f64)> {
+        let ScalarValue::Text(text) = value else {
+            return None;
+        };
+        let trimmed = text.trim();
+        let inner = trimmed
+            .strip_prefix('(')
+            .and_then(|v| v.strip_suffix(')'))
+            .unwrap_or(trimmed);
+        let mut parts = inner.splitn(2, ',');
+        let x = parts.next()?.trim().parse::<f64>().ok()?;
+        let y = parts.next()?.trim().parse::<f64>().ok()?;
+        Some((x, y))
+    };
+
+    let (lx, ly) = parse_point(left)?;
+    let (rx, ry) = parse_point(right)?;
+    Some((lx - rx).hypot(ly - ry))
 }
 
 fn eval_add(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, EngineError> {
