@@ -5436,9 +5436,7 @@ pub(crate) async fn eval_aggregate_function(
             let mut out = JsonMap::new();
             for row in rows {
                 if matches!(row.args[0], ScalarValue::Null) {
-                    return Err(EngineError {
-                        message: format!("{fn_name}() key cannot be null"),
-                    });
+                    continue;
                 }
                 out.insert(row.args[0].render(), scalar_to_json_value(&row.args[1])?);
             }

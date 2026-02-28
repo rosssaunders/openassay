@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
+use serde_json::Value as JsonValue;
+
 use crate::executor::exec_main::{
     compare_order_keys, eval_aggregate_function, execute_query_with_outer, is_aggregate_function,
     parse_non_negative_int, row_key,
@@ -3860,10 +3862,8 @@ fn eval_array_slice(
             Ok(parsed) => parsed,
             Err(array_err) => {
                 let json_text = ScalarValue::Text(text.clone());
-                if parse_json_document_arg(&json_text, "json subscript", 1).is_ok() {
-                    return Err(EngineError {
-                        message: "jsonb subscript does not support slices".to_string(),
-                    });
+                if let Ok(parsed_json) = parse_json_document_arg(&json_text, "json subscript", 1) {
+                    return eval_json_array_slice(parsed_json, start, end);
                 }
                 return Err(array_err);
             }
@@ -3932,6 +3932,65 @@ fn eval_array_slice(
 
     let sliced = elements[start_idx..end_idx].to_vec();
     Ok(ScalarValue::Array(sliced))
+}
+
+fn eval_json_array_slice(
+    parsed: JsonValue,
+    start: Option<ScalarValue>,
+    end: Option<ScalarValue>,
+) -> Result<ScalarValue, EngineError> {
+    let JsonValue::Array(items) = parsed else {
+        return Ok(ScalarValue::Null);
+    };
+
+    let start_idx = if let Some(start_val) = start {
+        match start_val {
+            ScalarValue::Int(i) => {
+                if i <= 0 {
+                    0
+                } else {
+                    (i - 1) as usize
+                }
+            }
+            ScalarValue::Null => return Ok(ScalarValue::Null),
+            _ => {
+                return Err(EngineError {
+                    message: "array slice bounds must be type integer".to_string(),
+                });
+            }
+        }
+    } else {
+        0
+    };
+
+    let end_idx = if let Some(end_val) = end {
+        match end_val {
+            ScalarValue::Int(i) => {
+                if i <= 0 {
+                    0
+                } else {
+                    i as usize
+                }
+            }
+            ScalarValue::Null => return Ok(ScalarValue::Null),
+            _ => {
+                return Err(EngineError {
+                    message: "array slice bounds must be type integer".to_string(),
+                });
+            }
+        }
+    } else {
+        items.len()
+    };
+
+    let start_idx = start_idx.min(items.len());
+    let end_idx = end_idx.min(items.len());
+    if start_idx >= end_idx {
+        return Ok(ScalarValue::Text("[]".to_string()));
+    }
+
+    let out = JsonValue::Array(items[start_idx..end_idx].to_vec());
+    Ok(ScalarValue::Text(out.to_string()))
 }
 
 /// Concatenate two arrays (or an array and a scalar).

@@ -63,14 +63,14 @@ pub(crate) fn json_build_object_value(args: &[ScalarValue]) -> Result<JsonValue,
     let mut object = JsonMap::new();
     for idx in (0..args.len()).step_by(2) {
         let key = match &args[idx] {
-            ScalarValue::Null => {
-                return Err(EngineError {
-                    message: "null value not allowed for object key".to_string(),
-                });
-            }
+            ScalarValue::Null => "null".to_string(),
             other => other.render(),
         };
-        let value = scalar_to_json_value(&args[idx + 1])?;
+        let value = if let Some(value) = args.get(idx + 1) {
+            scalar_to_json_value(value)?
+        } else {
+            JsonValue::Null
+        };
         object.insert(key, value);
     }
     Ok(JsonValue::Object(object))
@@ -408,9 +408,7 @@ pub(crate) fn eval_json_array_length(
     }
     let parsed = parse_json_document_arg(value, fn_name, 1)?;
     let JsonValue::Array(items) = parsed else {
-        return Err(EngineError {
-            message: format!("{fn_name}() argument 1 must be a JSON array"),
-        });
+        return Ok(ScalarValue::Null);
     };
     Ok(ScalarValue::Int(items.len() as i64))
 }
@@ -510,9 +508,7 @@ pub(crate) fn eval_jsonb_exists_any_all(
     let parsed = parse_json_document_arg(target, fn_name, 1)?;
     let keys = parse_json_path_operand(keys, fn_name)?;
     if keys.is_empty() {
-        return Err(EngineError {
-            message: format!("{fn_name}() key array cannot be empty"),
-        });
+        return Ok(ScalarValue::Bool(!any_mode));
     }
     let matched = if any_mode {
         keys.iter().any(|key| json_has_key(&parsed, key))
@@ -795,27 +791,33 @@ pub(crate) fn eval_jsonb_set_lax(args: &[ScalarValue]) -> Result<ScalarValue, En
         }
     };
     let path = parse_json_path_text_array(path_text);
-    let create_missing = if args.len() >= 4 {
-        if matches!(args[3], ScalarValue::Null) {
+    let mut create_missing = true;
+    let mut null_value_treatment_arg: Option<String> = None;
+    if args.len() >= 4 {
+        match &args[3] {
+            ScalarValue::Null => return Ok(ScalarValue::Null),
+            ScalarValue::Text(text) if args.len() == 4 => {
+                // Named argument compatibility:
+                // jsonb_set_lax(..., null_value_treatment => 'delete_key')
+                null_value_treatment_arg = Some(text.trim().to_ascii_lowercase());
+            }
+            _ => {
+                create_missing = parse_bool_scalar(
+                    &args[3],
+                    "jsonb_set_lax() expects boolean create_if_missing argument",
+                )?;
+            }
+        }
+    }
+    if args.len() >= 5 {
+        if matches!(args[4], ScalarValue::Null) {
             return Ok(ScalarValue::Null);
         }
-        parse_bool_scalar(
-            &args[3],
-            "jsonb_set_lax() expects boolean create_if_missing argument",
-        )?
-    } else {
-        true
-    };
+        null_value_treatment_arg = Some(args[4].render().trim().to_ascii_lowercase());
+    }
 
     if matches!(args[2], ScalarValue::Null) {
-        let treatment = if args.len() >= 5 {
-            if matches!(args[4], ScalarValue::Null) {
-                return Ok(ScalarValue::Null);
-            }
-            args[4].render().trim().to_ascii_lowercase()
-        } else {
-            "use_json_null".to_string()
-        };
+        let treatment = null_value_treatment_arg.unwrap_or_else(|| "use_json_null".to_string());
         match treatment.as_str() {
             "raise_exception" => {
                 return Err(EngineError {
