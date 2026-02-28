@@ -1,3 +1,4 @@
+use openassay::tcop::engine::{restore_state, snapshot_state};
 use openassay::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
 use std::collections::HashMap;
 use std::fs;
@@ -514,6 +515,7 @@ fn is_expected_plpgsql_error_probe(statement: &str) -> bool {
 #[test]
 fn postgresql_compatibility_suite() {
     let tests = load_pg_compat_tests();
+    let baseline_state = snapshot_state();
     let mut results = HashMap::new();
     let mut passed = 0;
     let mut failed = 0;
@@ -530,6 +532,8 @@ fn postgresql_compatibility_suite() {
     for (test_name, sql, _expected) in tests {
         print!("Testing {test_name}... ");
 
+        // Keep each SQL file isolated from global catalog/storage side effects.
+        restore_state(baseline_state.clone());
         let mut session = PostgresSession::new();
         if test_name == "plpgsql" {
             // Prevent cross-test relation leakage from affecting plpgsql strictness checks.
