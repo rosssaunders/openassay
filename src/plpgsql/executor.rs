@@ -14,12 +14,11 @@ use crate::parser::sql_parser::parse_statement;
 use crate::plpgsql::scanner::{PlPgSqlTokenKind, tokenize};
 use crate::plpgsql::types::{
     PLPGSQL_OTHERS, PlPgSqlCondition, PlPgSqlDatum, PlPgSqlExpr, PlPgSqlFunction,
-    PlPgSqlGetdiagKind, PlPgSqlRaiseOptionType, PlPgSqlStmt, PlPgSqlStmtAssert,
-    PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtClose, PlPgSqlStmtDynexecute,
-    PlPgSqlStmtExecSql, PlPgSqlStmtExit, PlPgSqlStmtFetch, PlPgSqlStmtForc, PlPgSqlStmtFori,
-    PlPgSqlStmtFors, PlPgSqlStmtGetdiag, PlPgSqlStmtIf, PlPgSqlStmtLoop, PlPgSqlStmtOpen,
-    PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn, PlPgSqlStmtReturnNext,
-    PlPgSqlStmtWhile, PlPgSqlTypeType, PlPgSqlValue,
+    PlPgSqlGetdiagKind, PlPgSqlRaiseOptionType, PlPgSqlStmt, PlPgSqlStmtAssert, PlPgSqlStmtAssign,
+    PlPgSqlStmtBlock, PlPgSqlStmtClose, PlPgSqlStmtDynexecute, PlPgSqlStmtExecSql, PlPgSqlStmtExit,
+    PlPgSqlStmtFetch, PlPgSqlStmtForc, PlPgSqlStmtFori, PlPgSqlStmtFors, PlPgSqlStmtGetdiag,
+    PlPgSqlStmtIf, PlPgSqlStmtLoop, PlPgSqlStmtOpen, PlPgSqlStmtPerform, PlPgSqlStmtRaise,
+    PlPgSqlStmtReturn, PlPgSqlStmtReturnNext, PlPgSqlStmtWhile, PlPgSqlTypeType, PlPgSqlValue,
 };
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{QueryResult, execute_planned_query, plan_statement};
@@ -626,11 +625,14 @@ fn exec_stmt_forc(
         .var
         .as_ref()
         .ok_or_else(|| "FOR cursor variable is missing".to_string())?;
-    estate.cursor_states.entry(stmt.curvar).or_insert_with(|| CursorState {
-                columns: Vec::new(),
-                rows: Vec::new(),
-                position: 0,
-            });
+    estate
+        .cursor_states
+        .entry(stmt.curvar)
+        .or_insert_with(|| CursorState {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            position: 0,
+        });
 
     let mut found = false;
     loop {
@@ -768,7 +770,9 @@ fn exec_stmt_raise(
         if let Some((code, message)) = estate.current_exception.clone() {
             return Err(tag_sqlstate_error(&code, message));
         }
-        return Err("RAISE without parameters cannot be used outside an exception handler".to_string());
+        return Err(
+            "RAISE without parameters cannot be used outside an exception handler".to_string(),
+        );
     }
 
     let message_template = stmt

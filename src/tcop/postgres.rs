@@ -1482,7 +1482,11 @@ impl PostgresSession {
             if !self.tx_state.in_explicit_block() {
                 let planned = match plan_statement(statement) {
                     Ok(planned) => planned,
-                    Err(err) if err.message.contains("relation \"no_such_table\" does not exist") => {
+                    Err(err)
+                        if err
+                            .message
+                            .contains("relation \"no_such_table\" does not exist") =>
+                    {
                         return Ok(PlannedOperation::Utility("SELECT".to_string()));
                     }
                     Err(err) => return Err(SessionError::from(err)),
@@ -1505,7 +1509,11 @@ impl PostgresSession {
             restore_state(baseline);
             let planned = match planned {
                 Ok(planned) => planned,
-                Err(err) if err.message.contains("relation \"no_such_table\" does not exist") => {
+                Err(err)
+                    if err
+                        .message
+                        .contains("relation \"no_such_table\" does not exist") =>
+                {
                     return Ok(PlannedOperation::Utility("SELECT".to_string()));
                 }
                 Err(err) => return Err(SessionError::from(err)),
