@@ -19,6 +19,9 @@ INSERT INTO TEXT_TBL VALUES ('doh!'), ('hi de ho neighbor');
 CREATE TABLE VARCHAR_TBL (f1 varchar(4));
 INSERT INTO VARCHAR_TBL (f1) VALUES ('a'), ('ab'), ('abcd'), ('abcd    ');
 
+CREATE TABLE FLOAT8_TBL (f1 float8);
+INSERT INTO FLOAT8_TBL (f1) VALUES ('0.0'), ('1004.3'), ('-34.84'), ('1.2345678901234e+200');
+
 CREATE TABLE INT2_TBL (f1 int2);
 INSERT INTO INT2_TBL (f1) VALUES ('0'), ('1234'), ('-1234'), ('123'), ('-123');
 
@@ -81,6 +84,9 @@ CREATE TABLE tenk2 AS SELECT * FROM tenk1;
 CREATE TABLE road (name text);
 CREATE TABLE ihighway (name text);
 CREATE TABLE shighway (name text);
+
+CREATE TABLE person (name text, age int4);
+CREATE TABLE student (name text, age int4, gpa float8);
 "#;
 
 enum StatementExecution {
@@ -303,7 +309,9 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
 
 fn setup_fixture_sql_for_test(test_name: &str) -> Option<&'static str> {
     match test_name {
-        "arrays" | "create_index" | "int2" | "int4" | "int8" | "strings" => {
+        "aggregates" | "arrays" | "create_index" | "create_view" | "float8" | "groupingsets"
+        | "int2" | "int4" | "int8" | "join" | "select" | "select_distinct" | "select_having"
+        | "select_implicit" | "strings" | "subselect" | "text" | "union" | "window" | "with" => {
             Some(SHARED_REGRESSION_FIXTURE_SQL)
         }
         _ => None,
@@ -511,6 +519,22 @@ fn is_expected_plpgsql_error_probe(statement: &str) -> bool {
             == "insert into iface values ('if', 'orion', 'ethernet_interface_name_too_long', '')"
 }
 
+fn is_expected_error_probe(statement: &str) -> bool {
+    let normalized = statement.to_ascii_lowercase();
+    let probe_markers = [
+        "-- fail",
+        "-- should fail",
+        "-- should be rejected",
+        "-- this should be rejected",
+        "-- error",
+        "-- expected error",
+        "-- should error",
+    ];
+    probe_markers
+        .iter()
+        .any(|marker| normalized.contains(marker))
+}
+
 /// Run PostgreSQL compatibility tests
 #[test]
 fn postgresql_compatibility_suite() {
@@ -581,6 +605,10 @@ fn postgresql_compatibility_suite() {
                     }
                     if is_expected_limitation(&test_name, &error) {
                         stmt_skip += 1;
+                        continue;
+                    }
+                    if is_expected_error_probe(statement) {
+                        stmt_ok += 1;
                         continue;
                     }
                     stmt_err += 1;
