@@ -2006,12 +2006,14 @@ pub(crate) fn eval_like_predicate(
             return Ok(ScalarValue::Null);
         }
         let escape_str = escape_val.render();
-        if escape_str.len() != 1 {
+        let mut chars = escape_str.chars();
+        let first = chars.next();
+        if first.is_some() && chars.next().is_some() {
             return Err(EngineError {
                 message: "ESCAPE string must be a single character".to_string(),
             });
         }
-        Some(escape_str.chars().next().unwrap())
+        first
     } else {
         None
     };

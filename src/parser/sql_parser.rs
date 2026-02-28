@@ -2083,6 +2083,11 @@ impl Parser {
                         name,
                         default: Some(self.parse_expr()?),
                     }
+                } else if self.consume_ident("storage") {
+                    AlterTableAction::SetColumnStorage {
+                        name,
+                        storage: self.parse_identifier()?,
+                    }
                 } else if self.consume_keyword(Keyword::Type) {
                     let data_type = self.parse_type_name()?;
                     let using =
@@ -3386,7 +3391,6 @@ impl Parser {
             if self.peek_keyword(Keyword::Select)
                 || self.peek_keyword(Keyword::Values)
                 || self.peek_keyword(Keyword::With)
-                || matches!(self.current_kind(), TokenKind::LParen)
             {
                 let query = self.parse_query()?;
                 self.expect_token(
@@ -3971,6 +3975,30 @@ impl Parser {
                     true
                 };
                 lhs = self.parse_like_expr(lhs, false, case_insensitive)?;
+                continue;
+            }
+            if self.peek_keyword(Keyword::Not)
+                && self.peek_nth_ident(1, "similar")
+                && self.peek_nth_keyword(2, Keyword::To)
+            {
+                let l_bp = 5;
+                if l_bp < min_bp {
+                    break;
+                }
+                self.advance();
+                self.advance();
+                self.advance();
+                lhs = self.parse_like_expr(lhs, true, false)?;
+                continue;
+            }
+            if self.peek_ident("similar") && self.peek_nth_keyword(1, Keyword::To) {
+                let l_bp = 5;
+                if l_bp < min_bp {
+                    break;
+                }
+                self.advance();
+                self.advance();
+                lhs = self.parse_like_expr(lhs, false, false)?;
                 continue;
             }
             if let TokenKind::Operator(op) = self.current_kind()
@@ -6089,6 +6117,13 @@ impl Parser {
         matches!(self.current_kind(), TokenKind::Identifier(ident) if ident.eq_ignore_ascii_case(value))
     }
 
+    fn peek_nth_ident(&self, n: usize, value: &str) -> bool {
+        matches!(
+            self.peek_nth_kind(n),
+            Some(TokenKind::Identifier(ident)) if ident.eq_ignore_ascii_case(value)
+        )
+    }
+
     fn consume_if<F>(&mut self, predicate: F) -> bool
     where
         F: Fn(&TokenKind) -> bool,
@@ -7510,6 +7545,43 @@ mod tests {
     }
 
     #[test]
+    fn parses_similar_to_predicates() {
+        let stmt = parse_statement(
+            "SELECT 1 WHERE txt SIMILAR TO '_bcd#%' ESCAPE '#' AND txt NOT SIMILAR TO 'a%'",
+        )
+        .expect("parse ok");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        let where_clause = select
+            .where_clause
+            .as_ref()
+            .expect("where clause should exist");
+        let Expr::Binary { left, op, right } = where_clause else {
+            panic!("expected AND expression");
+        };
+        assert_eq!(*op, BinaryOp::And);
+        assert!(matches!(
+            left.as_ref(),
+            Expr::Like {
+                case_insensitive: false,
+                negated: false,
+                escape: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            right.as_ref(),
+            Expr::Like {
+                case_insensitive: false,
+                negated: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn parses_operator_wrapper_regex_predicate() {
         let stmt = parse_statement("SELECT 1 WHERE relname OPERATOR(pg_catalog.~) '^foo$'")
             .expect("parse ok");
@@ -8721,6 +8793,23 @@ mod tests {
                 assert_eq!(default, None);
             }
             other => panic!("expected set column default action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_alter_table_set_storage_statement() {
+        let stmt = parse_statement("ALTER TABLE users ALTER COLUMN note SET STORAGE EXTERNAL")
+            .expect("parse should succeed");
+        let Statement::AlterTable(alter) = stmt else {
+            panic!("expected alter table statement");
+        };
+
+        match alter.action {
+            AlterTableAction::SetColumnStorage { name, storage } => {
+                assert_eq!(name, "note");
+                assert_eq!(storage.to_ascii_lowercase(), "external");
+            }
+            other => panic!("expected set storage action, got {other:?}"),
         }
     }
 
@@ -10149,6 +10238,27 @@ mod tests {
         assert_eq!(rows[0].len(), 2);
         assert_eq!(rows[1].len(), 2);
         assert_eq!(rows[2].len(), 2);
+    }
+
+    #[test]
+    fn parses_nested_parenthesized_join_expression() {
+        let stmt = parse_statement(
+            "SELECT * FROM int4_tbl t1 \
+             LEFT JOIN ((SELECT t2.f1 FROM int4_tbl t2 \
+                         LEFT JOIN int4_tbl t3 ON t2.f1 > 0 \
+                         WHERE t3.f1 IS NULL) s \
+                        LEFT JOIN tenk1 t4 ON s.f1 > 1) \
+             ON s.f1 = t1.f1",
+        )
+        .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let QueryExpr::Select(select) = &query.body else {
+            panic!("expected select");
+        };
+        assert_eq!(select.from.len(), 1);
+        assert!(matches!(select.from[0], TableExpression::Join(_)));
     }
 
     #[test]

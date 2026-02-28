@@ -622,6 +622,10 @@ pub enum AlterTableAction {
         name: String,
         default: Option<Expr>,
     },
+    SetColumnStorage {
+        name: String,
+        storage: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -251,6 +251,7 @@ pub async fn execute_alter_table(
                 message: err.message,
             })?;
         }
+        AlterTableAction::SetColumnStorage { .. } => {}
     }
 
     Ok(QueryResult {
