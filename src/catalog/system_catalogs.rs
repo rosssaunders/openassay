@@ -62,13 +62,20 @@ fn is_pg_catalog_virtual_relation(relation: &str) -> bool {
             | "pg_attrdef"
             | "pg_inherits"
             | "pg_statistic"
+            | "pg_depend"
+            | "pg_sequences"
     )
 }
 
 fn is_information_schema_virtual_relation(relation: &str) -> bool {
     matches!(
         relation,
-        "tables" | "columns" | "schemata" | "key_column_usage" | "table_constraints"
+        "tables"
+            | "columns"
+            | "schemata"
+            | "key_column_usage"
+            | "table_constraints"
+            | "sequences"
     )
 }
 
@@ -308,6 +315,56 @@ fn virtual_relation_column_defs(
             },
             VirtualRelationColumnDef {
                 name: "is_deferrable".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+        ],
+        ("information_schema", "sequences") => vec![
+            VirtualRelationColumnDef {
+                name: "sequence_catalog".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "sequence_schema".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "sequence_name".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "data_type".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "numeric_precision".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "numeric_precision_radix".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "numeric_scale".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "start_value".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "minimum_value".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "maximum_value".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "increment".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "cycle_option".to_string(),
                 type_oid: PG_TEXT_OID,
             },
         ],
@@ -587,6 +644,74 @@ fn virtual_relation_column_defs(
             VirtualRelationColumnDef {
                 name: "stavalues1".to_string(),
                 type_oid: PG_TEXT_OID,
+            },
+        ],
+        ("pg_catalog", "pg_depend") => vec![
+            VirtualRelationColumnDef {
+                name: "classid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "objid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "objsubid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "refclassid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "refobjid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "refobjsubid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "deptype".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+        ],
+        ("pg_catalog", "pg_sequences") => vec![
+            VirtualRelationColumnDef {
+                name: "schemaname".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "sequencename".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "start_value".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "min_value".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "max_value".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "increment_by".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "cycle".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "cache_size".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "last_value".to_string(),
+                type_oid: PG_INT8_OID,
             },
         ],
         ("ws", "connections") => vec![

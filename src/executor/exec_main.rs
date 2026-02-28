@@ -13,6 +13,7 @@ use std::arch::x86_64::{
 };
 
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
+use crate::commands::sequence::{normalize_sequence_name_from_text, with_sequences_read};
 use crate::executor::exec_expr::{
     EngineFuture, EvalScope, eval_any_all, eval_between_predicate, eval_binary, eval_cast_scalar,
     eval_expr, eval_expr_with_window, eval_is_distinct_from, eval_like_predicate, eval_unary,
@@ -1426,6 +1427,9 @@ async fn evaluate_set_returning_function(
         "generate_series" => eval_generate_series(args, &fn_name),
         "unnest" => eval_unnest_set_function(args, &fn_name),
         "pg_input_error_info" => eval_pg_input_error_info_set_function(args, &fn_name),
+        "pg_sequence_parameters" => eval_pg_sequence_parameters_set_function(args, &fn_name),
+        "pg_get_sequence_data" => eval_pg_get_sequence_data_set_function(args, &fn_name),
+        "pg_partition_tree" => eval_pg_partition_tree_set_function(args, &fn_name),
         "json_table" => eval_json_table_function(args, &fn_name).await,
         "iceberg_scan" => eval_iceberg_scan_function(args, &fn_name).await,
         "pg_get_keywords" => eval_pg_get_keywords(),
@@ -2475,6 +2479,107 @@ fn eval_pg_get_keywords() -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), Engine
     Ok((columns, rows))
 }
 
+fn parse_sequence_name_arg(arg: &ScalarValue, fn_name: &str) -> Result<String, EngineError> {
+    let raw = match arg {
+        ScalarValue::Text(value) => value.clone(),
+        ScalarValue::Null => {
+            return Err(EngineError {
+                message: format!("{fn_name}() expects text sequence name"),
+            });
+        }
+        _ => arg.render(),
+    };
+    normalize_sequence_name_from_text(&raw).map_err(|_| EngineError {
+        message: format!("{fn_name}() expects text sequence name"),
+    })
+}
+
+fn eval_pg_sequence_parameters_set_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if args.len() != 1 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects one argument"),
+        });
+    }
+    let sequence_name = parse_sequence_name_arg(&args[0], fn_name)?;
+    let state = with_sequences_read(|sequences| sequences.get(&sequence_name).cloned());
+    let Some(state) = state else {
+        return Err(EngineError {
+            message: format!("sequence \"{sequence_name}\" does not exist"),
+        });
+    };
+
+    let columns = vec![
+        "start_value".to_string(),
+        "minimum_value".to_string(),
+        "maximum_value".to_string(),
+        "increment".to_string(),
+        "cycle_option".to_string(),
+        "cache_size".to_string(),
+        "data_type".to_string(),
+    ];
+    let rows = vec![vec![
+        ScalarValue::Int(state.start),
+        ScalarValue::Int(state.min_value),
+        ScalarValue::Int(state.max_value),
+        ScalarValue::Int(state.increment),
+        ScalarValue::Bool(state.cycle),
+        ScalarValue::Int(state.cache),
+        ScalarValue::Int(20),
+    ]];
+    Ok((columns, rows))
+}
+
+fn eval_pg_get_sequence_data_set_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if args.len() != 1 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects one argument"),
+        });
+    }
+    let sequence_name = parse_sequence_name_arg(&args[0], fn_name)?;
+    let state = with_sequences_read(|sequences| sequences.get(&sequence_name).cloned());
+    let Some(state) = state else {
+        return Err(EngineError {
+            message: format!("sequence \"{sequence_name}\" does not exist"),
+        });
+    };
+
+    let columns = vec![
+        "last_value".to_string(),
+        "is_called".to_string(),
+        "page_lsn".to_string(),
+    ];
+    let rows = vec![vec![
+        ScalarValue::Int(state.current),
+        ScalarValue::Bool(state.called),
+        ScalarValue::Text("0/0".to_string()),
+    ]];
+    Ok((columns, rows))
+}
+
+fn eval_pg_partition_tree_set_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if args.len() != 1 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects one argument"),
+        });
+    }
+    let columns = vec![
+        "relid".to_string(),
+        "parentrelid".to_string(),
+        "isleaf".to_string(),
+        "level".to_string(),
+    ];
+    Ok((columns, Vec::new()))
+}
+
 async fn evaluate_relation(
     rel: &TableRef,
     params: &[Option<String>],
@@ -3034,6 +3139,110 @@ fn virtual_relation_rows(
             }
             Ok(rows)
         }),
+        ("information_schema", "sequences") => {
+            let mut entries = with_sequences_read(|sequences| {
+                sequences
+                    .iter()
+                    .map(|(name, state)| {
+                        let mut parts = name.splitn(2, '.');
+                        let schema_name = parts.next().unwrap_or("public").to_string();
+                        let sequence_name = parts.next().unwrap_or(name).to_string();
+                        (
+                            schema_name,
+                            sequence_name,
+                            state.start,
+                            state.min_value,
+                            state.max_value,
+                            state.increment,
+                            state.cycle,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+            entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            Ok(entries
+                .into_iter()
+                .map(
+                    |(
+                        sequence_schema,
+                        sequence_name,
+                        start_value,
+                        minimum_value,
+                        maximum_value,
+                        increment,
+                        cycle,
+                    )| {
+                        vec![
+                            ScalarValue::Text("openassay".to_string()),
+                            ScalarValue::Text(sequence_schema),
+                            ScalarValue::Text(sequence_name),
+                            ScalarValue::Text("bigint".to_string()),
+                            ScalarValue::Int(64),
+                            ScalarValue::Int(2),
+                            ScalarValue::Int(0),
+                            ScalarValue::Text(start_value.to_string()),
+                            ScalarValue::Text(minimum_value.to_string()),
+                            ScalarValue::Text(maximum_value.to_string()),
+                            ScalarValue::Text(increment.to_string()),
+                            ScalarValue::Text(if cycle { "YES" } else { "NO" }.to_string()),
+                        ]
+                    },
+                )
+                .collect())
+        }
+        ("pg_catalog", "pg_depend") => Ok(Vec::new()),
+        ("pg_catalog", "pg_sequences") => {
+            let mut entries = with_sequences_read(|sequences| {
+                sequences
+                    .iter()
+                    .map(|(name, state)| {
+                        let mut parts = name.splitn(2, '.');
+                        let schema_name = parts.next().unwrap_or("public").to_string();
+                        let sequence_name = parts.next().unwrap_or(name).to_string();
+                        (
+                            schema_name,
+                            sequence_name,
+                            state.start,
+                            state.min_value,
+                            state.max_value,
+                            state.increment,
+                            state.cycle,
+                            state.cache,
+                            state.current,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+            entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            Ok(entries
+                .into_iter()
+                .map(
+                    |(
+                        schemaname,
+                        sequencename,
+                        start_value,
+                        min_value,
+                        max_value,
+                        increment_by,
+                        cycle,
+                        cache_size,
+                        last_value,
+                    )| {
+                        vec![
+                            ScalarValue::Text(schemaname),
+                            ScalarValue::Text(sequencename),
+                            ScalarValue::Int(start_value),
+                            ScalarValue::Int(min_value),
+                            ScalarValue::Int(max_value),
+                            ScalarValue::Int(increment_by),
+                            ScalarValue::Bool(cycle),
+                            ScalarValue::Int(cache_size),
+                            ScalarValue::Int(last_value),
+                        ]
+                    },
+                )
+                .collect())
+        }
         ("pg_catalog", "pg_database") => {
             Ok(vec![vec![
                 ScalarValue::Int(1),
