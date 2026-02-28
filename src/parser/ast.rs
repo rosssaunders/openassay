@@ -44,6 +44,7 @@ pub enum Statement {
     Copy(CopyStatement),
     Transaction(TransactionStatement),
     CreateType(CreateTypeStatement),
+    CreateCast(CreateCastStatement),
     CreateDomain(CreateDomainStatement),
     DropType(DropTypeStatement),
     DropDomain(DropDomainStatement),
@@ -405,6 +406,15 @@ pub struct CreateSchemaStatement {
 pub struct CreateTypeStatement {
     pub name: Vec<String>,
     pub as_enum: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateCastStatement {
+    pub source_type: TypeName,
+    pub target_type: TypeName,
+    pub function_name: Option<Vec<String>>,
+    pub as_assignment: bool,
+    pub as_implicit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

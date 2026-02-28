@@ -4,25 +4,26 @@ use crate::parser::ast::{
     AlterRoleStatement, AlterSequenceAction, AlterSequenceStatement, AlterTableAction,
     AlterTableStatement, AlterViewAction, AlterViewStatement, Assignment, AssignmentSubscript,
     BinaryOp, BooleanTestType, ColumnDefinition, CommonTableExpr, ComparisonQuantifier,
-    ConflictTarget, CopyDirection, CopyFormat, CopyOptions, CopyStatement, CreateDomainStatement,
-    CreateExtensionStatement, CreateFunctionStatement, CreateIndexStatement, CreateRoleStatement,
-    CreateSchemaStatement, CreateSequenceStatement, CreateSubscriptionStatement,
-    CreateTableStatement, CreateTriggerStatement, CreateTypeStatement, CreateViewStatement,
-    CycleClause, DeleteStatement, DiscardStatement, DoStatement, DropBehavior, DropDomainStatement,
-    DropExtensionStatement, DropFunctionStatement, DropIndexStatement, DropRoleStatement,
-    DropSchemaStatement, DropSequenceStatement, DropSubscriptionStatement, DropTableStatement,
-    DropTriggerStatement, DropTypeStatement, DropViewStatement, ExplainStatement, Expr,
-    ForeignKeyAction, ForeignKeyReference, FunctionParam, FunctionParamMode, FunctionReturnType,
-    GrantRoleStatement, GrantStatement, GrantTablePrivilegesStatement, GroupByExpr, InsertSource,
-    InsertStatement, JoinCondition, JoinExpr, JoinType, ListenStatement, MergeStatement,
-    MergeWhenClause, NotifyStatement, OnConflictClause, OrderByExpr, Query, QueryExpr,
-    RefreshMaterializedViewStatement, RevokeRoleStatement, RevokeStatement,
-    RevokeTablePrivilegesStatement, RoleOption, SearchClause, SelectItem, SelectQuantifier,
-    SelectStatement, SetOperator, SetQuantifier, SetStatement, ShowStatement, Statement,
-    SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression, TableFunctionRef,
-    TablePrivilegeKind, TableRef, TransactionStatement, TriggerEvent, TriggerTiming,
-    TruncateStatement, TypeName, UnaryOp, UnlistenStatement, UpdateStatement, WindowDefinition,
-    WindowFrame, WindowFrameBound, WindowFrameExclusion, WindowFrameUnits, WindowSpec, WithClause,
+    ConflictTarget, CopyDirection, CopyFormat, CopyOptions, CopyStatement, CreateCastStatement,
+    CreateDomainStatement, CreateExtensionStatement, CreateFunctionStatement, CreateIndexStatement,
+    CreateRoleStatement, CreateSchemaStatement, CreateSequenceStatement,
+    CreateSubscriptionStatement, CreateTableStatement, CreateTriggerStatement, CreateTypeStatement,
+    CreateViewStatement, CycleClause, DeleteStatement, DiscardStatement, DoStatement, DropBehavior,
+    DropDomainStatement, DropExtensionStatement, DropFunctionStatement, DropIndexStatement,
+    DropRoleStatement, DropSchemaStatement, DropSequenceStatement, DropSubscriptionStatement,
+    DropTableStatement, DropTriggerStatement, DropTypeStatement, DropViewStatement,
+    ExplainStatement, Expr, ForeignKeyAction, ForeignKeyReference, FunctionParam,
+    FunctionParamMode, FunctionReturnType, GrantRoleStatement, GrantStatement,
+    GrantTablePrivilegesStatement, GroupByExpr, InsertSource, InsertStatement, JoinCondition,
+    JoinExpr, JoinType, ListenStatement, MergeStatement, MergeWhenClause, NotifyStatement,
+    OnConflictClause, OrderByExpr, Query, QueryExpr, RefreshMaterializedViewStatement,
+    RevokeRoleStatement, RevokeStatement, RevokeTablePrivilegesStatement, RoleOption, SearchClause,
+    SelectItem, SelectQuantifier, SelectStatement, SetOperator, SetQuantifier, SetStatement,
+    ShowStatement, Statement, SubqueryRef, SubscriptionOptions, TableConstraint, TableExpression,
+    TableFunctionRef, TablePrivilegeKind, TableRef, TransactionStatement, TriggerEvent,
+    TriggerTiming, TruncateStatement, TypeName, UnaryOp, UnlistenStatement, UpdateStatement,
+    WindowDefinition, WindowFrame, WindowFrameBound, WindowFrameExclusion, WindowFrameUnits,
+    WindowSpec, WithClause,
 };
 use crate::parser::lexer::{Keyword, LexError, Token, TokenKind, lex_sql};
 
@@ -227,6 +228,12 @@ impl Parser {
                 return Err(self.error_at_current("unexpected modifier before CREATE FUNCTION"));
             }
             return self.parse_create_function(or_replace);
+        }
+        if self.consume_keyword(Keyword::Cast) {
+            if or_replace || unique || materialized {
+                return Err(self.error_at_current("unexpected modifier before CREATE CAST"));
+            }
+            return self.parse_create_cast();
         }
         if self.consume_ident("trigger") {
             if or_replace || unique || materialized {
@@ -589,7 +596,7 @@ impl Parser {
         }
         self.expect_keyword(
             Keyword::Table,
-            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, FUNCTION, TRIGGER, TYPE, DOMAIN, or SUBSCRIPTION after CREATE",
+            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, FUNCTION, TRIGGER, CAST, TYPE, DOMAIN, or SUBSCRIPTION after CREATE",
         )?;
 
         // Parse optional IF NOT EXISTS clause
@@ -723,8 +730,10 @@ impl Parser {
             return Ok(false);
         }
         let _ = self.parse_qualified_name()?;
-        while !matches!(self.current_kind(), TokenKind::Comma | TokenKind::RParen | TokenKind::Eof)
-        {
+        while !matches!(
+            self.current_kind(),
+            TokenKind::Comma | TokenKind::RParen | TokenKind::Eof
+        ) {
             self.advance();
         }
         Ok(true)
@@ -1506,11 +1515,10 @@ impl Parser {
                 false
             };
             let name = self.parse_qualified_name()?;
-            // consume optional parameter list
-            if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
-                while !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
-                    self.advance();
-                }
+            self.consume_optional_drop_function_signature()?;
+            while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                let _ = self.parse_qualified_name()?;
+                self.consume_optional_drop_function_signature()?;
             }
             let behavior = self.parse_drop_behavior()?;
             return Ok(Statement::DropFunction(DropFunctionStatement {
@@ -1900,6 +1908,33 @@ impl Parser {
         Ok(DropBehavior::Restrict)
     }
 
+    fn consume_optional_drop_function_signature(&mut self) -> Result<(), ParseError> {
+        if !self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+            return Ok(());
+        }
+
+        let mut depth = 1usize;
+        while depth > 0 {
+            match self.current_kind() {
+                TokenKind::LParen => {
+                    depth += 1;
+                    self.advance();
+                }
+                TokenKind::RParen => {
+                    depth -= 1;
+                    self.advance();
+                }
+                TokenKind::Eof => {
+                    return Err(
+                        self.error_at_current("unterminated function signature in DROP FUNCTION")
+                    );
+                }
+                _ => self.advance(),
+            }
+        }
+        Ok(())
+    }
+
     fn parse_alter_statement(&mut self) -> Result<Statement, ParseError> {
         if self.consume_ident("role") {
             return self.parse_alter_role_statement();
@@ -2138,9 +2173,8 @@ impl Parser {
                     actions.push(AlterSequenceAction::NoOp);
                     continue;
                 }
-                return Err(
-                    self.error_at_current("expected LOGGED or UNLOGGED after SET in ALTER SEQUENCE")
-                );
+                return Err(self
+                    .error_at_current("expected LOGGED or UNLOGGED after SET in ALTER SEQUENCE"));
             }
             break;
         }
@@ -4649,9 +4683,9 @@ impl Parser {
         let named_prefix = matches!(
             self.current_kind(),
             TokenKind::Identifier(_) | TokenKind::Keyword(_)
-        ) && self.peek_nth_kind(1).is_some_and(|kind| {
-            matches!(kind, TokenKind::ColonEquals | TokenKind::EqualsGreater)
-        });
+        ) && self
+            .peek_nth_kind(1)
+            .is_some_and(|kind| matches!(kind, TokenKind::ColonEquals | TokenKind::EqualsGreater));
         if named_prefix {
             self.advance(); // argument name
             self.advance(); // := or =>
@@ -5000,9 +5034,7 @@ impl Parser {
                 };
                 format!("{inner_norm}[]")
             }
-            other => {
-                other.to_string()
-            }
+            other => other.to_string(),
         };
 
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
@@ -5279,9 +5311,7 @@ impl Parser {
                     symbol = Some(">=".to_string());
                     self.advance();
                 }
-                TokenKind::Dot
-                | TokenKind::Identifier(_)
-                | TokenKind::Keyword(_) => {
+                TokenKind::Dot | TokenKind::Identifier(_) | TokenKind::Keyword(_) => {
                     self.advance();
                 }
                 TokenKind::RParen => break,
@@ -5537,7 +5567,9 @@ impl Parser {
             | Expr::ArraySlice { expr, .. } => Self::extract_identifier_from_expr(expr),
             Expr::FunctionCall { args, .. }
             | Expr::ArrayConstructor(args)
-            | Expr::RowConstructor(args) => args.iter().find_map(Self::extract_identifier_from_expr),
+            | Expr::RowConstructor(args) => {
+                args.iter().find_map(Self::extract_identifier_from_expr)
+            }
             Expr::Binary { left, right, .. } | Expr::AnyAll { left, right, .. } => {
                 Self::extract_identifier_from_expr(left)
                     .or_else(|| Self::extract_identifier_from_expr(right))
@@ -5970,9 +6002,7 @@ impl Parser {
         let is_local = self.consume_keyword(Keyword::Local);
         if self.consume_ident("session") {
             if !self.consume_ident("authorization") {
-                return Err(self.error_at_current(
-                    "expected AUTHORIZATION after SET SESSION",
-                ));
+                return Err(self.error_at_current("expected AUTHORIZATION after SET SESSION"));
             }
             let value = self.collect_setting_value_tokens();
             if value.is_empty() {
@@ -6013,9 +6043,7 @@ impl Parser {
     fn parse_reset_statement(&mut self) -> Result<Statement, ParseError> {
         if self.consume_ident("session") {
             if !self.consume_ident("authorization") {
-                return Err(self.error_at_current(
-                    "expected AUTHORIZATION after RESET SESSION",
-                ));
+                return Err(self.error_at_current("expected AUTHORIZATION after RESET SESSION"));
             }
             return Ok(Statement::Set(SetStatement {
                 name: "session_authorization".to_string(),
@@ -6174,6 +6202,59 @@ impl Parser {
         }))
     }
 
+    fn parse_create_cast(&mut self) -> Result<Statement, ParseError> {
+        self.expect_token(
+            |k| matches!(k, TokenKind::LParen),
+            "expected '(' after CREATE CAST",
+        )?;
+        let source_type = self.parse_type_name()?;
+        self.expect_keyword(Keyword::As, "expected AS in CREATE CAST")?;
+        let target_type = self.parse_type_name()?;
+        self.expect_token(
+            |k| matches!(k, TokenKind::RParen),
+            "expected ')' after CREATE CAST type pair",
+        )?;
+
+        let mut function_name = None;
+        if self.consume_keyword(Keyword::With) {
+            if self.consume_keyword(Keyword::Function) || self.consume_ident("function") {
+                function_name = Some(self.parse_qualified_name()?);
+                self.skip_optional_parenthesized_tokens();
+            } else if self.consume_ident("inout") {
+                // CREATE CAST ... WITH INOUT is accepted as a no-op.
+            } else {
+                return Err(
+                    self.error_at_current("expected FUNCTION or INOUT after WITH in CREATE CAST")
+                );
+            }
+        } else if self.consume_ident("without") {
+            if !(self.consume_keyword(Keyword::Function) || self.consume_ident("function")) {
+                return Err(self.error_at_current("expected FUNCTION after WITHOUT in CREATE CAST"));
+            }
+        }
+
+        let mut as_assignment = false;
+        let mut as_implicit = false;
+        if self.consume_keyword(Keyword::As) {
+            if self.consume_ident("assignment") {
+                as_assignment = true;
+            } else if self.consume_ident("implicit") {
+                as_implicit = true;
+            } else {
+                return Err(self
+                    .error_at_current("expected ASSIGNMENT or IMPLICIT after AS in CREATE CAST"));
+            }
+        }
+
+        Ok(Statement::CreateCast(CreateCastStatement {
+            source_type,
+            target_type,
+            function_name,
+            as_assignment,
+            as_implicit,
+        }))
+    }
+
     fn parse_create_trigger(&mut self) -> Result<Statement, ParseError> {
         let name = self.parse_identifier()?;
         let timing = if self.consume_ident("before") {
@@ -6215,8 +6296,11 @@ impl Parser {
             }
             self.advance();
         }
-        if !self.consume_ident("function") {
-            self.consume_ident("procedure");
+        if !(self.consume_keyword(Keyword::Function)
+            || self.consume_ident("function")
+            || self.consume_ident("procedure"))
+        {
+            return Err(self.error_at_current("expected FUNCTION or PROCEDURE in CREATE TRIGGER"));
         }
         let function_name = self.parse_qualified_name()?;
         if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
@@ -6584,7 +6668,7 @@ impl Parser {
         //   DO LANGUAGE lang 'body'
         let mut language = "plpgsql".to_string();
         if self.consume_keyword(Keyword::Language) || self.consume_ident("language") {
-            language = self.parse_identifier()?;
+            language = self.parse_identifier_or_string()?;
             let body = match &self.tokens[self.idx].kind {
                 TokenKind::String(s) => {
                     let b = s.clone();
@@ -6606,7 +6690,7 @@ impl Parser {
         };
 
         if self.consume_keyword(Keyword::Language) || self.consume_ident("language") {
-            language = self.parse_identifier()?;
+            language = self.parse_identifier_or_string()?;
         }
         Ok(Statement::Do(DoStatement { body, language }))
     }
@@ -7865,6 +7949,31 @@ mod tests {
         );
         assert!(drop_function.if_exists);
         assert_eq!(drop_function.behavior, DropBehavior::Cascade);
+    }
+
+    #[test]
+    fn parses_drop_function_multiple_signatures() {
+        let stmt = parse_statement("DROP FUNCTION f1(), f2(integer, numeric(10,2)) CASCADE")
+            .expect("parse should succeed");
+        let Statement::DropFunction(drop_function) = stmt else {
+            panic!("expected drop function statement");
+        };
+        assert_eq!(drop_function.name, vec!["f1".to_string()]);
+        assert_eq!(drop_function.behavior, DropBehavior::Cascade);
+    }
+
+    #[test]
+    fn parses_create_cast_statement() {
+        let stmt = parse_statement(
+            "CREATE CAST (integer AS date) WITH FUNCTION sql_to_date(integer) AS ASSIGNMENT",
+        )
+        .expect("parse should succeed");
+        let Statement::CreateCast(create_cast) = stmt else {
+            panic!("expected create cast statement");
+        };
+        assert!(create_cast.function_name.is_some());
+        assert!(create_cast.as_assignment);
+        assert!(!create_cast.as_implicit);
     }
 
     #[test]
@@ -9128,6 +9237,21 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert!(matches!(items[0], Expr::ArrayConstructor(_)));
         assert!(matches!(items[1], Expr::ArrayConstructor(_)));
+    }
+
+    #[test]
+    fn parses_function_call_with_nested_array_argument() {
+        let stmt = parse_statement("SELECT foreach_test(ARRAY[[1,2],[3,4]])")
+            .expect("parse should succeed");
+        let Statement::Query(query) = stmt else {
+            panic!("expected query statement");
+        };
+        let select = as_select(&query);
+        let Expr::FunctionCall { args, .. } = &select.targets[0].expr else {
+            panic!("expected function call");
+        };
+        assert_eq!(args.len(), 1);
+        assert!(matches!(args[0], Expr::ArrayConstructor(_)));
     }
 
     #[test]

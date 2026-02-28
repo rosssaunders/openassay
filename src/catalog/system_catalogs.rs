@@ -61,6 +61,7 @@ fn is_pg_catalog_virtual_relation(relation: &str) -> bool {
             | "pg_index"
             | "pg_attrdef"
             | "pg_inherits"
+            | "pg_statistic"
     )
 }
 
@@ -568,6 +569,24 @@ fn virtual_relation_column_defs(
             VirtualRelationColumnDef {
                 name: "inhseqno".to_string(),
                 type_oid: PG_INT8_OID,
+            },
+        ],
+        ("pg_catalog", "pg_statistic") => vec![
+            VirtualRelationColumnDef {
+                name: "starelid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "staattnum".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "stainherit".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "stavalues1".to_string(),
+                type_oid: PG_TEXT_OID,
             },
         ],
         ("ws", "connections") => vec![

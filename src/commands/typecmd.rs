@@ -1,5 +1,6 @@
 use crate::parser::ast::{
-    CreateDomainStatement, CreateTypeStatement, DropDomainStatement, DropTypeStatement,
+    CreateCastStatement, CreateDomainStatement, CreateTypeStatement, DropDomainStatement,
+    DropTypeStatement,
 };
 use crate::tcop::engine::{EngineError, QueryResult, UserDomain, UserEnumType, with_ext_write};
 
@@ -33,6 +34,17 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
         columns: Vec::new(),
         rows: Vec::new(),
         command_tag: "CREATE TYPE".to_string(),
+        rows_affected: 0,
+    })
+}
+
+pub async fn execute_create_cast(
+    _create: &CreateCastStatement,
+) -> Result<QueryResult, EngineError> {
+    Ok(QueryResult {
+        columns: Vec::new(),
+        rows: Vec::new(),
+        command_tag: "CREATE CAST".to_string(),
         rows_affected: 0,
     })
 }

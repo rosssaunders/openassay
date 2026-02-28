@@ -368,13 +368,18 @@ pub fn extract_sql_expression(
     }
 
     let mut idx = start_idx;
-    let mut depth = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
 
     while idx < tokens.len() {
         match tokens[idx].kind {
-            PlPgSqlTokenKind::LParen => depth += 1,
-            PlPgSqlTokenKind::RParen => depth = depth.saturating_sub(1),
-            PlPgSqlTokenKind::Semicolon if depth == 0 => {
+            PlPgSqlTokenKind::LParen => paren_depth += 1,
+            PlPgSqlTokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
+            PlPgSqlTokenKind::Operator(ref op) if op == "[" => bracket_depth += 1,
+            PlPgSqlTokenKind::Operator(ref op) if op == "]" => {
+                bracket_depth = bracket_depth.saturating_sub(1)
+            }
+            PlPgSqlTokenKind::Semicolon if paren_depth == 0 && bracket_depth == 0 => {
                 let start = tokens[start_idx].span.start;
                 let end = tokens[idx].span.start;
                 let expr = source[start..end].trim().to_string();

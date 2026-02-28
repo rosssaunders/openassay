@@ -20,9 +20,9 @@ use crate::utils::adt::json::{
     eval_array_to_json, eval_http_delete, eval_http_get, eval_http_get_with_params, eval_http_head,
     eval_http_patch, eval_http_post_content, eval_http_post_form, eval_http_put,
     eval_json_array_length, eval_json_extract_path, eval_json_object, eval_json_pretty,
-    eval_json_strip_nulls, eval_json_typeof, eval_jsonb_exists, eval_jsonb_exists_any_all,
-    eval_jsonb_concat, eval_jsonb_contained, eval_jsonb_contains, eval_jsonb_delete,
-    eval_jsonb_delete_path, eval_jsonb_insert, eval_jsonb_path_exists, eval_jsonb_path_match,
+    eval_json_strip_nulls, eval_json_typeof, eval_jsonb_concat, eval_jsonb_contained,
+    eval_jsonb_contains, eval_jsonb_delete, eval_jsonb_delete_path, eval_jsonb_exists,
+    eval_jsonb_exists_any_all, eval_jsonb_insert, eval_jsonb_path_exists, eval_jsonb_path_match,
     eval_jsonb_path_query_array, eval_jsonb_path_query_first, eval_jsonb_set, eval_jsonb_set_lax,
     eval_row_to_json, eval_urlencode, json_build_array_value, json_build_object_value,
     scalar_to_json_value,
@@ -214,7 +214,10 @@ pub(crate) async fn eval_scalar_function(
         "json_typeof" | "jsonb_typeof" if args.len() == 1 => eval_json_typeof(&args[0], fn_name),
         "json_strip_nulls" | "jsonb_strip_nulls" if args.len() == 1 || args.len() == 2 => {
             let strip_in_arrays = if args.len() == 2 {
-                parse_bool_scalar(&args[1], "jsonb_strip_nulls() expects boolean second argument")?
+                parse_bool_scalar(
+                    &args[1],
+                    "jsonb_strip_nulls() expects boolean second argument",
+                )?
             } else {
                 false
             };
@@ -287,7 +290,9 @@ pub(crate) async fn eval_scalar_function(
             };
             if let Some(first) = items.first() {
                 if fn_name.ends_with("_text") {
-                    Ok(ScalarValue::Text(first.to_string().trim_matches('"').to_string()))
+                    Ok(ScalarValue::Text(
+                        first.to_string().trim_matches('"').to_string(),
+                    ))
                 } else {
                     Ok(ScalarValue::Text(first.to_string()))
                 }
@@ -304,11 +309,9 @@ pub(crate) async fn eval_scalar_function(
         {
             Ok(args[1].clone())
         }
-        "to_tsvector" | "json_to_tsvector" | "jsonb_to_tsvector" if !args.is_empty() => {
-            Ok(ScalarValue::Text(
-            args.last().map_or_else(String::new, ScalarValue::render),
-            ))
-        }
+        "to_tsvector" | "json_to_tsvector" | "jsonb_to_tsvector" if !args.is_empty() => Ok(
+            ScalarValue::Text(args.last().map_or_else(String::new, ScalarValue::render)),
+        ),
         "tsquery" if args.len() == 1 => Ok(args[0].clone()),
         "ts_headline" if args.len() >= 2 => Ok(args[1].clone()),
         "nextval" if args.len() == 1 => {
@@ -919,13 +922,17 @@ pub(crate) async fn eval_scalar_function(
                 return Ok(ScalarValue::Null);
             }
             match parse_numeric_operand(&args[0])? {
-                NumericOperand::Int(v) => Ok(ScalarValue::Int(v.checked_add(1).ok_or_else(
-                    || EngineError {
-                        message: "bigint out of range".to_string(),
-                    },
-                )?)),
+                NumericOperand::Int(v) => {
+                    Ok(ScalarValue::Int(v.checked_add(1).ok_or_else(|| {
+                        EngineError {
+                            message: "bigint out of range".to_string(),
+                        }
+                    })?))
+                }
                 NumericOperand::Float(v) => Ok(ScalarValue::Float(v + 1.0)),
-                NumericOperand::Numeric(v) => Ok(ScalarValue::Numeric(v + rust_decimal::Decimal::ONE)),
+                NumericOperand::Numeric(v) => {
+                    Ok(ScalarValue::Numeric(v + rust_decimal::Decimal::ONE))
+                }
             }
         }
         "numeric_dec" if args.len() == 1 => {
@@ -933,13 +940,17 @@ pub(crate) async fn eval_scalar_function(
                 return Ok(ScalarValue::Null);
             }
             match parse_numeric_operand(&args[0])? {
-                NumericOperand::Int(v) => Ok(ScalarValue::Int(v.checked_sub(1).ok_or_else(
-                    || EngineError {
-                        message: "bigint out of range".to_string(),
-                    },
-                )?)),
+                NumericOperand::Int(v) => {
+                    Ok(ScalarValue::Int(v.checked_sub(1).ok_or_else(|| {
+                        EngineError {
+                            message: "bigint out of range".to_string(),
+                        }
+                    })?))
+                }
                 NumericOperand::Float(v) => Ok(ScalarValue::Float(v - 1.0)),
-                NumericOperand::Numeric(v) => Ok(ScalarValue::Numeric(v - rust_decimal::Decimal::ONE)),
+                NumericOperand::Numeric(v) => {
+                    Ok(ScalarValue::Numeric(v - rust_decimal::Decimal::ONE))
+                }
             }
         }
         "width_bucket" if args.len() == 4 => eval_width_bucket(args),
@@ -1234,7 +1245,9 @@ pub(crate) async fn eval_scalar_function(
                 }
             };
             Ok(ScalarValue::Text(
-                idx.and_then(|i| parts.get(i).copied()).unwrap_or("").to_string(),
+                idx.and_then(|i| parts.get(i).copied())
+                    .unwrap_or("")
+                    .to_string(),
             ))
         }
         "strpos" if args.len() == 2 => {
@@ -1672,6 +1685,16 @@ pub(crate) async fn eval_scalar_function(
         "int4range" | "float8range" | "textrange" if args.len() == 2 || args.len() == 3 => {
             eval_range_constructor(args)
         }
+        "point" if args.len() == 2 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let x = coerce_to_f64(&args[0], "point() x coordinate")?;
+            let y = coerce_to_f64(&args[1], "point() y coordinate")?;
+            let x_text = ScalarValue::Float(x).render();
+            let y_text = ScalarValue::Float(y).render();
+            Ok(ScalarValue::Text(format!("({x_text},{y_text})")))
+        }
         "array_append" if args.len() == 2 => {
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
@@ -1827,8 +1850,7 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            let mut values =
-                array_values_arg(&args[0], "array_reverse() expects array argument")?;
+            let mut values = array_values_arg(&args[0], "array_reverse() expects array argument")?;
             values.reverse();
             Ok(ScalarValue::Array(values))
         }
@@ -1855,8 +1877,7 @@ pub(crate) async fn eval_scalar_function(
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
             }
-            let mut values =
-                array_values_arg(&args[0], "array_shuffle() expects array argument")?;
+            let mut values = array_values_arg(&args[0], "array_shuffle() expects array argument")?;
             let mut i = values.len();
             while i > 1 {
                 i -= 1;
@@ -2048,7 +2069,11 @@ pub(crate) async fn eval_scalar_function(
             Ok(values.into_iter().next().unwrap_or(ScalarValue::Null))
         }
         "regexp_matches" if args.len() == 2 || args.len() == 3 => {
-            if args.iter().take(2).any(|arg| matches!(arg, ScalarValue::Null)) {
+            if args
+                .iter()
+                .take(2)
+                .any(|arg| matches!(arg, ScalarValue::Null))
+            {
                 return Ok(ScalarValue::Null);
             }
             let text = args[0].render();

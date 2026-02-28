@@ -726,7 +726,10 @@ impl<'a> BodyParser<'a> {
         self.expect_keyword(PlPgSqlKeyword::Declare, "expected DECLARE")?;
         let initvarnos = self.parse_declare_section()?;
         let begin_token = self.current_token().clone();
-        self.expect_keyword(PlPgSqlKeyword::Begin, "expected BEGIN after DECLARE section")?;
+        self.expect_keyword(
+            PlPgSqlKeyword::Begin,
+            "expected BEGIN after DECLARE section",
+        )?;
         let block = self.parse_block_after_begin(&begin_token, initvarnos, true)?;
         Ok(PlPgSqlStmt::Block(block))
     }
@@ -1070,7 +1073,8 @@ impl<'a> BodyParser<'a> {
                 self.current_kind(),
                 PlPgSqlTokenKind::Semicolon | PlPgSqlTokenKind::Eof
             ) {
-                let option_name = self.expect_identifier("expected RAISE option name after USING")?;
+                let option_name =
+                    self.expect_identifier("expected RAISE option name after USING")?;
                 if !matches!(
                     self.current_kind(),
                     PlPgSqlTokenKind::Equals | PlPgSqlTokenKind::Assign
@@ -1106,7 +1110,9 @@ impl<'a> BodyParser<'a> {
 
         self.expect_semicolon()?;
 
-        if options.is_empty() && let Some(msg) = &message {
+        if options.is_empty()
+            && let Some(msg) = &message
+        {
             options.push(PlPgSqlRaiseOption {
                 opt_type: PlPgSqlRaiseOptionType::Message,
                 expr: self.make_expr(msg.clone()),
@@ -1140,13 +1146,15 @@ impl<'a> BodyParser<'a> {
         };
         self.expect_semicolon()?;
 
-        Ok(PlPgSqlStmt::Assert(crate::plpgsql::types::PlPgSqlStmtAssert {
-            cmd_type: PlPgSqlStmtType::Assert,
-            lineno: i32::try_from(token.span.line).unwrap_or(i32::MAX),
-            stmtid: self.alloc_stmtid(),
-            cond: self.make_expr(cond),
-            message,
-        }))
+        Ok(PlPgSqlStmt::Assert(
+            crate::plpgsql::types::PlPgSqlStmtAssert {
+                cmd_type: PlPgSqlStmtType::Assert,
+                lineno: i32::try_from(token.span.line).unwrap_or(i32::MAX),
+                stmtid: self.alloc_stmtid(),
+                cond: self.make_expr(cond),
+                message,
+            },
+        ))
     }
 
     fn parse_perform_statement(&mut self) -> Result<PlPgSqlStmt, PlPgSqlCompileError> {
@@ -1763,11 +1771,7 @@ impl<'a> BodyParser<'a> {
             || type_name.starts_with("cursor")
             || type_name.contains(" refcursor")
             || type_name.contains(" cursor");
-        if is_cursor {
-            Some(dno)
-        } else {
-            None
-        }
+        if is_cursor { Some(dno) } else { None }
     }
 
     fn lookup_or_create_loop_var(
@@ -1848,13 +1852,20 @@ impl<'a> BodyParser<'a> {
     ) -> Result<String, PlPgSqlCompileError> {
         let start_idx = self.idx;
         let mut idx = self.idx;
-        let mut depth = 0usize;
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
 
         while idx < self.tokens.len() {
             match self.tokens[idx].kind {
-                PlPgSqlTokenKind::LParen => depth += 1,
-                PlPgSqlTokenKind::RParen => depth = depth.saturating_sub(1),
-                PlPgSqlTokenKind::Keyword(keyword) if depth == 0 && keywords.contains(&keyword) => {
+                PlPgSqlTokenKind::LParen => paren_depth += 1,
+                PlPgSqlTokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
+                PlPgSqlTokenKind::Operator(ref op) if op == "[" => bracket_depth += 1,
+                PlPgSqlTokenKind::Operator(ref op) if op == "]" => {
+                    bracket_depth = bracket_depth.saturating_sub(1)
+                }
+                PlPgSqlTokenKind::Keyword(keyword)
+                    if paren_depth == 0 && bracket_depth == 0 && keywords.contains(&keyword) =>
+                {
                     if idx == start_idx {
                         return Err(PlPgSqlCompileError {
                             message: "expected expression".to_string(),
@@ -1884,13 +1895,18 @@ impl<'a> BodyParser<'a> {
         let mut parts = Vec::new();
         let mut part_start = self.idx;
         let mut idx = self.idx;
-        let mut depth = 0usize;
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
 
         while idx < self.tokens.len() {
             match &self.tokens[idx].kind {
-                PlPgSqlTokenKind::LParen => depth += 1,
-                PlPgSqlTokenKind::RParen => depth = depth.saturating_sub(1),
-                PlPgSqlTokenKind::Comma if depth == 0 => {
+                PlPgSqlTokenKind::LParen => paren_depth += 1,
+                PlPgSqlTokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
+                PlPgSqlTokenKind::Operator(op) if op == "[" => bracket_depth += 1,
+                PlPgSqlTokenKind::Operator(op) if op == "]" => {
+                    bracket_depth = bracket_depth.saturating_sub(1)
+                }
+                PlPgSqlTokenKind::Comma if paren_depth == 0 && bracket_depth == 0 => {
                     let start = self.tokens[part_start].span.start;
                     let end = self.tokens[idx].span.start;
                     let part = self.source[start..end].trim().to_string();
@@ -1899,7 +1915,7 @@ impl<'a> BodyParser<'a> {
                     }
                     part_start = idx + 1;
                 }
-                PlPgSqlTokenKind::Identifier(word) if depth == 0 => {
+                PlPgSqlTokenKind::Identifier(word) if paren_depth == 0 && bracket_depth == 0 => {
                     if word.eq_ignore_ascii_case("using") {
                         let start = self.tokens[part_start].span.start;
                         let end = self.tokens[idx].span.start;
@@ -1911,7 +1927,7 @@ impl<'a> BodyParser<'a> {
                         return Ok(parts);
                     }
                 }
-                PlPgSqlTokenKind::Semicolon if depth == 0 => {
+                PlPgSqlTokenKind::Semicolon if paren_depth == 0 && bracket_depth == 0 => {
                     let start = self.tokens[part_start].span.start;
                     let end = self.tokens[idx].span.start;
                     let part = self.source[start..end].trim().to_string();
@@ -1935,13 +1951,20 @@ impl<'a> BodyParser<'a> {
     ) -> Result<String, PlPgSqlCompileError> {
         let start_idx = self.idx;
         let mut idx = self.idx;
-        let mut depth = 0usize;
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
 
         while idx < self.tokens.len() {
             match self.tokens[idx].kind {
-                PlPgSqlTokenKind::LParen => depth += 1,
-                PlPgSqlTokenKind::RParen => depth = depth.saturating_sub(1),
-                PlPgSqlTokenKind::Comma | PlPgSqlTokenKind::Semicolon if depth == 0 => {
+                PlPgSqlTokenKind::LParen => paren_depth += 1,
+                PlPgSqlTokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
+                PlPgSqlTokenKind::Operator(ref op) if op == "[" => bracket_depth += 1,
+                PlPgSqlTokenKind::Operator(ref op) if op == "]" => {
+                    bracket_depth = bracket_depth.saturating_sub(1)
+                }
+                PlPgSqlTokenKind::Comma | PlPgSqlTokenKind::Semicolon
+                    if paren_depth == 0 && bracket_depth == 0 =>
+                {
                     if idx == start_idx {
                         return Err(self.error_at_current("expected expression"));
                     }
