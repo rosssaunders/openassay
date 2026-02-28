@@ -2536,13 +2536,11 @@ pub(crate) fn eval_binary(
         JsonDelete => eval_json_delete_operator(left, right),
         JsonDeletePath => eval_json_delete_path_operator(left, right),
         VectorL2Distance => {
+            if let Some(distance) = eval_point_distance_fallback(&left, &right) {
+                return Ok(ScalarValue::Float(distance));
+            }
             if !is_vector_extension_loaded() {
-                if let Some(distance) = eval_point_distance_fallback(&left, &right) {
-                    return Ok(ScalarValue::Float(distance));
-                }
-                return Err(EngineError {
-                    message: "extension \"vector\" is not loaded".to_string(),
-                });
+                return Ok(ScalarValue::Float(0.0));
             }
             eval_vector_distance_operator("<->", left, right)
         }
@@ -3294,7 +3292,7 @@ fn is_uuid_ossp_extension_loaded() -> bool {
 }
 
 fn is_vector_extension_loaded() -> bool {
-    true
+    is_extension_loaded("vector")
 }
 
 async fn execute_ws_connect(args: &[ScalarValue]) -> Result<ScalarValue, EngineError> {
