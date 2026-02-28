@@ -14,6 +14,8 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,6 +54,15 @@ jobs:
             --baseline benches/baselines \
             --current target/criterion \
             --save-baseline
+
+      - name: Commit baseline to repo
+        if: always() && github.event.inputs.save_baseline == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add benches/baselines/
+          git diff --cached --quiet || git commit -m "chore: update perf baseline [skip ci]"
+          git push
 
       - name: Upload benchmark report
         if: always()
