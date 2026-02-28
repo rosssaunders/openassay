@@ -14,11 +14,12 @@ use crate::parser::sql_parser::parse_statement;
 use crate::plpgsql::scanner::{PlPgSqlTokenKind, tokenize};
 use crate::plpgsql::types::{
     PLPGSQL_OTHERS, PlPgSqlCondition, PlPgSqlDatum, PlPgSqlExpr, PlPgSqlFunction,
-    PlPgSqlGetdiagKind, PlPgSqlStmt, PlPgSqlStmtAssert, PlPgSqlStmtAssign, PlPgSqlStmtBlock,
-    PlPgSqlStmtClose, PlPgSqlStmtDynexecute, PlPgSqlStmtExecSql, PlPgSqlStmtExit,
-    PlPgSqlStmtFetch, PlPgSqlStmtForc, PlPgSqlStmtFori, PlPgSqlStmtFors, PlPgSqlStmtGetdiag,
-    PlPgSqlStmtIf, PlPgSqlStmtLoop, PlPgSqlStmtOpen, PlPgSqlStmtPerform, PlPgSqlStmtRaise,
-    PlPgSqlStmtReturn, PlPgSqlStmtReturnNext, PlPgSqlStmtWhile, PlPgSqlTypeType, PlPgSqlValue,
+    PlPgSqlGetdiagKind, PlPgSqlRaiseOptionType, PlPgSqlStmt, PlPgSqlStmtAssert,
+    PlPgSqlStmtAssign, PlPgSqlStmtBlock, PlPgSqlStmtClose, PlPgSqlStmtDynexecute,
+    PlPgSqlStmtExecSql, PlPgSqlStmtExit, PlPgSqlStmtFetch, PlPgSqlStmtForc, PlPgSqlStmtFori,
+    PlPgSqlStmtFors, PlPgSqlStmtGetdiag, PlPgSqlStmtIf, PlPgSqlStmtLoop, PlPgSqlStmtOpen,
+    PlPgSqlStmtPerform, PlPgSqlStmtRaise, PlPgSqlStmtReturn, PlPgSqlStmtReturnNext,
+    PlPgSqlStmtWhile, PlPgSqlTypeType, PlPgSqlValue,
 };
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{QueryResult, execute_planned_query, plan_statement};
@@ -55,6 +56,7 @@ pub struct PLpgSQLExecState {
     eval_processed: u64,
     retset_values: Vec<ScalarValue>,
     cursor_states: HashMap<i32, CursorState>,
+    current_exception: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +92,7 @@ impl PLpgSQLExecState {
             eval_processed: 0,
             retset_values: Vec::new(),
             cursor_states: HashMap::new(),
+            current_exception: None,
         }
     }
 
@@ -314,18 +317,21 @@ fn exec_stmt_block(
                     exec_assign_value_dno(
                         estate,
                         exceptions.sqlstate_varno,
-                        ScalarValue::Text(sqlstate),
+                        ScalarValue::Text(sqlstate.clone()),
                     )?;
                 }
                 if exceptions.sqlerrm_varno >= 0 {
                     exec_assign_value_dno(
                         estate,
                         exceptions.sqlerrm_varno,
-                        ScalarValue::Text(sqlerrm),
+                        ScalarValue::Text(sqlerrm.clone()),
                     )?;
                 }
-
-                exec_stmts(estate, &exception.action)?
+                let prev_exception = estate.current_exception.clone();
+                estate.current_exception = Some((sqlstate, sqlerrm));
+                let handler_result = exec_stmts(estate, &exception.action);
+                estate.current_exception = prev_exception;
+                handler_result?
             }
         }
     } else {
@@ -665,16 +671,19 @@ fn exec_stmt_forc(
             LoopControl::Continue => {}
             LoopControl::BreakWith(rc) => {
                 set_found(estate, found)?;
+                estate.cursor_states.remove(&stmt.curvar);
                 return Ok(rc);
             }
             LoopControl::Propagate(rc) => {
                 set_found(estate, found)?;
+                estate.cursor_states.remove(&stmt.curvar);
                 return Ok(rc);
             }
         }
     }
 
     set_found(estate, found)?;
+    estate.cursor_states.remove(&stmt.curvar);
     Ok(ExecResultCode::Ok)
 }
 
@@ -756,6 +765,17 @@ fn exec_stmt_raise(
     estate: &mut PLpgSQLExecState,
     stmt: &PlPgSqlStmtRaise,
 ) -> Result<ExecResultCode, String> {
+    if stmt.condname.is_none()
+        && stmt.message.is_none()
+        && stmt.params.is_empty()
+        && stmt.options.is_empty()
+    {
+        if let Some((code, message)) = estate.current_exception.clone() {
+            return Err(tag_sqlstate_error(&code, message));
+        }
+        return Err("RAISE without parameters cannot be used outside an exception handler".to_string());
+    }
+
     let message_template = stmt
         .message
         .as_deref()
@@ -778,11 +798,27 @@ fn exec_stmt_raise(
         .as_deref()
         .is_some_and(|c| c.eq_ignore_ascii_case("NOTICE") || c.eq_ignore_ascii_case("WARNING"));
 
+    let mut sqlstate = stmt
+        .condname
+        .as_deref()
+        .and_then(raise_condition_to_sqlstate)
+        .unwrap_or_else(|| "P0001".to_string());
+    for option in &stmt.options {
+        if !matches!(option.opt_type, PlPgSqlRaiseOptionType::Errcode) {
+            continue;
+        }
+        let value = exec_eval_expr(estate, &option.expr)?;
+        let rendered = decode_sql_string_literal(&value.render()).to_ascii_uppercase();
+        if is_valid_sqlstate_code(&rendered) {
+            sqlstate = rendered;
+        }
+    }
+
     if stmt.elog_level > 0 || is_notice {
         eprintln!("NOTICE: {formatted}");
         Ok(ExecResultCode::Ok)
     } else {
-        Err(tag_sqlstate_error("P0001", formatted))
+        Err(tag_sqlstate_error(&sqlstate, formatted))
     }
 }
 
@@ -890,8 +926,7 @@ fn exec_stmt_getdiag(
             }
             _ => {
                 return Err(
-                    "only GET DIAGNOSTICS ROW_COUNT and PG_ROUTINE_OID are implemented"
-                        .to_string(),
+                    "only GET DIAGNOSTICS ROW_COUNT and PG_ROUTINE_OID are implemented".to_string(),
                 );
             }
         }
@@ -939,7 +974,10 @@ fn exec_stmt_fetch(
         .as_ref()
         .ok_or_else(|| "FETCH target variable is missing".to_string())?;
     let Some(cursor_state) = estate.cursor_states.get_mut(&stmt.curvar) else {
-        return Err("cursor is not open".to_string());
+        exec_assign_value_dno(estate, target.dno, ScalarValue::Null)?;
+        set_found(estate, false)?;
+        set_eval_processed(estate, 0);
+        return Ok(ExecResultCode::Ok);
     };
 
     if cursor_state.position >= cursor_state.rows.len() {
@@ -998,10 +1036,7 @@ fn exec_stmt_close(
     estate: &mut PLpgSQLExecState,
     stmt: &PlPgSqlStmtClose,
 ) -> Result<ExecResultCode, String> {
-    let removed = estate.cursor_states.remove(&stmt.curvar);
-    if removed.is_none() {
-        return Err("cursor is not open".to_string());
-    }
+    let _ = estate.cursor_states.remove(&stmt.curvar);
     Ok(ExecResultCode::Ok)
 }
 
@@ -1506,6 +1541,23 @@ fn is_valid_sqlstate_code(code: &str) -> bool {
         && code
             .chars()
             .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+}
+
+fn raise_condition_to_sqlstate(condname: &str) -> Option<String> {
+    let trimmed = condname.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    if is_valid_sqlstate_code(&upper) {
+        return Some(upper);
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "exception" | "raise_exception" => Some("P0001".to_string()),
+        "division_by_zero" => Some("22012".to_string()),
+        "substring_error" => Some("22011".to_string()),
+        "syntax_error" => Some("42601".to_string()),
+        "undefined_table" => Some("42P01".to_string()),
+        "undefined_column" => Some("42703".to_string()),
+        _ => None,
+    }
 }
 
 fn sqlstate_internal() -> i32 {

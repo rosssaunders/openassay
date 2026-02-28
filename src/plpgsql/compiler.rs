@@ -1021,6 +1021,18 @@ impl<'a> BodyParser<'a> {
         if self.is_keyword(PlPgSqlKeyword::Exception) {
             self.advance();
             condname = Some("EXCEPTION".to_string());
+        } else if self.consume_identifier_word("sqlstate") {
+            let PlPgSqlTokenKind::StringLiteral(code_literal) = self.current_kind().clone() else {
+                return Err(self.error_at_current("expected SQLSTATE string literal in RAISE"));
+            };
+            self.advance();
+            let Some(code) = decode_single_quoted_string(code_literal.as_str()) else {
+                return Err(self.error_at_current("invalid SQLSTATE code in RAISE"));
+            };
+            if !is_valid_sqlstate_code(code.as_str()) {
+                return Err(self.error_at_current("invalid SQLSTATE code in RAISE"));
+            }
+            condname = Some(code.to_ascii_uppercase());
         } else if let PlPgSqlTokenKind::Identifier(word) = self.current_kind().clone()
             && word.eq_ignore_ascii_case("exception")
         {
@@ -2217,6 +2229,8 @@ fn exception_condition_name_to_sqlstate(name: &str) -> Option<i32> {
         "too_many_rows" => "P0003",
         "assert_failure" => "P0004",
         "division_by_zero" => "22012",
+        "substring_error" => "22011",
+        "syntax_error" => "42601",
         "query_canceled" => "57014",
         "undefined_table" => "42P01",
         "undefined_column" => "42703",
