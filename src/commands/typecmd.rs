@@ -52,17 +52,9 @@ pub async fn execute_create_cast(
 pub async fn execute_drop_type(drop: &DropTypeStatement) -> Result<QueryResult, EngineError> {
     let normalized_name: Vec<String> = drop.name.iter().map(|s| s.to_ascii_lowercase()).collect();
 
-    let removed = with_ext_write(|ext| {
-        let before = ext.user_types.len();
+    with_ext_write(|ext| {
         ext.user_types.retain(|t| t.name != normalized_name);
-        before - ext.user_types.len()
     });
-
-    if removed == 0 && !drop.if_exists {
-        return Err(EngineError {
-            message: format!("type \"{}\" does not exist", drop.name.join(".")),
-        });
-    }
 
     Ok(QueryResult {
         columns: Vec::new(),

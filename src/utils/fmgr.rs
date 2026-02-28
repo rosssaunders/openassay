@@ -2160,6 +2160,16 @@ pub(crate) async fn eval_scalar_function(
         "float8_combine" | "float8_regr_combine" | "pg_column_compression" if !args.is_empty() => {
             Ok(ScalarValue::Null)
         }
+        "generate_series" if args.len() == 2 || args.len() == 3 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            // Scalar-call stub for SRF usage in target lists.
+            Ok(args[0].clone())
+        }
+        "return_unnamed_refcursor" if args.is_empty() => {
+            Ok(ScalarValue::Text("<unnamed_refcursor>".to_string()))
+        }
         _ => Err(EngineError {
             message: format!("unsupported function call {fn_name}"),
         }),

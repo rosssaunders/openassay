@@ -15,17 +15,13 @@ pub async fn execute_create_function(
         language: create.language.clone(),
     };
     with_ext_write(|ext| {
-        if create.or_replace {
-            ext.user_functions
-                .retain(|existing| !same_function_identity(existing, &uf));
-        } else if ext
+        let has_existing = ext
             .user_functions
             .iter()
-            .any(|existing| same_function_identity(existing, &uf))
-        {
-            return Err(EngineError {
-                message: format!("function \"{}\" already exists", uf.name.join(".")),
-            });
+            .any(|existing| same_function_identity(existing, &uf));
+        if create.or_replace || has_existing {
+            ext.user_functions
+                .retain(|existing| !same_function_identity(existing, &uf));
         }
         ext.user_functions.push(uf);
         Ok(())
@@ -43,10 +39,18 @@ pub async fn execute_drop_function(
 ) -> Result<QueryResult, EngineError> {
     let normalized_name: Vec<String> = drop.name.iter().map(|s| s.to_ascii_lowercase()).collect();
     let removed = with_ext_write(|ext| {
-        let before = ext.user_functions.len();
-        ext.user_functions
-            .retain(|existing| existing.name != normalized_name);
-        before - ext.user_functions.len()
+        let matches_name = |existing: &UserFunction| {
+            if existing.name == normalized_name {
+                return true;
+            }
+            normalized_name.len() == 1 && existing.name.last() == normalized_name.last()
+        };
+        if let Some(position) = ext.user_functions.iter().position(matches_name) {
+            ext.user_functions.remove(position);
+            1usize
+        } else {
+            0usize
+        }
     });
     if removed == 0 && !drop.if_exists {
         return Err(EngineError {

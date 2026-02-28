@@ -592,11 +592,29 @@ pub struct AlterViewStatement {
 pub enum AlterTableAction {
     AddColumn(ColumnDefinition),
     AddConstraint(TableConstraint),
-    DropColumn { name: String },
-    DropConstraint { name: String },
-    RenameColumn { old_name: String, new_name: String },
-    SetColumnNullable { name: String, nullable: bool },
-    SetColumnDefault { name: String, default: Option<Expr> },
+    DropColumn {
+        name: String,
+    },
+    DropConstraint {
+        name: String,
+    },
+    RenameColumn {
+        old_name: String,
+        new_name: String,
+    },
+    SetColumnType {
+        name: String,
+        data_type: TypeName,
+        using: Option<Expr>,
+    },
+    SetColumnNullable {
+        name: String,
+        nullable: bool,
+    },
+    SetColumnDefault {
+        name: String,
+        default: Option<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

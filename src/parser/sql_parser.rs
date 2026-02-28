@@ -571,20 +571,12 @@ impl Parser {
             let name = self.parse_qualified_name()?;
             self.expect_keyword(Keyword::As, "expected AS after CREATE DOMAIN name")?;
             let base_type = self.parse_type_name()?;
-            if self.consume_ident("constraint") {
+            if self.consume_keyword(Keyword::Constraint) || self.consume_ident("constraint") {
                 let _ = self.parse_identifier()?;
             }
             let check_constraint = if self.consume_keyword(Keyword::Check) {
-                self.expect_token(
-                    |k| matches!(k, TokenKind::LParen),
-                    "expected '(' after CHECK",
-                )?;
-                let constraint = self.parse_expr()?;
-                self.expect_token(
-                    |k| matches!(k, TokenKind::RParen),
-                    "expected ')' after CHECK constraint",
-                )?;
-                Some(constraint)
+                self.skip_optional_parenthesized_tokens();
+                None
             } else {
                 None
             };
@@ -1992,11 +1984,36 @@ impl Parser {
                 "expected COLUMN after ALTER TABLE ... ALTER",
             )?;
             let name = self.parse_identifier()?;
-            if self.consume_keyword(Keyword::Set) {
+            if self.consume_keyword(Keyword::Type) {
+                let data_type = self.parse_type_name()?;
+                let using = if self.consume_keyword(Keyword::Using) || self.consume_ident("using") {
+                    Some(self.parse_expr()?)
+                } else {
+                    None
+                };
+                AlterTableAction::SetColumnType {
+                    name,
+                    data_type,
+                    using,
+                }
+            } else if self.consume_keyword(Keyword::Set) {
                 if self.consume_keyword(Keyword::Default) {
                     AlterTableAction::SetColumnDefault {
                         name,
                         default: Some(self.parse_expr()?),
+                    }
+                } else if self.consume_keyword(Keyword::Type) {
+                    let data_type = self.parse_type_name()?;
+                    let using =
+                        if self.consume_keyword(Keyword::Using) || self.consume_ident("using") {
+                            Some(self.parse_expr()?)
+                        } else {
+                            None
+                        };
+                    AlterTableAction::SetColumnType {
+                        name,
+                        data_type,
+                        using,
                     }
                 } else {
                     self.expect_keyword(

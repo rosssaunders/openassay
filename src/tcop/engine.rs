@@ -453,7 +453,7 @@ pub(crate) fn lookup_user_function(name: &[String], arg_count: usize) -> Option<
                 if func.name == lowered {
                     return true;
                 }
-                lowered.len() == 1 && func.name.last() == lowered.last()
+                func.name.last() == lowered.last()
             })
             .cloned()
             .collect::<Vec<_>>();
