@@ -1,6 +1,7 @@
-use crate::catalog::{TableKind, with_catalog_read, with_catalog_write};
+use crate::catalog::{ColumnSpec, TableKind, with_catalog_read, with_catalog_write};
 use crate::commands::create_table::{
     column_spec_from_ast, foreign_key_constraint_specs_from_ast, key_constraint_specs_from_ast,
+    type_signature_from_ast,
 };
 use crate::parser::ast::{AlterTableAction, AlterTableStatement, TableConstraint};
 use crate::tcop::engine::{
@@ -144,6 +145,72 @@ pub async fn execute_alter_table(
         AlterTableAction::RenameColumn { old_name, new_name } => {
             with_catalog_write(|catalog| {
                 catalog.rename_column(table.schema_name(), table.name(), old_name, new_name)
+            })
+            .map_err(|err| EngineError {
+                message: err.message,
+            })?;
+        }
+        AlterTableAction::SetColumnType {
+            name,
+            data_type,
+            using,
+        } => {
+            let target_signature = type_signature_from_ast(data_type.clone());
+            let column_index = crate::tcop::engine::find_column_index(&table, name)?;
+            let Some(target_column) = table.columns().get(column_index) else {
+                return Err(EngineError {
+                    message: format!(
+                        "column \"{}\" of relation \"{}\" does not exist",
+                        name,
+                        table.qualified_name()
+                    ),
+                });
+            };
+
+            let mut target_spec =
+                ColumnSpec::new(target_column.name().to_string(), target_signature);
+            target_spec.nullable = target_column.nullable();
+
+            let current_rows = with_storage_read(|storage| {
+                storage
+                    .rows_by_table
+                    .get(&table.oid())
+                    .cloned()
+                    .unwrap_or_default()
+            });
+
+            let mut rewritten_rows = Vec::with_capacity(current_rows.len());
+            for mut row in current_rows {
+                let source_value = if let Some(using_expr) = using {
+                    let mut scope = crate::tcop::engine::EvalScope::default();
+                    for (column, value) in table.columns().iter().zip(row.iter()) {
+                        scope.insert_unqualified(column.name(), value.clone());
+                        scope.insert_qualified(
+                            &format!("{}.{}", table.name(), column.name()),
+                            value.clone(),
+                        );
+                        scope.insert_qualified(
+                            &format!("{}.{}.{}", table.schema_name(), table.name(), column.name()),
+                            value.clone(),
+                        );
+                    }
+                    crate::tcop::engine::eval_expr(using_expr, &scope, &[]).await?
+                } else {
+                    row.get(column_index).cloned().unwrap_or(ScalarValue::Null)
+                };
+                let coerced =
+                    crate::tcop::engine::coerce_value_for_column_spec(source_value, &target_spec)?;
+                if column_index < row.len() {
+                    row[column_index] = coerced;
+                }
+                rewritten_rows.push(row);
+            }
+
+            with_storage_write(|storage| {
+                storage.rows_by_table.insert(table.oid(), rewritten_rows);
+            });
+            with_catalog_write(|catalog| {
+                catalog.set_column_type(table.schema_name(), table.name(), name, target_signature)
             })
             .map_err(|err| EngineError {
                 message: err.message,

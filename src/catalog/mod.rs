@@ -1372,6 +1372,42 @@ impl Catalog {
         Ok(())
     }
 
+    pub fn set_column_type(
+        &mut self,
+        schema_name: &str,
+        table_name: &str,
+        column_name: &str,
+        type_signature: TypeSignature,
+    ) -> Result<(), CatalogError> {
+        let schema_name = normalize_name(schema_name)?;
+        let table_name = normalize_name(table_name)?;
+        let column_name = normalize_name(column_name)?;
+        let Some(schema) = self.schemas.get_mut(&schema_name) else {
+            return Err(CatalogError {
+                message: format!("schema \"{schema_name}\" does not exist"),
+            });
+        };
+        let Some(table) = schema.table_mut(&table_name) else {
+            return Err(CatalogError {
+                message: format!("relation \"{schema_name}.{table_name}\" does not exist"),
+            });
+        };
+        let Some(column) = table
+            .columns_mut()
+            .iter_mut()
+            .find(|column| column.name() == column_name)
+        else {
+            return Err(CatalogError {
+                message: format!(
+                    "column \"{column_name}\" of relation \"{schema_name}.{table_name}\" does not exist"
+                ),
+            });
+        };
+
+        column.set_type_signature(type_signature);
+        Ok(())
+    }
+
     pub fn sequence_default_dependents(
         &self,
         sequence_name: &str,

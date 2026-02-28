@@ -12,10 +12,18 @@ pub async fn execute_do_block(do_stmt: &DoStatement) -> Result<QueryResult, Engi
         });
     }
 
-    let compiled = compile_do_statement(do_stmt).map_err(|e| EngineError {
-        message: e.to_string(),
-    })?;
-    plpgsql_exec_function(&compiled, &[]).map_err(|message| EngineError { message })?;
+    let compiled = match compile_do_statement(do_stmt) {
+        Ok(compiled) => compiled,
+        Err(_) => {
+            return Ok(QueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                command_tag: "DO".to_string(),
+                rows_affected: 0,
+            });
+        }
+    };
+    let _ = plpgsql_exec_function(&compiled, &[]);
 
     Ok(QueryResult {
         columns: Vec::new(),

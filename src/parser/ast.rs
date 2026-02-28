@@ -44,6 +44,7 @@ pub enum Statement {
     Copy(CopyStatement),
     Transaction(TransactionStatement),
     CreateType(CreateTypeStatement),
+    CreateCast(CreateCastStatement),
     CreateDomain(CreateDomainStatement),
     DropType(DropTypeStatement),
     DropDomain(DropDomainStatement),
@@ -407,6 +408,15 @@ pub struct CreateTypeStatement {
     pub as_enum: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateCastStatement {
+    pub source_type: TypeName,
+    pub target_type: TypeName,
+    pub function_name: Option<Vec<String>>,
+    pub as_assignment: bool,
+    pub as_implicit: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreateDomainStatement {
     pub name: Vec<String>,
@@ -582,11 +592,29 @@ pub struct AlterViewStatement {
 pub enum AlterTableAction {
     AddColumn(ColumnDefinition),
     AddConstraint(TableConstraint),
-    DropColumn { name: String },
-    DropConstraint { name: String },
-    RenameColumn { old_name: String, new_name: String },
-    SetColumnNullable { name: String, nullable: bool },
-    SetColumnDefault { name: String, default: Option<Expr> },
+    DropColumn {
+        name: String,
+    },
+    DropConstraint {
+        name: String,
+    },
+    RenameColumn {
+        old_name: String,
+        new_name: String,
+    },
+    SetColumnType {
+        name: String,
+        data_type: TypeName,
+        using: Option<Expr>,
+    },
+    SetColumnNullable {
+        name: String,
+        nullable: bool,
+    },
+    SetColumnDefault {
+        name: String,
+        default: Option<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1053,6 +1081,7 @@ pub struct CreateFunctionStatement {
 pub struct DropFunctionStatement {
     pub name: Vec<String>,
     pub if_exists: bool,
+    pub behavior: DropBehavior,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1074,6 +1103,7 @@ pub enum TriggerEvent {
     Insert,
     Update,
     Delete,
+    Truncate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

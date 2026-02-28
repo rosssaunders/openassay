@@ -317,7 +317,10 @@ pub(crate) fn eval_make_interval(args: &[ScalarValue]) -> Result<ScalarValue, En
         })?;
     let total_seconds = hours
         .checked_mul(3_600)
-        .and_then(|value| mins.checked_mul(60).and_then(|mins_secs| value.checked_add(mins_secs)))
+        .and_then(|value| {
+            mins.checked_mul(60)
+                .and_then(|mins_secs| value.checked_add(mins_secs))
+        })
         .and_then(|value| value.checked_add(whole_seconds))
         .ok_or_else(|| EngineError {
             message: "make_interval() seconds out of range".to_string(),

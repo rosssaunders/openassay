@@ -171,6 +171,10 @@ impl Column {
         self.ordinal = ordinal;
     }
 
+    pub fn set_type_signature(&mut self, type_signature: TypeSignature) {
+        self.type_signature = type_signature;
+    }
+
     pub fn set_default(&mut self, default: Option<Expr>) {
         self.default = default;
     }

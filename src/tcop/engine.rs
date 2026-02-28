@@ -262,6 +262,7 @@ pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError>
             (Vec::new(), Vec::new(), false, tag.to_string())
         }
         Statement::CreateType(_) => (Vec::new(), Vec::new(), false, "CREATE TYPE".to_string()),
+        Statement::CreateCast(_) => (Vec::new(), Vec::new(), false, "CREATE CAST".to_string()),
         Statement::CreateDomain(_) => (Vec::new(), Vec::new(), false, "CREATE DOMAIN".to_string()),
         Statement::DropType(_) => (Vec::new(), Vec::new(), false, "DROP TYPE".to_string()),
         Statement::DropDomain(_) => (Vec::new(), Vec::new(), false, "DROP DOMAIN".to_string()),
@@ -452,7 +453,7 @@ pub(crate) fn lookup_user_function(name: &[String], arg_count: usize) -> Option<
                 if func.name == lowered {
                     return true;
                 }
-                lowered.len() == 1 && func.name.last() == lowered.last()
+                func.name.last() == lowered.last()
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -2587,14 +2588,18 @@ fn resolve_on_conflict_target_indexes(
                 .cloned()
                 .collect::<HashSet<String>>();
             let matches_unique_constraint = table.key_constraints().iter().any(|constraint| {
-                constraint.columns.iter().cloned().collect::<HashSet<String>>() == target_set
+                constraint
+                    .columns
+                    .iter()
+                    .cloned()
+                    .collect::<HashSet<String>>()
+                    == target_set
             });
             let matches_unique_index = table.indexes().iter().any(|index| {
                 index.unique
                     && index.columns.iter().cloned().collect::<HashSet<String>>() == target_set
             });
-            if !matches_unique_constraint && !matches_unique_index
-            {
+            if !matches_unique_constraint && !matches_unique_index {
                 return Err(EngineError {
                     message: "there is no unique or primary key constraint matching the ON CONFLICT specification".to_string(),
                 });

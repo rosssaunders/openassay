@@ -105,6 +105,7 @@ pub async fn execute_utility_statement(
             message: "subscriptions are not supported in wasm builds".to_string(),
         }),
         Statement::CreateType(create) => typecmd::execute_create_type(create).await,
+        Statement::CreateCast(create) => typecmd::execute_create_cast(create).await,
         Statement::CreateDomain(create) => typecmd::execute_create_domain(create).await,
         Statement::DropType(drop_type) => typecmd::execute_drop_type(drop_type).await,
         Statement::DropDomain(drop_domain) => typecmd::execute_drop_domain(drop_domain).await,
@@ -149,6 +150,7 @@ pub fn is_utility_statement(statement: &Statement) -> bool {
             | Statement::CreateSubscription(_)
             | Statement::DropSubscription(_)
             | Statement::CreateType(_)
+            | Statement::CreateCast(_)
             | Statement::CreateDomain(_)
             | Statement::DropType(_)
             | Statement::DropDomain(_)

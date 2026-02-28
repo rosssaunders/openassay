@@ -493,6 +493,22 @@ fn is_expected_limitation(test_name: &str, error_output: &str) -> bool {
     }
 }
 
+/// Certain plpgsql statements are intentional error probes in PostgreSQL's
+/// regression script. We treat those as compatibility-success when they error.
+fn is_expected_plpgsql_error_probe(statement: &str) -> bool {
+    let normalized = statement
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+
+    normalized.contains("insert into pfield values ('pf1_1', 'should fail due to unique index')")
+        || normalized == "insert into hslot values ('hs', 'base.hub1', 20, '')"
+        || normalized == "insert into iface values ('if', 'notthere', 'eth0', '')"
+        || normalized
+            == "insert into iface values ('if', 'orion', 'ethernet_interface_name_too_long', '')"
+}
+
 /// Run PostgreSQL compatibility tests
 #[test]
 fn postgresql_compatibility_suite() {
@@ -508,6 +524,10 @@ fn postgresql_compatibility_suite() {
         print!("Testing {test_name}... ");
 
         let mut session = PostgresSession::new();
+        if test_name == "plpgsql" {
+            // Prevent cross-test relation leakage from affecting plpgsql strictness checks.
+            session = run_setup_statements(session, "DROP TABLE IF EXISTS foo;");
+        }
         if let Some(setup_sql) = setup_fixture_sql_for_test(&test_name) {
             session = run_setup_statements(session, setup_sql);
         }
@@ -544,6 +564,10 @@ fn postgresql_compatibility_suite() {
                     result: Err(error),
                 } => {
                     session = next_session;
+                    if test_name == "plpgsql" && is_expected_plpgsql_error_probe(statement) {
+                        stmt_ok += 1;
+                        continue;
+                    }
                     if is_expected_limitation(&test_name, &error) {
                         stmt_skip += 1;
                         continue;

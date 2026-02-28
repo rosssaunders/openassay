@@ -198,8 +198,8 @@ fn infer_function_return_oid(
             .map(|expr| infer_expr_type_oid(expr, scope, ctes))
             .unwrap_or(PG_FLOAT8_OID),
         "power" | "pow" | "sqrt" | "cbrt" | "exp" | "ln" | "log" | "log10" | "sin" | "cos"
-        | "tan" | "asin" | "acos" | "atan" | "atan2" | "degrees" | "radians" | "pi"
-        | "random" | "to_number" => PG_FLOAT8_OID,
+        | "tan" | "asin" | "acos" | "atan" | "atan2" | "degrees" | "radians" | "pi" | "random"
+        | "to_number" => PG_FLOAT8_OID,
         "div" | "gcd" | "lcm" | "ntile" | "row_number" | "rank" | "dense_rank" => PG_INT8_OID,
         "percent_rank" | "cume_dist" => PG_FLOAT8_OID,
         "sum" => args
@@ -633,10 +633,11 @@ fn derive_query_expr_output_columns(
                 .collect())
         }
         QueryExpr::Insert(insert) => {
-            let names =
-                derive_dml_returning_columns(&insert.table_name, &insert.returning).unwrap_or_default();
-            let types = derive_dml_returning_column_type_oids(&insert.table_name, &insert.returning)
-                .unwrap_or_else(|_| vec![PG_TEXT_OID; names.len()]);
+            let names = derive_dml_returning_columns(&insert.table_name, &insert.returning)
+                .unwrap_or_default();
+            let types =
+                derive_dml_returning_column_type_oids(&insert.table_name, &insert.returning)
+                    .unwrap_or_else(|_| vec![PG_TEXT_OID; names.len()]);
             Ok(names
                 .into_iter()
                 .enumerate()
@@ -647,10 +648,11 @@ fn derive_query_expr_output_columns(
                 .collect())
         }
         QueryExpr::Update(update) => {
-            let names =
-                derive_dml_returning_columns(&update.table_name, &update.returning).unwrap_or_default();
-            let types = derive_dml_returning_column_type_oids(&update.table_name, &update.returning)
-                .unwrap_or_else(|_| vec![PG_TEXT_OID; names.len()]);
+            let names = derive_dml_returning_columns(&update.table_name, &update.returning)
+                .unwrap_or_default();
+            let types =
+                derive_dml_returning_column_type_oids(&update.table_name, &update.returning)
+                    .unwrap_or_else(|_| vec![PG_TEXT_OID; names.len()]);
             Ok(names
                 .into_iter()
                 .enumerate()
@@ -661,10 +663,11 @@ fn derive_query_expr_output_columns(
                 .collect())
         }
         QueryExpr::Delete(delete) => {
-            let names =
-                derive_dml_returning_columns(&delete.table_name, &delete.returning).unwrap_or_default();
-            let types = derive_dml_returning_column_type_oids(&delete.table_name, &delete.returning)
-                .unwrap_or_else(|_| vec![PG_TEXT_OID; names.len()]);
+            let names = derive_dml_returning_columns(&delete.table_name, &delete.returning)
+                .unwrap_or_default();
+            let types =
+                derive_dml_returning_column_type_oids(&delete.table_name, &delete.returning)
+                    .unwrap_or_else(|_| vec![PG_TEXT_OID; names.len()]);
             Ok(names
                 .into_iter()
                 .enumerate()
@@ -1052,15 +1055,21 @@ fn derive_query_expr_columns(
             let ncols = rows.first().map(|r| r.len()).unwrap_or(0);
             Ok((1..=ncols).map(|i| format!("column{i}")).collect())
         }
-        QueryExpr::Insert(insert) => {
-            Ok(derive_dml_returning_columns(&insert.table_name, &insert.returning).unwrap_or_default())
-        }
-        QueryExpr::Update(update) => {
-            Ok(derive_dml_returning_columns(&update.table_name, &update.returning).unwrap_or_default())
-        }
-        QueryExpr::Delete(delete) => {
-            Ok(derive_dml_returning_columns(&delete.table_name, &delete.returning).unwrap_or_default())
-        }
+        QueryExpr::Insert(insert) => Ok(derive_dml_returning_columns(
+            &insert.table_name,
+            &insert.returning,
+        )
+        .unwrap_or_default()),
+        QueryExpr::Update(update) => Ok(derive_dml_returning_columns(
+            &update.table_name,
+            &update.returning,
+        )
+        .unwrap_or_default()),
+        QueryExpr::Delete(delete) => Ok(derive_dml_returning_columns(
+            &delete.table_name,
+            &delete.returning,
+        )
+        .unwrap_or_default()),
     }
 }
 

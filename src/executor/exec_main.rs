@@ -29,9 +29,9 @@ use crate::tcop::engine::{
     require_relation_privilege, type_signature_to_oid, validate_recursive_cte_terms,
     with_cte_context_async, with_ext_read, with_storage_read,
 };
-use crate::tcop::pquery::derive_dml_returning_columns;
 #[cfg(target_arch = "wasm32")]
 use crate::tcop::engine::{drain_wasm_ws_messages, sync_wasm_ws_state};
+use crate::tcop::pquery::derive_dml_returning_columns;
 use crate::utils::adt::json::{
     json_value_text_output, jsonb_path_query_values, parse_json_document_arg, scalar_to_json_value,
 };
@@ -95,10 +95,7 @@ pub(crate) fn execute_query_with_outer<'a>(
                             normalized
                         })
                         .collect::<Vec<_>>();
-                    CteBinding {
-                        columns,
-                        rows,
-                    }
+                    CteBinding { columns, rows }
                 };
                 local_ctes.insert(cte_name, binding);
             }
@@ -236,13 +233,7 @@ async fn evaluate_recursive_cte_binding(
             .into_iter()
             .map(|row| {
                 let mut normalized = normalize_row_width(row, columns.len());
-                populate_cte_aux_values(
-                    &mut normalized,
-                    next_seq,
-                    search_idx,
-                    cycle_idx,
-                    path_idx,
-                );
+                populate_cte_aux_values(&mut normalized, next_seq, search_idx, cycle_idx, path_idx);
                 next_seq += 1;
                 normalized
             })
@@ -1056,12 +1047,7 @@ pub(crate) fn evaluate_table_expression<'a>(
                 let result = execute_query_with_outer(&sub.query, params, outer_scope).await?;
                 let mut columns = result.columns.clone();
                 if !sub.column_aliases.is_empty() {
-                    for (idx, alias) in sub
-                        .column_aliases
-                        .iter()
-                        .take(columns.len())
-                        .enumerate()
-                    {
+                    for (idx, alias) in sub.column_aliases.iter().take(columns.len()).enumerate() {
                         columns[idx] = alias.clone();
                     }
                 }
@@ -1345,11 +1331,13 @@ async fn evaluate_set_returning_function(
                 let columns = if !function.column_aliases.is_empty() {
                     function.column_aliases.clone()
                 } else {
-                    vec![function
-                        .name
-                        .last()
-                        .cloned()
-                        .unwrap_or_else(|| "value".to_string())]
+                    vec![
+                        function
+                            .name
+                            .last()
+                            .cloned()
+                            .unwrap_or_else(|| "value".to_string()),
+                    ]
                 };
                 return Ok((columns, Vec::new()));
             }
@@ -1639,8 +1627,10 @@ fn eval_generate_series(
     if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
         return Ok((vec!["generate_series".to_string()], Vec::new()));
     }
-    let int_mode = matches!((&args[0], &args[1]), (ScalarValue::Int(_), ScalarValue::Int(_)))
-        && (args.len() < 3 || matches!(&args[2], ScalarValue::Int(_)));
+    let int_mode = matches!(
+        (&args[0], &args[1]),
+        (ScalarValue::Int(_), ScalarValue::Int(_))
+    ) && (args.len() < 3 || matches!(&args[2], ScalarValue::Int(_)));
 
     let mut rows = Vec::new();
     let max_rows = 1_000_000;
@@ -2736,6 +2726,10 @@ fn virtual_relation_rows(
         }),
         ("pg_catalog", "pg_inherits") => {
             // OpenAssay does not support table inheritance; return empty result set
+            Ok(Vec::new())
+        }
+        ("pg_catalog", "pg_statistic") => {
+            // Statistics catalog is stubbed; keep shape-compatible, empty result.
             Ok(Vec::new())
         }
         ("pg_catalog", "pg_extension") => Ok(with_ext_read(|ext| {
@@ -4983,9 +4977,7 @@ async fn execute_set_operation(
         (SetOperator::Except, SetQuantifier::Distinct) => {
             except_rows(&left_rows, &right_rows, false)
         }
-        (SetOperator::Except, SetQuantifier::All) => {
-            except_rows(&left_rows, &right_rows, true)
-        }
+        (SetOperator::Except, SetQuantifier::All) => except_rows(&left_rows, &right_rows, true),
     };
 
     Ok(QueryResult {
