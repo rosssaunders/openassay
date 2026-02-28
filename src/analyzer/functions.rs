@@ -191,6 +191,7 @@ const KNOWN_FUNCTIONS: &[(&str, usize, usize)] = &[
     ("jsonb_exists_all", 2, 2),
     // Convenience table functions
     ("json_table", 1, 255), // url + optional variadic path segments
+    ("iceberg_scan", 1, 1), // table root directory or metadata file path
     // HTTP extension functions
     ("http_get", 1, 2),
     ("http_post", 2, 3),

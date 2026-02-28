@@ -1,5 +1,9 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::{self, File};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::{Path, PathBuf};
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
@@ -42,6 +46,10 @@ use crate::utils::adt::misc::{
     parse_f64_numeric_scalar, render_expr_to_sql, truthy,
 };
 use crate::utils::fmgr::eval_scalar_function;
+#[cfg(not(target_arch = "wasm32"))]
+use parquet::file::reader::{FileReader, SerializedFileReader};
+#[cfg(not(target_arch = "wasm32"))]
+use parquet::record::Field as ParquetField;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 pub(crate) async fn execute_query(
@@ -344,7 +352,7 @@ async fn execute_values(
 
 /// Check if any FROM table function has dynamic columns (unknown until execution).
 fn from_has_dynamic_columns(from: &[TableExpression]) -> bool {
-    const DYNAMIC_FUNCTIONS: &[&str] = &["json_table"];
+    const DYNAMIC_FUNCTIONS: &[&str] = &["json_table", "iceberg_scan"];
     for item in from {
         if let TableExpression::Function(f) = item
             && f.column_aliases.is_empty()
@@ -1419,6 +1427,7 @@ async fn evaluate_set_returning_function(
         "unnest" => eval_unnest_set_function(args, &fn_name),
         "pg_input_error_info" => eval_pg_input_error_info_set_function(args, &fn_name),
         "json_table" => eval_json_table_function(args, &fn_name).await,
+        "iceberg_scan" => eval_iceberg_scan_function(args, &fn_name).await,
         "pg_get_keywords" => eval_pg_get_keywords(),
         "messages" if function.name.len() == 2 && function.name[0].eq_ignore_ascii_case("ws") => {
             execute_ws_messages(args).await
@@ -1832,6 +1841,425 @@ async fn eval_json_table_function(
             ))
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn eval_iceberg_scan_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if args.len() != 1 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects exactly one argument (table path)"),
+        });
+    }
+    if matches!(args[0], ScalarValue::Null) {
+        return Ok((vec!["value".to_string()], Vec::new()));
+    }
+
+    let input_path = match &args[0] {
+        ScalarValue::Text(text) => text.trim().to_string(),
+        other => other.render(),
+    };
+    if input_path.is_empty() {
+        return Err(EngineError {
+            message: format!("{fn_name}() path argument cannot be empty"),
+        });
+    }
+
+    let input = Path::new(&input_path);
+    let metadata_columns = read_iceberg_metadata_columns(input);
+    let parquet_files = discover_iceberg_parquet_files(input, fn_name)?;
+    if parquet_files.is_empty() {
+        if let Some(columns) = metadata_columns {
+            return Ok((columns, Vec::new()));
+        }
+        return Err(EngineError {
+            message: format!(
+                "{fn_name}(): no parquet files found under {}",
+                input.display()
+            ),
+        });
+    }
+
+    scan_iceberg_parquet_files(
+        &parquet_files,
+        metadata_columns.unwrap_or_default(),
+        fn_name,
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn eval_iceberg_scan_function(
+    _args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    Err(EngineError {
+        message: format!("{fn_name}() is not supported on wasm targets"),
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn scan_iceberg_parquet_files(
+    parquet_files: &[PathBuf],
+    mut columns: Vec<String>,
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    let mut column_index = HashMap::new();
+    for (idx, name) in columns.iter().enumerate() {
+        column_index.insert(name.to_ascii_lowercase(), idx);
+    }
+
+    let mut rows = Vec::new();
+    for file_path in parquet_files {
+        let file = File::open(file_path).map_err(|err| EngineError {
+            message: format!(
+                "{fn_name}(): failed to open parquet file {}: {err}",
+                file_path.display()
+            ),
+        })?;
+        let reader = SerializedFileReader::new(file).map_err(|err| EngineError {
+            message: format!(
+                "{fn_name}(): failed to read parquet file {}: {err}",
+                file_path.display()
+            ),
+        })?;
+
+        for name in parquet_root_field_names(&reader) {
+            ensure_iceberg_column(&name, &mut columns, &mut column_index, &mut rows);
+        }
+
+        let row_iter = reader.get_row_iter(None).map_err(|err| EngineError {
+            message: format!(
+                "{fn_name}(): failed to iterate parquet rows in {}: {err}",
+                file_path.display()
+            ),
+        })?;
+
+        for row_result in row_iter {
+            let row = row_result.map_err(|err| EngineError {
+                message: format!(
+                    "{fn_name}(): failed to decode parquet row in {}: {err}",
+                    file_path.display()
+                ),
+            })?;
+            let mut output_row = vec![ScalarValue::Null; columns.len()];
+            for (name, field) in row.get_column_iter() {
+                let idx = ensure_iceberg_column(name, &mut columns, &mut column_index, &mut rows);
+                if idx >= output_row.len() {
+                    output_row.resize(columns.len(), ScalarValue::Null);
+                }
+                output_row[idx] = parquet_field_to_scalar(field);
+            }
+            rows.push(output_row);
+        }
+    }
+
+    if columns.is_empty() {
+        columns.push("value".to_string());
+    }
+    Ok((columns, rows))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parquet_root_field_names(reader: &SerializedFileReader<File>) -> Vec<String> {
+    reader
+        .metadata()
+        .file_metadata()
+        .schema()
+        .get_fields()
+        .iter()
+        .map(|field| field.name().to_string())
+        .collect()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ensure_iceberg_column(
+    name: &str,
+    columns: &mut Vec<String>,
+    column_index: &mut HashMap<String, usize>,
+    rows: &mut Vec<Vec<ScalarValue>>,
+) -> usize {
+    let key = name.to_ascii_lowercase();
+    if let Some(idx) = column_index.get(&key) {
+        return *idx;
+    }
+
+    let idx = columns.len();
+    columns.push(name.to_string());
+    column_index.insert(key, idx);
+    for row in rows {
+        row.push(ScalarValue::Null);
+    }
+    idx
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn parquet_field_to_scalar(field: &ParquetField) -> ScalarValue {
+    match field {
+        ParquetField::Null => ScalarValue::Null,
+        ParquetField::Bool(value) => ScalarValue::Bool(*value),
+        ParquetField::Byte(value) => ScalarValue::Int(i64::from(*value)),
+        ParquetField::Short(value) => ScalarValue::Int(i64::from(*value)),
+        ParquetField::Int(value) => ScalarValue::Int(i64::from(*value)),
+        ParquetField::Long(value) => ScalarValue::Int(*value),
+        ParquetField::UByte(value) => ScalarValue::Int(i64::from(*value)),
+        ParquetField::UShort(value) => ScalarValue::Int(i64::from(*value)),
+        ParquetField::UInt(value) => ScalarValue::Int(i64::from(*value)),
+        ParquetField::ULong(value) => {
+            if let Ok(v) = i64::try_from(*value) {
+                ScalarValue::Int(v)
+            } else {
+                ScalarValue::Text(value.to_string())
+            }
+        }
+        ParquetField::Float16(value) => ScalarValue::Float(f64::from(*value)),
+        ParquetField::Float(value) => ScalarValue::Float(f64::from(*value)),
+        ParquetField::Double(value) => ScalarValue::Float(*value),
+        ParquetField::Decimal(value) => ScalarValue::Text(format!("{value:?}")),
+        ParquetField::Str(value) => ScalarValue::Text(value.clone()),
+        ParquetField::Bytes(value) => {
+            if let Ok(text) = String::from_utf8(value.data().to_vec()) {
+                ScalarValue::Text(text)
+            } else {
+                use base64::Engine;
+                ScalarValue::Text(base64::prelude::BASE64_STANDARD.encode(value.data()))
+            }
+        }
+        ParquetField::Date(value) => ScalarValue::Text(value.to_string()),
+        ParquetField::TimeMillis(value) => ScalarValue::Text(value.to_string()),
+        ParquetField::TimeMicros(value) => ScalarValue::Text(value.to_string()),
+        ParquetField::TimestampMillis(value) => ScalarValue::Text(value.to_string()),
+        ParquetField::TimestampMicros(value) => ScalarValue::Text(value.to_string()),
+        ParquetField::Group(_) | ParquetField::ListInternal(_) | ParquetField::MapInternal(_) => {
+            ScalarValue::Text(field.to_string())
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn discover_iceberg_parquet_files(path: &Path, fn_name: &str) -> Result<Vec<PathBuf>, EngineError> {
+    if path.is_file()
+        && path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("parquet"))
+    {
+        return Ok(vec![path.to_path_buf()]);
+    }
+
+    let table_root = resolve_iceberg_table_root(path, fn_name)?;
+    let mut parquet_files = Vec::new();
+
+    let data_dir = table_root.join("data");
+    if data_dir.is_dir() {
+        collect_parquet_files(&data_dir, &mut parquet_files, fn_name)?;
+    }
+    if parquet_files.is_empty() {
+        collect_parquet_files(&table_root, &mut parquet_files, fn_name)?;
+    }
+
+    parquet_files.sort();
+    Ok(parquet_files)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_iceberg_table_root(path: &Path, fn_name: &str) -> Result<PathBuf, EngineError> {
+    if path.is_dir() {
+        return Ok(path.to_path_buf());
+    }
+    if path.is_file() {
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let is_json_path = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+        if file_name.to_ascii_lowercase().ends_with(".metadata.json") || is_json_path {
+            let parent = path.parent().ok_or_else(|| EngineError {
+                message: format!(
+                    "{fn_name}(): cannot determine table root from {}",
+                    path.display()
+                ),
+            })?;
+            if parent
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("metadata"))
+                && let Some(root) = parent.parent()
+            {
+                return Ok(root.to_path_buf());
+            }
+            return Ok(parent.to_path_buf());
+        }
+        if file_name.ends_with(".parquet") {
+            return path
+                .parent()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| EngineError {
+                    message: format!(
+                        "{fn_name}(): cannot determine table root from {}",
+                        path.display()
+                    ),
+                });
+        }
+    }
+
+    Err(EngineError {
+        message: format!(
+            "{fn_name}() expects an existing Iceberg table directory, metadata file, or parquet file path"
+        ),
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn collect_parquet_files(
+    directory: &Path,
+    parquet_files: &mut Vec<PathBuf>,
+    fn_name: &str,
+) -> Result<(), EngineError> {
+    let entries = fs::read_dir(directory).map_err(|err| EngineError {
+        message: format!(
+            "{fn_name}(): failed to read directory {}: {err}",
+            directory.display()
+        ),
+    })?;
+    for entry_result in entries {
+        let entry = entry_result.map_err(|err| EngineError {
+            message: format!(
+                "{fn_name}(): failed to read directory entry in {}: {err}",
+                directory.display()
+            ),
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|err| EngineError {
+            message: format!(
+                "{fn_name}(): failed to inspect path {}: {err}",
+                path.display()
+            ),
+        })?;
+        if file_type.is_dir() {
+            collect_parquet_files(&path, parquet_files, fn_name)?;
+            continue;
+        }
+        if file_type.is_file()
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("parquet"))
+        {
+            parquet_files.push(path);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_iceberg_metadata_columns(path: &Path) -> Option<Vec<String>> {
+    let metadata_file = resolve_iceberg_metadata_file(path)?;
+    let metadata = fs::read_to_string(metadata_file).ok()?;
+    let json = serde_json::from_str::<JsonValue>(&metadata).ok()?;
+
+    if let Some(columns) = extract_schema_field_names(json.get("schema")) {
+        return Some(columns);
+    }
+
+    let current_schema_id = json.get("current-schema-id").and_then(JsonValue::as_i64);
+    let schemas = json.get("schemas").and_then(JsonValue::as_array)?;
+    if let Some(schema_id) = current_schema_id
+        && let Some(schema) = schemas
+            .iter()
+            .find(|schema| schema.get("schema-id").and_then(JsonValue::as_i64) == Some(schema_id))
+        && let Some(columns) = extract_schema_field_names(Some(schema))
+    {
+        return Some(columns);
+    }
+
+    schemas
+        .last()
+        .and_then(|schema| extract_schema_field_names(Some(schema)))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_iceberg_metadata_file(path: &Path) -> Option<PathBuf> {
+    if path.is_file()
+        && path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".metadata.json"))
+    {
+        return Some(path.to_path_buf());
+    }
+
+    let table_root = resolve_iceberg_table_root(path, "iceberg_scan").ok()?;
+    let metadata_dir = table_root.join("metadata");
+    if !metadata_dir.is_dir() {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(metadata_dir).ok()? {
+        let entry = entry.ok()?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_str()?;
+        if file_name.ends_with(".metadata.json") {
+            candidates.push(entry.path());
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+
+    candidates
+        .sort_by(|left, right| compare_iceberg_metadata_files(left.as_path(), right.as_path()));
+    candidates.pop()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn compare_iceberg_metadata_files(left: &Path, right: &Path) -> Ordering {
+    let left_name = left
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let right_name = right
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    let left_version = iceberg_metadata_version(left_name);
+    let right_version = iceberg_metadata_version(right_name);
+
+    left_version
+        .cmp(&right_version)
+        .then_with(|| left_name.cmp(right_name))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn iceberg_metadata_version(file_name: &str) -> u64 {
+    let stem = file_name
+        .strip_suffix(".metadata.json")
+        .unwrap_or(file_name);
+    let stem = stem.strip_prefix('v').unwrap_or(stem);
+    let digits = stem
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits.parse::<u64>().unwrap_or(0)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn extract_schema_field_names(schema: Option<&JsonValue>) -> Option<Vec<String>> {
+    let fields = schema?.get("fields")?.as_array()?;
+    let columns = fields
+        .iter()
+        .filter_map(|field| field.get("name").and_then(JsonValue::as_str))
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>();
+    if columns.is_empty() {
+        return None;
+    }
+    Some(columns)
 }
 
 fn eval_generate_series(

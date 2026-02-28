@@ -1714,6 +1714,183 @@ fn json_table_primitive_array() {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn make_temp_iceberg_table_root(test_name: &str) -> std::path::PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "openassay-{test_name}-{}-{now}",
+        std::process::id()
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sql_path_literal(path: &std::path::Path) -> String {
+    path.display().to_string().replace('\'', "''")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_parquet_id_name_rows(path: &std::path::Path, ids: &[i64], names: &[&str]) {
+    use std::sync::Arc;
+
+    use parquet::data_type::{ByteArray, ByteArrayType, Int64Type};
+    use parquet::file::writer::SerializedFileWriter;
+    use parquet::schema::parser::parse_message_type;
+
+    assert_eq!(
+        ids.len(),
+        names.len(),
+        "ids and names should have equal length"
+    );
+
+    let schema = Arc::new(
+        parse_message_type(
+            "
+            message schema {
+              REQUIRED INT64 id;
+              REQUIRED BINARY name (UTF8);
+            }
+            ",
+        )
+        .expect("schema should parse"),
+    );
+    let file = std::fs::File::create(path).expect("parquet file should be creatable");
+    let mut writer = SerializedFileWriter::new(file, schema, Default::default())
+        .expect("parquet writer should initialize");
+
+    let mut row_group = writer
+        .next_row_group()
+        .expect("row group should be creatable");
+
+    let mut id_writer = row_group
+        .next_column()
+        .expect("id column writer should open")
+        .expect("id column should exist");
+    id_writer
+        .typed::<Int64Type>()
+        .write_batch(ids, None, None)
+        .expect("id values should write");
+    id_writer.close().expect("id column should close");
+
+    let mut name_writer = row_group
+        .next_column()
+        .expect("name column writer should open")
+        .expect("name column should exist");
+    let name_values = names
+        .iter()
+        .map(|name| ByteArray::from(name.as_bytes().to_vec()))
+        .collect::<Vec<_>>();
+    name_writer
+        .typed::<ByteArrayType>()
+        .write_batch(&name_values, None, None)
+        .expect("name values should write");
+    name_writer.close().expect("name column should close");
+
+    assert!(
+        row_group
+            .next_column()
+            .expect("column iteration should succeed")
+            .is_none(),
+        "schema should only have two columns"
+    );
+    row_group.close().expect("row group should close");
+    writer.close().expect("parquet writer should close");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn iceberg_scan_reads_local_rows() {
+    with_isolated_state(|| {
+        let table_root = make_temp_iceberg_table_root("iceberg-scan-rows");
+        std::fs::create_dir_all(table_root.join("metadata")).expect("metadata dir should exist");
+        std::fs::create_dir_all(table_root.join("data")).expect("data dir should exist");
+
+        std::fs::write(
+            table_root.join("metadata").join("v1.metadata.json"),
+            r#"{
+  "format-version": 2,
+  "current-schema-id": 0,
+  "schemas": [
+    {
+      "schema-id": 0,
+      "type": "struct",
+      "fields": [
+        {"id": 1, "name": "id", "required": true, "type": "long"},
+        {"id": 2, "name": "name", "required": true, "type": "string"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .expect("metadata file should write");
+
+        write_parquet_id_name_rows(
+            &table_root.join("data").join("part-00001.parquet"),
+            &[1, 2],
+            &["ada", "grace"],
+        );
+
+        let sql = format!(
+            "SELECT * FROM iceberg_scan('{}') ORDER BY id",
+            sql_path_literal(&table_root)
+        );
+        let result = run_statement(&sql, &[]);
+        assert_eq!(result.columns, vec!["id", "name"]);
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![ScalarValue::Int(1), ScalarValue::Text("ada".to_string())],
+                vec![ScalarValue::Int(2), ScalarValue::Text("grace".to_string())],
+            ]
+        );
+
+        std::fs::remove_dir_all(table_root).expect("temp iceberg table should clean up");
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn iceberg_scan_uses_metadata_schema_when_empty() {
+    with_isolated_state(|| {
+        let table_root = make_temp_iceberg_table_root("iceberg-scan-empty");
+        std::fs::create_dir_all(table_root.join("metadata")).expect("metadata dir should exist");
+        std::fs::create_dir_all(table_root.join("data")).expect("data dir should exist");
+
+        std::fs::write(
+            table_root.join("metadata").join("v1.metadata.json"),
+            r#"{
+  "format-version": 2,
+  "current-schema-id": 0,
+  "schemas": [
+    {
+      "schema-id": 0,
+      "type": "struct",
+      "fields": [
+        {"id": 1, "name": "id", "required": true, "type": "long"},
+        {"id": 2, "name": "name", "required": true, "type": "string"}
+      ]
+    }
+  ]
+}"#,
+        )
+        .expect("metadata file should write");
+
+        let sql = format!(
+            "SELECT * FROM iceberg_scan('{}')",
+            sql_path_literal(&table_root)
+        );
+        let result = run_statement(&sql, &[]);
+        assert_eq!(result.columns, vec!["id", "name"]);
+        assert!(result.rows.is_empty());
+
+        std::fs::remove_dir_all(table_root).expect("temp iceberg table should clean up");
+    });
+}
+
 #[test]
 fn executes_array_constructors() {
     with_isolated_state(|| {

@@ -165,7 +165,7 @@ Planner coverage includes CTEs, set operations, window functions, aggregates, DI
 
 **Window:** `row_number`, `rank`, `dense_rank`, `percent_rank`, `cume_dist`, `ntile`, `lag`, `lead`, `first_value`, `last_value`, `nth_value`
 
-**Other:** `generate_series`, `unnest`, `coalesce`, `nullif`, `greatest`, `least`, `version`, `pg_backend_pid`, `current_database`, `current_schema`, sequences (`nextval`, `currval`, `setval`)
+**Other:** `generate_series`, `unnest`, `iceberg_scan`, `coalesce`, `nullif`, `greatest`, `least`, `version`, `pg_backend_pid`, `current_database`, `current_schema`, sequences (`nextval`, `currval`, `setval`)
 
 **HTTP extension:** `http_get`, `http_post`, `http_put`, `http_patch`, `http_delete`, `http_head`, `urlencode` (requires `CREATE EXTENSION http`)
 
@@ -188,6 +188,7 @@ Planner coverage includes CTEs, set operations, window functions, aggregates, DI
 - `urlencode(text)` — URL encode a string
 - `CREATE EXTENSION http` is required before calling HTTP functions
 - WebSocket extension: `ws.connect()`, `ws.send()`, `ws.recv()`, `ws.messages` virtual table
+- `iceberg_scan(path)` — query local Iceberg table directories (reads Parquet files under `data/`; native targets only)
 - CREATE FUNCTION with SQL bodies for custom logic
 
 ### Type system
@@ -422,4 +423,3 @@ OpenAssay collapses that pipeline. Your SQL *is* the data pipeline. Fetch, trans
 ## License
 
 MIT
-
