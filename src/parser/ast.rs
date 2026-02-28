@@ -144,6 +144,7 @@ pub enum TablePrivilegeKind {
     Update,
     Delete,
     Truncate,
+    Usage,
 }
 
 impl TablePrivilegeKind {
@@ -154,6 +155,7 @@ impl TablePrivilegeKind {
             "UPDATE" => Some(Self::Update),
             "DELETE" => Some(Self::Delete),
             "TRUNCATE" => Some(Self::Truncate),
+            "USAGE" => Some(Self::Usage),
             _ => None,
         }
     }
@@ -165,6 +167,7 @@ impl TablePrivilegeKind {
             Self::Update,
             Self::Delete,
             Self::Truncate,
+            Self::Usage,
         ]
     }
 }
@@ -607,6 +610,9 @@ pub enum AlterTableAction {
     },
     RenameColumn {
         old_name: String,
+        new_name: String,
+    },
+    RenameTo {
         new_name: String,
     },
     SetColumnType {

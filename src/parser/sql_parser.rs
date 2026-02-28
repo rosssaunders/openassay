@@ -2110,11 +2110,17 @@ impl Parser {
                 }
             }
         } else if self.consume_keyword(Keyword::Rename) {
-            self.consume_keyword(Keyword::Column);
-            let old_name = self.parse_identifier()?;
-            self.expect_keyword(Keyword::To, "expected TO in RENAME COLUMN clause")?;
-            let new_name = self.parse_identifier()?;
-            AlterTableAction::RenameColumn { old_name, new_name }
+            if self.consume_keyword(Keyword::To) {
+                AlterTableAction::RenameTo {
+                    new_name: self.parse_identifier()?,
+                }
+            } else {
+                self.consume_keyword(Keyword::Column);
+                let old_name = self.parse_identifier()?;
+                self.expect_keyword(Keyword::To, "expected TO in RENAME COLUMN clause")?;
+                let new_name = self.parse_identifier()?;
+                AlterTableAction::RenameColumn { old_name, new_name }
+            }
         } else if self.consume_keyword(Keyword::Alter) {
             self.expect_keyword(
                 Keyword::Column,
@@ -8825,6 +8831,20 @@ mod tests {
                 assert_eq!(new_name, "details");
             }
             other => panic!("expected rename column action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_alter_table_rename_relation_statement() {
+        let stmt = parse_statement("ALTER TABLE users RENAME TO users_new")
+            .expect("parse should succeed");
+        let Statement::AlterTable(alter) = stmt else {
+            panic!("expected alter table statement");
+        };
+
+        match alter.action {
+            AlterTableAction::RenameTo { new_name } => assert_eq!(new_name, "users_new"),
+            other => panic!("expected rename relation action, got {other:?}"),
         }
     }
 

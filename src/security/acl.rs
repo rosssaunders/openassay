@@ -9,6 +9,7 @@ pub enum TablePrivilege {
     Update,
     Delete,
     Truncate,
+    Usage,
 }
 
 impl TablePrivilege {
@@ -19,6 +20,7 @@ impl TablePrivilege {
             "UPDATE" => Some(Self::Update),
             "DELETE" => Some(Self::Delete),
             "TRUNCATE" => Some(Self::Truncate),
+            "USAGE" => Some(Self::Usage),
             _ => None,
         }
     }
@@ -30,6 +32,7 @@ impl TablePrivilege {
             Self::Update,
             Self::Delete,
             Self::Truncate,
+            Self::Usage,
         ]
     }
 
@@ -40,6 +43,7 @@ impl TablePrivilege {
             Self::Update => "UPDATE",
             Self::Delete => "DELETE",
             Self::Truncate => "TRUNCATE",
+            Self::Usage => "USAGE",
         }
     }
 }

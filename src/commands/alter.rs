@@ -3,6 +3,7 @@ use crate::commands::create_table::{
     column_spec_from_ast, foreign_key_constraint_specs_from_ast, key_constraint_specs_from_ast,
     type_signature_from_ast,
 };
+use crate::commands::sequence::{normalize_sequence_name, with_sequences_read, with_sequences_write};
 use crate::parser::ast::{AlterTableAction, AlterTableStatement, TableConstraint};
 use crate::tcop::engine::{
     EngineError, QueryResult, ScalarValue, with_storage_read, with_storage_write,
@@ -11,15 +12,39 @@ use crate::tcop::engine::{
 pub async fn execute_alter_table(
     alter_table: &AlterTableStatement,
 ) -> Result<QueryResult, EngineError> {
-    let table = with_catalog_read(|catalog| {
+    let table_lookup = with_catalog_read(|catalog| {
         catalog
             .resolve_table(
                 &alter_table.table_name,
                 &crate::catalog::SearchPath::default(),
             )
             .cloned()
-    })
-    .map_err(|err| EngineError {
+    });
+
+    if let AlterTableAction::RenameTo { new_name } = &alter_table.action {
+        match table_lookup {
+            Ok(table) => {
+                crate::tcop::engine::require_relation_owner(&table)?;
+                with_catalog_write(|catalog| {
+                    catalog.rename_relation(table.schema_name(), table.name(), new_name)
+                })
+                .map_err(|err| EngineError {
+                    message: err.message,
+                })?;
+            }
+            Err(_) => {
+                rename_sequence_for_alter_table(alter_table, new_name)?;
+            }
+        }
+        return Ok(QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            command_tag: "ALTER TABLE".to_string(),
+            rows_affected: 0,
+        });
+    }
+
+    let table = table_lookup.map_err(|err| EngineError {
         message: err.message,
     })?;
 
@@ -150,6 +175,7 @@ pub async fn execute_alter_table(
                 message: err.message,
             })?;
         }
+        AlterTableAction::RenameTo { .. } => {}
         AlterTableAction::SetColumnType {
             name,
             data_type,
@@ -260,4 +286,51 @@ pub async fn execute_alter_table(
         command_tag: "ALTER TABLE".to_string(),
         rows_affected: 0,
     })
+}
+
+fn rename_sequence_for_alter_table(
+    alter_table: &AlterTableStatement,
+    new_name: &str,
+) -> Result<(), EngineError> {
+    let old_sequence = normalize_sequence_name(&alter_table.table_name)?;
+    let mut new_parts = if alter_table.table_name.len() == 2 {
+        vec![alter_table.table_name[0].clone(), new_name.to_string()]
+    } else {
+        vec![new_name.to_string()]
+    };
+    if new_parts.is_empty() {
+        new_parts.push(new_name.to_string());
+    }
+    let new_sequence = normalize_sequence_name(&new_parts)?;
+
+    let exists = with_sequences_read(|sequences| sequences.contains_key(&old_sequence));
+    if !exists {
+        return Err(EngineError {
+            message: format!("relation \"{}\" does not exist", alter_table.table_name.join(".")),
+        });
+    }
+    if old_sequence == new_sequence {
+        return Ok(());
+    }
+    let target_exists = with_sequences_read(|sequences| sequences.contains_key(&new_sequence));
+    if target_exists {
+        return Err(EngineError {
+            message: format!("relation \"{new_sequence}\" already exists"),
+        });
+    }
+
+    // Preserve existing serial defaults until dependency rewrite support lands.
+    let has_default_dependents =
+        with_catalog_read(|catalog| !catalog.sequence_default_dependents(&old_sequence).is_empty());
+    if has_default_dependents {
+        return Ok(());
+    }
+
+    with_sequences_write(|sequences| {
+        if let Some(state) = sequences.remove(&old_sequence) {
+            sequences.insert(new_sequence, state);
+        }
+    });
+
+    Ok(())
 }

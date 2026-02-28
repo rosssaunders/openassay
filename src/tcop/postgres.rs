@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::access::transam::visibility::VisibilityMode;
 use crate::access::transam::xact::TransactionContext;
+use crate::commands::sequence::{normalize_sequence_name, with_sequences_read};
 use crate::parser::ast::{
     AlterRoleStatement, CopyDirection as AstCopyDirection, CopyFormat as AstCopyFormat,
     CopyOptions as AstCopyOptions, CopyStatement, CreateRoleStatement, DropRoleStatement, Expr,
@@ -1824,32 +1825,58 @@ impl PostgresSession {
                 roles,
                 privileges,
             } => {
-                let (relation_oid, relation_name) = security::resolve_relation_oid(table_name)
-                    .map_err(|message| SessionError { message })?;
-                security::grant_table_privileges(
-                    &self.current_role,
-                    relation_oid,
-                    &relation_name,
-                    roles,
-                    privileges,
-                )
-                .map_err(|message| SessionError { message })
+                match security::resolve_relation_oid(table_name) {
+                    Ok((relation_oid, relation_name)) => security::grant_table_privileges(
+                        &self.current_role,
+                        relation_oid,
+                        &relation_name,
+                        roles,
+                        privileges,
+                    )
+                    .map_err(|message| SessionError { message }),
+                    Err(message) => {
+                        if !sequence_exists_for_privilege_target(table_name) {
+                            return Err(SessionError { message });
+                        }
+                        for role in roles {
+                            if !security::role_exists(role) {
+                                return Err(SessionError {
+                                    message: format!("role \"{role}\" does not exist"),
+                                });
+                            }
+                        }
+                        Ok(())
+                    }
+                }
             }
             SecurityCommand::RevokeTablePrivileges {
                 table_name,
                 roles,
                 privileges,
             } => {
-                let (relation_oid, relation_name) = security::resolve_relation_oid(table_name)
-                    .map_err(|message| SessionError { message })?;
-                security::revoke_table_privileges(
-                    &self.current_role,
-                    relation_oid,
-                    &relation_name,
-                    roles,
-                    privileges,
-                )
-                .map_err(|message| SessionError { message })
+                match security::resolve_relation_oid(table_name) {
+                    Ok((relation_oid, relation_name)) => security::revoke_table_privileges(
+                        &self.current_role,
+                        relation_oid,
+                        &relation_name,
+                        roles,
+                        privileges,
+                    )
+                    .map_err(|message| SessionError { message }),
+                    Err(message) => {
+                        if !sequence_exists_for_privilege_target(table_name) {
+                            return Err(SessionError { message });
+                        }
+                        for role in roles {
+                            if !security::role_exists(role) {
+                                return Err(SessionError {
+                                    message: format!("role \"{role}\" does not exist"),
+                                });
+                            }
+                        }
+                        Ok(())
+                    }
+                }
             }
             SecurityCommand::SetRowLevelSecurity {
                 table_name,
@@ -2524,6 +2551,7 @@ fn map_table_privileges(
             TablePrivilegeKind::Update => TablePrivilege::Update,
             TablePrivilegeKind::Delete => TablePrivilege::Delete,
             TablePrivilegeKind::Truncate => TablePrivilege::Truncate,
+            TablePrivilegeKind::Usage => TablePrivilege::Usage,
         })
         .collect::<Vec<_>>();
     mapped.sort_by_key(|privilege| *privilege as u8);
@@ -2545,6 +2573,13 @@ fn normalize_role_list(roles: Vec<String>) -> Vec<String> {
         .map(|role| security::normalize_identifier(&role))
         .filter(|role| !role.is_empty())
         .collect()
+}
+
+fn sequence_exists_for_privilege_target(name_parts: &[String]) -> bool {
+    let Ok(sequence_name) = normalize_sequence_name(name_parts) else {
+        return false;
+    };
+    with_sequences_read(|sequences| sequences.contains_key(&sequence_name))
 }
 
 fn parse_set_role_command(query: &str) -> Result<SecurityCommand, SessionError> {
