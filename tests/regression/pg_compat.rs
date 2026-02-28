@@ -416,6 +416,13 @@ fn run_sql_statement_with_timeout(session: PostgresSession, sql: &str) -> Statem
     }
 }
 
+fn recover_transaction_after_expected_error(mut session: PostgresSession) -> PostgresSession {
+    let _ = session.run_sync([FrontendMessage::Query {
+        sql: "ROLLBACK".to_string(),
+    }]);
+    session
+}
+
 /// Normalize output for comparison (remove timestamps, variable data, etc.)
 fn normalize_output(output: &str) -> String {
     output
@@ -601,14 +608,17 @@ fn postgresql_compatibility_suite() {
                     session = next_session;
                     if test_name == "plpgsql" && is_expected_plpgsql_error_probe(statement) {
                         stmt_ok += 1;
+                        session = recover_transaction_after_expected_error(session);
                         continue;
                     }
                     if is_expected_limitation(&test_name, &error) {
                         stmt_skip += 1;
+                        session = recover_transaction_after_expected_error(session);
                         continue;
                     }
                     if is_expected_error_probe(statement) {
                         stmt_ok += 1;
+                        session = recover_transaction_after_expected_error(session);
                         continue;
                     }
                     stmt_err += 1;
