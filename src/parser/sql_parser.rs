@@ -575,8 +575,16 @@ impl Parser {
                 let _ = self.parse_identifier()?;
             }
             let check_constraint = if self.consume_keyword(Keyword::Check) {
-                self.skip_optional_parenthesized_tokens();
-                None
+                self.expect_token(
+                    |k| matches!(k, TokenKind::LParen),
+                    "expected '(' after CHECK",
+                )?;
+                let constraint = self.parse_expr()?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after CHECK constraint",
+                )?;
+                Some(constraint)
             } else {
                 None
             };
