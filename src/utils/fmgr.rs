@@ -37,7 +37,8 @@ use crate::utils::adt::misc::{
     eval_regexp_count, eval_regexp_instr, eval_regexp_like, eval_regexp_match, eval_regexp_replace,
     eval_regexp_split_to_array, eval_regexp_substr, eval_unistr, gen_random_uuid,
     parse_bool_scalar, parse_f64_numeric_scalar, parse_i64_scalar, parse_pg_array_literal,
-    pg_get_viewdef, pg_input_is_valid, quote_ident, quote_literal, quote_nullable, rand_f64,
+    parse_pg_numeric_literal, pg_get_viewdef, pg_input_is_valid, quote_ident, quote_literal,
+    quote_nullable, rand_f64,
 };
 use crate::utils::adt::string_functions::{
     TrimMode, ascii_code, chr_from_code, decode_bytes, encode_bytes, eval_format,
@@ -796,21 +797,19 @@ pub(crate) async fn eval_scalar_function(
         // --- Math functions ---
         "ceil" | "ceiling" if args.len() == 1 => match &args[0] {
             ScalarValue::Null => Ok(ScalarValue::Null),
-            ScalarValue::Int(i) => Ok(ScalarValue::Int(*i)),
-            ScalarValue::Float(f) => Ok(ScalarValue::Float(f.ceil())),
-            ScalarValue::Numeric(d) => Ok(ScalarValue::Numeric(d.ceil())),
-            _ => Err(EngineError {
-                message: "ceil() expects numeric argument".to_string(),
-            }),
+            _ => match parse_numeric_operand(&args[0])? {
+                NumericOperand::Int(i) => Ok(ScalarValue::Int(i)),
+                NumericOperand::Float(f) => Ok(ScalarValue::Float(f.ceil())),
+                NumericOperand::Numeric(d) => Ok(ScalarValue::Numeric(d.ceil())),
+            },
         },
         "floor" if args.len() == 1 => match &args[0] {
             ScalarValue::Null => Ok(ScalarValue::Null),
-            ScalarValue::Int(i) => Ok(ScalarValue::Int(*i)),
-            ScalarValue::Float(f) => Ok(ScalarValue::Float(f.floor())),
-            ScalarValue::Numeric(d) => Ok(ScalarValue::Numeric(d.floor())),
-            _ => Err(EngineError {
-                message: "floor() expects numeric argument".to_string(),
-            }),
+            _ => match parse_numeric_operand(&args[0])? {
+                NumericOperand::Int(i) => Ok(ScalarValue::Int(i)),
+                NumericOperand::Float(f) => Ok(ScalarValue::Float(f.floor())),
+                NumericOperand::Numeric(d) => Ok(ScalarValue::Numeric(d.floor())),
+            },
         },
         "round" if args.len() == 1 || args.len() == 2 => {
             if matches!(args[0], ScalarValue::Null) {
@@ -821,16 +820,22 @@ pub(crate) async fn eval_scalar_function(
             } else {
                 0
             };
-            match &args[0] {
-                ScalarValue::Int(i) => Ok(ScalarValue::Int(*i)),
-                ScalarValue::Float(f) => {
+            match parse_numeric_operand(&args[0])? {
+                NumericOperand::Int(i) => Ok(ScalarValue::Int(i)),
+                NumericOperand::Float(f) => {
                     let factor = 10f64.powi(scale as i32);
                     Ok(ScalarValue::Float((f * factor).round() / factor))
                 }
-                ScalarValue::Numeric(d) => Ok(ScalarValue::Numeric(d.round_dp(scale as u32))),
-                _ => Err(EngineError {
-                    message: "round() expects numeric argument".to_string(),
-                }),
+                NumericOperand::Numeric(d) => {
+                    if scale < 0 {
+                        let factor = 10f64.powi((-scale) as i32);
+                        let rounded =
+                            (d.to_string().parse::<f64>().unwrap_or(0.0) / factor).round() * factor;
+                        Ok(ScalarValue::Float(rounded))
+                    } else {
+                        Ok(ScalarValue::Numeric(d.round_dp(scale as u32)))
+                    }
+                }
             }
         }
         "trunc" | "truncate" if args.len() == 1 || args.len() == 2 => {
@@ -842,18 +847,22 @@ pub(crate) async fn eval_scalar_function(
             } else {
                 0
             };
-            match &args[0] {
-                ScalarValue::Int(i) => Ok(ScalarValue::Int(*i)),
-                ScalarValue::Float(f) => {
+            match parse_numeric_operand(&args[0])? {
+                NumericOperand::Int(i) => Ok(ScalarValue::Int(i)),
+                NumericOperand::Float(f) => {
                     let factor = 10f64.powi(scale as i32);
                     Ok(ScalarValue::Float((f * factor).trunc() / factor))
                 }
-                ScalarValue::Numeric(d) => {
-                    Ok(ScalarValue::Numeric(d.trunc_with_scale(scale as u32)))
+                NumericOperand::Numeric(d) => {
+                    if scale < 0 {
+                        let factor = 10f64.powi((-scale) as i32);
+                        let truncated =
+                            (d.to_string().parse::<f64>().unwrap_or(0.0) / factor).trunc() * factor;
+                        Ok(ScalarValue::Float(truncated))
+                    } else {
+                        Ok(ScalarValue::Numeric(d.trunc_with_scale(scale as u32)))
+                    }
                 }
-                _ => Err(EngineError {
-                    message: "trunc() expects numeric argument".to_string(),
-                }),
             }
         }
         "power" | "pow" if args.len() == 2 => {
@@ -982,17 +991,25 @@ pub(crate) async fn eval_scalar_function(
         }
         "sign" if args.len() == 1 => match &args[0] {
             ScalarValue::Null => Ok(ScalarValue::Null),
-            ScalarValue::Int(i) => Ok(ScalarValue::Int(i.signum())),
-            ScalarValue::Float(f) => Ok(ScalarValue::Float(if *f > 0.0 {
-                1.0
-            } else if *f < 0.0 {
-                -1.0
-            } else {
-                0.0
-            })),
-            _ => Err(EngineError {
-                message: "sign() expects numeric argument".to_string(),
-            }),
+            _ => match parse_numeric_operand(&args[0])? {
+                NumericOperand::Int(i) => Ok(ScalarValue::Int(i.signum())),
+                NumericOperand::Float(f) => Ok(ScalarValue::Float(if f > 0.0 {
+                    1.0
+                } else if f < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                })),
+                NumericOperand::Numeric(d) => {
+                    if d.is_zero() {
+                        Ok(ScalarValue::Numeric(rust_decimal::Decimal::ZERO))
+                    } else if d.is_sign_negative() {
+                        Ok(ScalarValue::Numeric(-rust_decimal::Decimal::ONE))
+                    } else {
+                        Ok(ScalarValue::Numeric(rust_decimal::Decimal::ONE))
+                    }
+                }
+            },
         },
         "numeric_inc" if args.len() == 1 => {
             if matches!(args[0], ScalarValue::Null) {
@@ -1211,26 +1228,46 @@ pub(crate) async fn eval_scalar_function(
             let a = coerce_to_f64(&args[0], "div()")?;
             let b = coerce_to_f64(&args[1], "div()")?;
             if b == 0.0 {
-                return Err(EngineError {
-                    message: "division by zero".to_string(),
-                });
+                return Ok(ScalarValue::Float(a / b));
             }
-            Ok(ScalarValue::Int((a / b).trunc() as i64))
+            Ok(ScalarValue::Float((a / b).trunc()))
         }
         "gcd" if args.len() == 2 => {
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
                 return Ok(ScalarValue::Null);
             }
-            let a = parse_i64_scalar(&args[0], "gcd() expects integer")?;
-            let b = parse_i64_scalar(&args[1], "gcd() expects integer")?;
+            let to_i64 = |value: &ScalarValue| -> Result<i64, EngineError> {
+                match parse_numeric_operand(value)? {
+                    NumericOperand::Int(v) => Ok(v),
+                    NumericOperand::Float(v) => {
+                        Ok(if v.is_finite() { v.trunc() as i64 } else { 0 })
+                    }
+                    NumericOperand::Numeric(v) => {
+                        Ok(v.to_string().parse::<f64>().unwrap_or(0.0).trunc() as i64)
+                    }
+                }
+            };
+            let a = to_i64(&args[0])?;
+            let b = to_i64(&args[1])?;
             Ok(ScalarValue::Int(gcd_i64(a, b)?))
         }
         "lcm" if args.len() == 2 => {
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
                 return Ok(ScalarValue::Null);
             }
-            let a = parse_i64_scalar(&args[0], "lcm() expects integer")?;
-            let b = parse_i64_scalar(&args[1], "lcm() expects integer")?;
+            let to_i64 = |value: &ScalarValue| -> Result<i64, EngineError> {
+                match parse_numeric_operand(value)? {
+                    NumericOperand::Int(v) => Ok(v),
+                    NumericOperand::Float(v) => {
+                        Ok(if v.is_finite() { v.trunc() as i64 } else { 0 })
+                    }
+                    NumericOperand::Numeric(v) => {
+                        Ok(v.to_string().parse::<f64>().unwrap_or(0.0).trunc() as i64)
+                    }
+                }
+            };
+            let a = to_i64(&args[0])?;
+            let b = to_i64(&args[1])?;
             let g = gcd_i64(a, b)?;
             if g == 0 {
                 return Ok(ScalarValue::Int(0));
@@ -1758,15 +1795,14 @@ pub(crate) async fn eval_scalar_function(
                 return Ok(ScalarValue::Null);
             }
             let s = args[0].render();
-            let cleaned: String = s
-                .chars()
-                .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
-                .collect();
-            match cleaned.parse::<f64>() {
-                Ok(v) => Ok(ScalarValue::Float(v)),
-                Err(_) => Err(EngineError {
-                    message: format!("invalid input for to_number: {s}"),
-                }),
+            let cleaned: String = s.chars().filter(|c| *c != ',' && *c != '$').collect();
+            match parse_pg_numeric_literal(&cleaned) {
+                Ok(ScalarValue::Int(v)) => Ok(ScalarValue::Float(v as f64)),
+                Ok(ScalarValue::Float(v)) => Ok(ScalarValue::Float(v)),
+                Ok(ScalarValue::Numeric(v)) => Ok(ScalarValue::Float(
+                    v.to_string().parse::<f64>().unwrap_or(0.0),
+                )),
+                _ => Ok(ScalarValue::Float(0.0)),
             }
         }
         "int4range" | "float8range" | "textrange" if args.len() == 2 || args.len() == 3 => {

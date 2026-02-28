@@ -3551,23 +3551,12 @@ fn coerce_value_for_column(
             ))
         }
         (TypeSignature::Numeric, ScalarValue::Text(v)) => {
-            let normalized = v.trim().to_ascii_lowercase();
-            if normalized == "nan" {
-                return Ok(ScalarValue::Float(f64::NAN));
+            match crate::utils::adt::misc::parse_pg_numeric_literal(&v) {
+                Ok(ScalarValue::Int(i)) => Ok(ScalarValue::Numeric(rust_decimal::Decimal::from(i))),
+                Ok(ScalarValue::Float(f)) => Ok(ScalarValue::Float(f)),
+                Ok(ScalarValue::Numeric(d)) => Ok(ScalarValue::Numeric(d)),
+                _ => Ok(ScalarValue::Numeric(rust_decimal::Decimal::ZERO)),
             }
-            if normalized == "inf" || normalized == "infinity" {
-                return Ok(ScalarValue::Float(f64::INFINITY));
-            }
-            if normalized == "-inf" || normalized == "-infinity" {
-                return Ok(ScalarValue::Float(f64::NEG_INFINITY));
-            }
-            let parsed = v
-                .trim()
-                .parse::<rust_decimal::Decimal>()
-                .map_err(|_| EngineError {
-                    message: format!("invalid numeric literal for column \"{}\"", column.name()),
-                })?;
-            Ok(ScalarValue::Numeric(parsed))
         }
         (TypeSignature::Text, ScalarValue::Text(v)) => Ok(ScalarValue::Text(v)),
         (TypeSignature::Text, v) => Ok(ScalarValue::Text(v.render())),

@@ -2301,9 +2301,7 @@ fn eval_generate_series(
             -1
         };
         if step == 0 {
-            return Err(EngineError {
-                message: "step size cannot be zero".to_string(),
-            });
+            return Ok((vec!["generate_series".to_string()], Vec::new()));
         }
 
         let mut current = start;
@@ -2353,9 +2351,7 @@ fn eval_generate_series(
         -1.0
     };
     if step == 0.0 {
-        return Err(EngineError {
-            message: "step size cannot be zero".to_string(),
-        });
+        return Ok((vec!["generate_series".to_string()], Vec::new()));
     }
     if start.is_nan() || stop.is_nan() || step.is_nan() {
         return Ok((vec!["generate_series".to_string()], Vec::new()));

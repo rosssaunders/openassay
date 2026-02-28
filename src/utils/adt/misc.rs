@@ -972,6 +972,54 @@ pub(crate) fn parse_pg_int_literal(input: &str) -> Result<i64, EngineError> {
     })
 }
 
+pub(crate) fn parse_pg_numeric_literal(input: &str) -> Result<ScalarValue, EngineError> {
+    let compact: String = input
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace() && *ch != '_')
+        .collect();
+    if compact.is_empty() {
+        return Err(EngineError {
+            message: "invalid numeric literal".to_string(),
+        });
+    }
+
+    let lower = compact.to_ascii_lowercase();
+    match lower.as_str() {
+        "nan" | "+nan" | "-nan" => return Ok(ScalarValue::Float(f64::NAN)),
+        "inf" | "+inf" | "infinity" | "+infinity" => {
+            return Ok(ScalarValue::Float(f64::INFINITY));
+        }
+        "-inf" | "-infinity" => return Ok(ScalarValue::Float(f64::NEG_INFINITY)),
+        _ => {}
+    }
+
+    if let Ok(parsed) = parse_pg_int_literal(&compact) {
+        return Ok(ScalarValue::Int(parsed));
+    }
+
+    if let Ok(parsed) = compact.parse::<rust_decimal::Decimal>() {
+        return Ok(ScalarValue::Numeric(parsed));
+    }
+    if let Ok(parsed) = rust_decimal::Decimal::from_scientific(&compact) {
+        return Ok(ScalarValue::Numeric(parsed));
+    }
+
+    if let Ok(parsed) = compact.parse::<f64>() {
+        if parsed.is_finite() {
+            use rust_decimal::prelude::FromPrimitive;
+            if let Some(decimal) = rust_decimal::Decimal::from_f64(parsed) {
+                return Ok(ScalarValue::Numeric(decimal));
+            }
+        }
+        return Ok(ScalarValue::Float(parsed));
+    }
+
+    Err(EngineError {
+        message: "invalid numeric literal".to_string(),
+    })
+}
+
 pub(crate) fn parse_f64_scalar(value: &ScalarValue, message: &str) -> Result<f64, EngineError> {
     match value {
         ScalarValue::Float(v) => Ok(*v),
@@ -1004,6 +1052,19 @@ pub(crate) fn parse_f64_numeric_scalar(
                 message: message.to_string(),
             })
         }
+        ScalarValue::Text(v) => match parse_pg_numeric_literal(v) {
+            Ok(ScalarValue::Int(i)) => Ok(i as f64),
+            Ok(ScalarValue::Float(f)) => Ok(f),
+            Ok(ScalarValue::Numeric(d)) => {
+                use rust_decimal::prelude::ToPrimitive;
+                d.to_f64().ok_or_else(|| EngineError {
+                    message: message.to_string(),
+                })
+            }
+            _ => Err(EngineError {
+                message: message.to_string(),
+            }),
+        },
         _ => Err(EngineError {
             message: message.to_string(),
         }),

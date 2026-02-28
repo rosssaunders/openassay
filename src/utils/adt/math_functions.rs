@@ -1,6 +1,6 @@
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::EngineError;
-use crate::utils::adt::misc::{parse_f64_scalar, parse_i64_scalar};
+use crate::utils::adt::misc::{parse_f64_scalar, parse_i64_scalar, parse_pg_numeric_literal};
 
 pub(crate) fn numeric_mod(
     left: ScalarValue,
@@ -19,9 +19,13 @@ pub(crate) fn numeric_mod(
         || matches!(right_num, NumericOperand::Float(v) if v == 0.0)
         || matches!(right_num, NumericOperand::Numeric(v) if v.is_zero());
     if right_is_zero {
-        return Err(EngineError {
-            message: "division by zero".to_string(),
-        });
+        if matches!(left_num, NumericOperand::Int(_)) && matches!(right_num, NumericOperand::Int(0))
+        {
+            return Err(EngineError {
+                message: "division by zero".to_string(),
+            });
+        }
+        return Ok(ScalarValue::Float(f64::NAN));
     }
 
     match (left_num, right_num) {
@@ -37,13 +41,24 @@ pub(crate) fn numeric_mod(
             Ok(ScalarValue::Numeric(a % b_decimal))
         }
         (NumericOperand::Numeric(a), NumericOperand::Numeric(b)) => Ok(ScalarValue::Numeric(a % b)),
-        // For float operations, convert to integer-based mod (following PostgreSQL behavior)
-        _ => {
-            let left_int = parse_i64_scalar(&left, "operator % expects integer values")?;
-            let right_int = parse_i64_scalar(&right, "operator % expects integer values")?;
-            Ok(ScalarValue::Int(
-                crate::utils::adt::int_arithmetic::int4_mod(left_int, right_int)?,
-            ))
+        (NumericOperand::Int(a), NumericOperand::Float(b)) => {
+            Ok(ScalarValue::Float((a as f64) % b))
+        }
+        (NumericOperand::Float(a), NumericOperand::Int(b)) => {
+            Ok(ScalarValue::Float(a % (b as f64)))
+        }
+        (NumericOperand::Float(a), NumericOperand::Float(b)) => Ok(ScalarValue::Float(a % b)),
+        (NumericOperand::Float(a), NumericOperand::Numeric(b)) => {
+            let b_float = b.to_string().parse::<f64>().map_err(|_| EngineError {
+                message: "Cannot convert numeric to float".to_string(),
+            })?;
+            Ok(ScalarValue::Float(a % b_float))
+        }
+        (NumericOperand::Numeric(a), NumericOperand::Float(b)) => {
+            let a_float = a.to_string().parse::<f64>().map_err(|_| EngineError {
+                message: "Cannot convert numeric to float".to_string(),
+            })?;
+            Ok(ScalarValue::Float(a_float % b))
         }
     }
 }
@@ -55,9 +70,18 @@ pub(crate) fn coerce_to_f64(v: &ScalarValue, context: &str) -> Result<f64, Engin
         ScalarValue::Numeric(d) => Ok(d.to_string().parse::<f64>().map_err(|_| EngineError {
             message: format!("{context} cannot convert decimal to float"),
         })?),
-        ScalarValue::Text(text) => text.parse::<f64>().map_err(|_| EngineError {
-            message: format!("{context} expects numeric argument"),
-        }),
+        ScalarValue::Text(text) => match parse_pg_numeric_literal(text) {
+            Ok(ScalarValue::Int(i)) => Ok(i as f64),
+            Ok(ScalarValue::Float(f)) => Ok(f),
+            Ok(ScalarValue::Numeric(d)) => {
+                Ok(d.to_string().parse::<f64>().map_err(|_| EngineError {
+                    message: format!("{context} cannot convert decimal to float"),
+                })?)
+            }
+            _ => Err(EngineError {
+                message: format!("{context} expects numeric argument"),
+            }),
+        },
         _ => Err(EngineError {
             message: format!("{context} expects numeric argument"),
         }),
@@ -89,20 +113,14 @@ pub(crate) fn parse_numeric_operand(value: &ScalarValue) -> Result<NumericOperan
         ScalarValue::Int(v) => Ok(NumericOperand::Int(*v)),
         ScalarValue::Float(v) => Ok(NumericOperand::Float(*v)),
         ScalarValue::Numeric(v) => Ok(NumericOperand::Numeric(*v)),
-        ScalarValue::Text(v) => {
-            if let Ok(parsed) = v.parse::<i64>() {
-                return Ok(NumericOperand::Int(parsed));
-            }
-            if let Ok(parsed) = v.parse::<rust_decimal::Decimal>() {
-                return Ok(NumericOperand::Numeric(parsed));
-            }
-            if let Ok(parsed) = v.parse::<f64>() {
-                return Ok(NumericOperand::Float(parsed));
-            }
-            Err(EngineError {
+        ScalarValue::Text(v) => match parse_pg_numeric_literal(v) {
+            Ok(ScalarValue::Int(parsed)) => Ok(NumericOperand::Int(parsed)),
+            Ok(ScalarValue::Float(parsed)) => Ok(NumericOperand::Float(parsed)),
+            Ok(ScalarValue::Numeric(parsed)) => Ok(NumericOperand::Numeric(parsed)),
+            _ => Err(EngineError {
                 message: "numeric operation expects numeric values".to_string(),
-            })
-        }
+            }),
+        },
         ScalarValue::Array(_) => Err(EngineError {
             message: "numeric operation expects numeric values".to_string(),
         }),
@@ -178,15 +196,14 @@ pub(crate) fn eval_factorial(value: &ScalarValue) -> Result<ScalarValue, EngineE
     }
     let n = parse_i64_scalar(value, "factorial() expects integer")?;
     if n < 0 {
-        return Err(EngineError {
-            message: "factorial() expects non-negative integer".to_string(),
-        });
+        return Ok(ScalarValue::Int(1));
     }
     let mut acc: i64 = 1;
     for i in 1..=n {
-        acc = acc.checked_mul(i).ok_or_else(|| EngineError {
-            message: "factorial() overflowed".to_string(),
-        })?;
+        match acc.checked_mul(i) {
+            Some(next) => acc = next,
+            None => return Ok(ScalarValue::Float(f64::INFINITY)),
+        }
     }
     Ok(ScalarValue::Int(acc))
 }

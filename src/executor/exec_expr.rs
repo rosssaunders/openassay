@@ -40,7 +40,8 @@ use crate::utils::adt::json::{
 use crate::utils::adt::math_functions::{NumericOperand, numeric_mod, parse_numeric_operand};
 use crate::utils::adt::misc::{
     compare_values_for_predicate, parse_bool_scalar, parse_f64_numeric_scalar, parse_f64_scalar,
-    parse_i64_scalar, parse_nullable_bool, parse_pg_array_literal, truthy,
+    parse_i64_scalar, parse_nullable_bool, parse_pg_array_literal, parse_pg_numeric_literal,
+    truthy,
 };
 use crate::utils::fmgr::eval_scalar_function;
 
@@ -2072,6 +2073,9 @@ pub(crate) fn eval_cast_scalar(
         }
         "int2" | "smallint" => match &value {
             ScalarValue::Float(v) => {
+                if !v.is_finite() {
+                    return Ok(ScalarValue::Int(0));
+                }
                 let result = crate::utils::adt::float::float8_to_int2(*v)?;
                 Ok(ScalarValue::Int(result))
             }
@@ -2091,6 +2095,9 @@ pub(crate) fn eval_cast_scalar(
         },
         "int4" | "integer" | "int" => match &value {
             ScalarValue::Float(v) => {
+                if !v.is_finite() {
+                    return Ok(ScalarValue::Int(0));
+                }
                 let result = crate::utils::adt::float::float8_to_int4(*v)?;
                 Ok(ScalarValue::Int(result))
             }
@@ -2110,6 +2117,9 @@ pub(crate) fn eval_cast_scalar(
         },
         "int8" | "bigint" => match &value {
             ScalarValue::Float(v) => {
+                if !v.is_finite() {
+                    return Ok(ScalarValue::Int(0));
+                }
                 let result = crate::utils::adt::float::float8_to_int8(*v)?;
                 Ok(ScalarValue::Int(result))
             }
@@ -2227,12 +2237,17 @@ pub(crate) fn eval_cast_scalar(
             }
             ScalarValue::Numeric(v) => Ok(ScalarValue::Numeric(*v)),
             ScalarValue::Text(s) => {
-                let decimal = s
-                    .parse::<rust_decimal::Decimal>()
-                    .map_err(|_| EngineError {
+                let parsed = parse_pg_numeric_literal(s).map_err(|_| EngineError {
+                    message: format!("invalid input syntax for type numeric: \"{s}\""),
+                })?;
+                match parsed {
+                    ScalarValue::Int(v) => Ok(ScalarValue::Numeric(rust_decimal::Decimal::from(v))),
+                    ScalarValue::Float(v) => Ok(ScalarValue::Float(v)),
+                    ScalarValue::Numeric(v) => Ok(ScalarValue::Numeric(v)),
+                    _ => Err(EngineError {
                         message: format!("invalid input syntax for type numeric: \"{s}\""),
-                    })?;
-                Ok(ScalarValue::Numeric(decimal))
+                    }),
+                }
             }
             _ => Err(EngineError {
                 message: "cannot cast value to numeric".to_string(),
@@ -2344,6 +2359,14 @@ pub(crate) fn eval_unary(op: UnaryOp, value: ScalarValue) -> Result<ScalarValue,
         (UnaryOp::Plus, ScalarValue::Float(v)) => Ok(ScalarValue::Float(v)),
         (UnaryOp::Plus, ScalarValue::Numeric(v)) => Ok(ScalarValue::Numeric(v)),
         (UnaryOp::Plus, ScalarValue::Text(text)) => {
+            if let Ok(parsed) = parse_pg_numeric_literal(&text) {
+                return match parsed {
+                    ScalarValue::Int(v) => Ok(ScalarValue::Int(v)),
+                    ScalarValue::Float(v) => Ok(ScalarValue::Float(v)),
+                    ScalarValue::Numeric(v) => Ok(ScalarValue::Numeric(v)),
+                    _ => Ok(parsed),
+                };
+            }
             if is_interval_text(&text) {
                 if let Some(interval) = parse_interval_operand(&ScalarValue::Text(text.clone())) {
                     return Ok(ScalarValue::Text(format_interval_value(interval)));
@@ -2363,6 +2386,19 @@ pub(crate) fn eval_unary(op: UnaryOp, value: ScalarValue) -> Result<ScalarValue,
         (UnaryOp::Minus, ScalarValue::Float(v)) => Ok(ScalarValue::Float(-v)),
         (UnaryOp::Minus, ScalarValue::Numeric(v)) => Ok(ScalarValue::Numeric(-v)),
         (UnaryOp::Minus, ScalarValue::Text(text)) => {
+            if let Ok(parsed) = parse_pg_numeric_literal(&text) {
+                return match parsed {
+                    ScalarValue::Int(v) => {
+                        let negated = v.checked_neg().ok_or_else(|| EngineError {
+                            message: "bigint out of range".to_string(),
+                        })?;
+                        Ok(ScalarValue::Int(negated))
+                    }
+                    ScalarValue::Float(v) => Ok(ScalarValue::Float(-v)),
+                    ScalarValue::Numeric(v) => Ok(ScalarValue::Numeric(-v)),
+                    _ => Ok(parsed),
+                };
+            }
             if is_interval_text(&text) {
                 if let Some(interval) = parse_interval_operand(&ScalarValue::Text(text)) {
                     return Ok(ScalarValue::Text(format_interval_value(interval_negate(
@@ -2375,9 +2411,7 @@ pub(crate) fn eval_unary(op: UnaryOp, value: ScalarValue) -> Result<ScalarValue,
                 message: "invalid unary operation".to_string(),
             })
         }
-        (UnaryOp::Sqrt, ScalarValue::Null) | (UnaryOp::Cbrt, ScalarValue::Null) => {
-            Ok(ScalarValue::Null)
-        }
+        (UnaryOp::Sqrt | UnaryOp::Cbrt, ScalarValue::Null) => Ok(ScalarValue::Null),
         (UnaryOp::Sqrt, value) => {
             let numeric = parse_f64_scalar(&value, "square root operator expects numeric value")?;
             Ok(ScalarValue::Float(numeric.sqrt()))
@@ -2896,9 +2930,27 @@ fn numeric_div(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Eng
         || matches!(right_num, NumericOperand::Float(v) if v == 0.0)
         || matches!(right_num, NumericOperand::Numeric(v) if v.is_zero());
     if right_is_zero {
-        return Err(EngineError {
-            message: "division by zero".to_string(),
-        });
+        if matches!(left_num, NumericOperand::Int(_)) && matches!(right_num, NumericOperand::Int(0))
+        {
+            return Err(EngineError {
+                message: "division by zero".to_string(),
+            });
+        }
+
+        let to_f64 = |operand: &NumericOperand| -> Result<f64, EngineError> {
+            match operand {
+                NumericOperand::Int(v) => Ok(*v as f64),
+                NumericOperand::Float(v) => Ok(*v),
+                NumericOperand::Numeric(v) => {
+                    v.to_string().parse::<f64>().map_err(|_| EngineError {
+                        message: "Cannot convert numeric to float".to_string(),
+                    })
+                }
+            }
+        };
+        let left_float = to_f64(&left_num)?;
+        let right_float = to_f64(&right_num)?;
+        return Ok(ScalarValue::Float(left_float / right_float));
     }
 
     match (left_num, right_num) {
