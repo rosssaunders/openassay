@@ -422,3 +422,4 @@ OpenAssay collapses that pipeline. Your SQL *is* the data pipeline. Fetch, trans
 ## License
 
 MIT
+
