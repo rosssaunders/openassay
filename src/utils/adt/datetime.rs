@@ -1405,7 +1405,6 @@ pub(crate) fn format_timestamp(datetime: DateTimeValue) -> String {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn format_time(hour: u32, minute: u32, second: u32, microsecond: u32) -> String {
     if microsecond == 0 {
         format!("{hour:02}:{minute:02}:{second:02}")
