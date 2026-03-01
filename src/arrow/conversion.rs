@@ -50,10 +50,8 @@ pub fn build_column_array(
             Ok(Arc::new(builder.finish()))
         }
         DataType::Decimal128(precision, scale) => {
-            let mut builder =
-                Decimal128Builder::with_capacity(result.rows.len()).with_data_type(
-                    DataType::Decimal128(*precision, *scale),
-                );
+            let mut builder = Decimal128Builder::with_capacity(result.rows.len())
+                .with_data_type(DataType::Decimal128(*precision, *scale));
             for row in &result.rows {
                 match row.get(col_idx) {
                     Some(ScalarValue::Numeric(d)) => {

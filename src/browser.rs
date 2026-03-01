@@ -92,9 +92,7 @@ pub async fn run_sql_http_json(sql: &str) -> String {
 /// ```
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = execute_sql_arrow))]
 pub async fn execute_sql_arrow(sql: &str) -> Vec<u8> {
-    execute_sql_arrow_internal(sql)
-        .await
-        .unwrap_or_default()
+    execute_sql_arrow_internal(sql).await.unwrap_or_default()
 }
 
 async fn execute_sql_arrow_internal(sql: &str) -> Result<Vec<u8>, String> {

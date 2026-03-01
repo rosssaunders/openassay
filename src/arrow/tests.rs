@@ -9,10 +9,7 @@ mod tests {
     use super::super::record_batch::{query_result_to_arrow_ipc, query_result_to_record_batch};
     use super::super::schema::build_schema;
 
-    fn make_result(
-        columns: Vec<&str>,
-        rows: Vec<Vec<ScalarValue>>,
-    ) -> QueryResult {
+    fn make_result(columns: Vec<&str>, rows: Vec<Vec<ScalarValue>>) -> QueryResult {
         QueryResult {
             columns: columns.into_iter().map(String::from).collect(),
             rows,
@@ -25,10 +22,7 @@ mod tests {
 
     #[test]
     fn schema_infers_bool_column() {
-        let result = make_result(
-            vec!["flag"],
-            vec![vec![ScalarValue::Bool(true)]],
-        );
+        let result = make_result(vec!["flag"], vec![vec![ScalarValue::Bool(true)]]);
         let schema = build_schema(&result);
         assert_eq!(schema.field(0).data_type(), &DataType::Boolean);
         assert!(schema.field(0).is_nullable());
@@ -36,20 +30,14 @@ mod tests {
 
     #[test]
     fn schema_infers_int64_column() {
-        let result = make_result(
-            vec!["id"],
-            vec![vec![ScalarValue::Int(42)]],
-        );
+        let result = make_result(vec!["id"], vec![vec![ScalarValue::Int(42)]]);
         let schema = build_schema(&result);
         assert_eq!(schema.field(0).data_type(), &DataType::Int64);
     }
 
     #[test]
     fn schema_infers_float64_column() {
-        let result = make_result(
-            vec!["val"],
-            vec![vec![ScalarValue::Float(3.14)]],
-        );
+        let result = make_result(vec!["val"], vec![vec![ScalarValue::Float(3.14)]]);
         let schema = build_schema(&result);
         assert_eq!(schema.field(0).data_type(), &DataType::Float64);
     }
@@ -78,10 +66,7 @@ mod tests {
     fn schema_skips_leading_nulls_to_infer_type() {
         let result = make_result(
             vec!["x"],
-            vec![
-                vec![ScalarValue::Null],
-                vec![ScalarValue::Int(7)],
-            ],
+            vec![vec![ScalarValue::Null], vec![ScalarValue::Int(7)]],
         );
         let schema = build_schema(&result);
         assert_eq!(schema.field(0).data_type(), &DataType::Int64);
@@ -91,7 +76,10 @@ mod tests {
     fn schema_field_names_match_column_names() {
         let result = make_result(
             vec!["alpha", "beta"],
-            vec![vec![ScalarValue::Int(1), ScalarValue::Text("x".to_string())]],
+            vec![vec![
+                ScalarValue::Int(1),
+                ScalarValue::Text("x".to_string()),
+            ]],
         );
         let schema = build_schema(&result);
         assert_eq!(schema.field(0).name(), "alpha");
@@ -147,10 +135,7 @@ mod tests {
     fn record_batch_float64_column() {
         let result = make_result(
             vec!["val"],
-            vec![
-                vec![ScalarValue::Float(1.5)],
-                vec![ScalarValue::Null],
-            ],
+            vec![vec![ScalarValue::Float(1.5)], vec![ScalarValue::Null]],
         );
         let batch = query_result_to_record_batch(&result).expect("record batch should be built");
         let col = batch
@@ -227,13 +212,13 @@ mod tests {
 
     #[test]
     fn arrow_ipc_bytes_are_non_empty_for_non_empty_result() {
-        let result = make_result(
-            vec!["id"],
-            vec![vec![ScalarValue::Int(42)]],
-        );
+        let result = make_result(vec!["id"], vec![vec![ScalarValue::Int(42)]]);
         let bytes = query_result_to_arrow_ipc(&result).expect("IPC serialisation should succeed");
         // Arrow IPC file format starts with magic bytes "ARROW1\0\0"
-        assert!(bytes.starts_with(b"ARROW1\0\0"), "expected Arrow IPC magic header");
+        assert!(
+            bytes.starts_with(b"ARROW1\0\0"),
+            "expected Arrow IPC magic header"
+        );
         assert!(!bytes.is_empty());
     }
 
