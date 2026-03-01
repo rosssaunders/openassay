@@ -4462,7 +4462,7 @@ fn min_i64_fast(values: &[i64]) -> Option<i64> {
             return Some(unsafe { min_i64_avx2(values) });
         }
     }
-    Some(values.iter().copied().min().unwrap())
+    values.iter().copied().min()
 }
 
 fn max_i64_fast(values: &[i64]) -> Option<i64> {
@@ -4476,7 +4476,7 @@ fn max_i64_fast(values: &[i64]) -> Option<i64> {
             return Some(unsafe { max_i64_avx2(values) });
         }
     }
-    Some(values.iter().copied().max().unwrap())
+    values.iter().copied().max()
 }
 
 fn min_f64_fast(values: &[f64]) -> Option<f64> {
@@ -4841,15 +4841,21 @@ pub(crate) async fn eval_aggregate_function(
                 } else {
                     // Mixed int+float: compute winners separately to avoid i64→f64 precision loss
                     let int_winner = if fn_name == "min" {
-                        min_i64_fast(&int_values).unwrap()
+                        min_i64_fast(&int_values)
                     } else {
-                        max_i64_fast(&int_values).unwrap()
-                    };
+                        max_i64_fast(&int_values)
+                    }
+                    .ok_or_else(|| EngineError {
+                        message: "unexpected None: numeric min/max integer winner".to_string(),
+                    })?;
                     let float_winner = if fn_name == "min" {
-                        min_f64_fast(&float_values).unwrap()
+                        min_f64_fast(&float_values)
                     } else {
-                        max_f64_fast(&float_values).unwrap()
-                    };
+                        max_f64_fast(&float_values)
+                    }
+                    .ok_or_else(|| EngineError {
+                        message: "unexpected None: numeric min/max float winner".to_string(),
+                    })?;
                     let int_as_f64 = int_winner as f64;
                     let pick_int = if fn_name == "min" {
                         int_as_f64 <= float_winner

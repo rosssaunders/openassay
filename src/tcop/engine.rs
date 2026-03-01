@@ -525,7 +525,10 @@ pub(crate) mod ws_native {
                 // We need to read from the socket, but the writer lock holds it.
                 // We'll use a pattern where the reader briefly locks to read one message.
                 let msg = {
-                    let mut guard = reader_writer.lock().unwrap();
+                    let mut guard = match reader_writer.lock() {
+                        Ok(guard) => guard,
+                        Err(_) => break,
+                    };
                     if let Some(ref mut ws) = *guard {
                         match ws.read() {
                             Ok(tungstenite::Message::Text(t)) => Some(t.to_string()),
@@ -560,7 +563,10 @@ pub(crate) mod ws_native {
     }
 
     pub fn send_message(handle: &NativeWsHandle, msg: &str) -> Result<(), String> {
-        let mut guard = handle.writer.lock().unwrap();
+        let mut guard = handle
+            .writer
+            .lock()
+            .map_err(|_| "WebSocket writer lock poisoned".to_string())?;
         if let Some(ref mut ws) = *guard {
             ws.write(tungstenite::Message::Text(msg.to_string().into()))
                 .map_err(|e| format!("WebSocket send failed: {e}"))?;
@@ -573,7 +579,10 @@ pub(crate) mod ws_native {
     }
 
     pub fn close_connection(handle: &NativeWsHandle) -> Result<(), String> {
-        let mut guard = handle.writer.lock().unwrap();
+        let mut guard = handle
+            .writer
+            .lock()
+            .map_err(|_| "WebSocket writer lock poisoned".to_string())?;
         if let Some(ref mut ws) = *guard {
             let _ = ws.close(None);
             let _ = ws.flush();
@@ -608,7 +617,9 @@ pub(crate) fn native_ws_handles()
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn drain_native_ws_messages(conn_id: i64) {
     let msgs = {
-        let handles = native_ws_handles().lock().unwrap();
+        let Ok(handles) = native_ws_handles().lock() else {
+            return;
+        };
         if let Some(handle) = handles.get(&conn_id) {
             ws_native::drain_incoming(handle)
         } else {
@@ -825,16 +836,18 @@ fn global_extension_state() -> &'static RwLock<ExtensionState> {
 }
 
 pub(crate) fn with_ext_read<T>(f: impl FnOnce(&ExtensionState) -> T) -> T {
-    let state = global_extension_state()
-        .read()
-        .expect("ext state lock poisoned");
+    let state = match global_extension_state().read() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     f(&state)
 }
 
 pub(crate) fn with_ext_write<T>(f: impl FnOnce(&mut ExtensionState) -> T) -> T {
-    let mut state = global_extension_state()
-        .write()
-        .expect("ext state lock poisoned");
+    let mut state = match global_extension_state().write() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     f(&mut state)
 }
 
@@ -2003,7 +2016,11 @@ async fn execute_merge(
                         }
                         let source_idx = candidate_rows[target_idx]
                             .source_row_index
-                            .expect("matched rows originate from base relation");
+                            .ok_or_else(|| EngineError {
+                                message:
+                                    "unexpected None: matched rows should originate from base relation"
+                                        .to_string(),
+                            })?;
                         if !modified_target_source_rows.insert(source_idx) {
                             return Err(EngineError {
                                 message: "MERGE cannot affect the same target row more than once"
@@ -2086,7 +2103,11 @@ async fn execute_merge(
                         }
                         let source_idx = candidate_rows[target_idx]
                             .source_row_index
-                            .expect("matched rows originate from base relation");
+                            .ok_or_else(|| EngineError {
+                                message:
+                                    "unexpected None: matched rows should originate from base relation"
+                                        .to_string(),
+                            })?;
                         if !modified_target_source_rows.insert(source_idx) {
                             return Err(EngineError {
                                 message: "MERGE cannot affect the same target row more than once"
@@ -3348,7 +3369,9 @@ pub(crate) fn preview_table_with_added_constraint(
             let mut specs = crate::commands::create_table::key_constraint_specs_from_ast(
                 std::slice::from_ref(constraint),
             )?;
-            let spec = specs.pop().expect("one key constraint spec");
+            let spec = specs.pop().ok_or_else(|| EngineError {
+                message: "unexpected None: missing key constraint spec".to_string(),
+            })?;
             if let Some(name) = &spec.name
                 && table_constraint_name_exists(&preview, name)
             {
@@ -3399,7 +3422,9 @@ pub(crate) fn preview_table_with_added_constraint(
             let mut specs = crate::commands::create_table::foreign_key_constraint_specs_from_ast(
                 std::slice::from_ref(constraint),
             )?;
-            let spec = specs.pop().expect("one foreign key constraint spec");
+            let spec = specs.pop().ok_or_else(|| EngineError {
+                message: "unexpected None: missing foreign key constraint spec".to_string(),
+            })?;
             if let Some(name) = &spec.name
                 && table_constraint_name_exists(&preview, name)
             {

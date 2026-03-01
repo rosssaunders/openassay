@@ -96,7 +96,9 @@ pub async fn execute_alter_table(
                 TableConstraint::PrimaryKey { .. } | TableConstraint::Unique { .. } => {
                     let mut specs =
                         key_constraint_specs_from_ast(std::slice::from_ref(constraint))?;
-                    let spec = specs.pop().expect("one key spec for add constraint");
+                    let spec = specs.pop().ok_or_else(|| EngineError {
+                        message: "unexpected None: key spec for ADD CONSTRAINT".to_string(),
+                    })?;
                     with_catalog_write(|catalog| {
                         catalog.add_key_constraint(table.schema_name(), table.name(), spec)
                     })
@@ -107,7 +109,9 @@ pub async fn execute_alter_table(
                 TableConstraint::ForeignKey { .. } => {
                     let mut specs =
                         foreign_key_constraint_specs_from_ast(std::slice::from_ref(constraint))?;
-                    let spec = specs.pop().expect("one fk spec for add constraint");
+                    let spec = specs.pop().ok_or_else(|| EngineError {
+                        message: "unexpected None: foreign key spec for ADD CONSTRAINT".to_string(),
+                    })?;
                     with_catalog_write(|catalog| {
                         catalog.add_foreign_key_constraint(table.schema_name(), table.name(), spec)
                     })

@@ -43,6 +43,8 @@ use crate::utils::adt::misc::{
     parse_i64_scalar, parse_nullable_bool, parse_pg_array_literal, truthy,
 };
 use crate::utils::fmgr::eval_scalar_function;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{JsCast, JsValue};
 
 pub(crate) type EngineFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
@@ -3253,7 +3255,12 @@ async fn execute_ws_connect(args: &[ScalarValue]) -> Result<ScalarValue, EngineE
     // Store the handle if real connection succeeded
     #[cfg(not(target_arch = "wasm32"))]
     if let Ok(handle) = real_result {
-        native_ws_handles().lock().unwrap().insert(id, handle);
+        native_ws_handles()
+            .lock()
+            .map_err(|_| EngineError {
+                message: "websocket handle map lock poisoned for write".to_string(),
+            })?
+            .insert(id, handle);
     }
     #[cfg(target_arch = "wasm32")]
     if let Ok(handle) = real_result {
@@ -3269,7 +3276,19 @@ async fn execute_ws_connect(args: &[ScalarValue]) -> Result<ScalarValue, EngineE
                 .is_some_and(|c| c.on_message.is_some())
         });
         if has_callback {
-            wasm_bindgen_futures::spawn_local(ws_background_dispatch(id));
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Err(error) = ws_background_dispatch(id).await {
+                    with_ext_write(|ext| {
+                        if let Some(conn) = ext.ws_connections.get_mut(&id) {
+                            conn.state = "closed".to_string();
+                            conn.inbound_queue.push(format!(
+                                "ws background dispatcher failed: {}",
+                                error.message
+                            ));
+                        }
+                    });
+                }
+            });
         }
     }
 
@@ -3320,7 +3339,9 @@ async fn execute_ws_send(args: &[ScalarValue]) -> Result<ScalarValue, EngineErro
     // Send over real connection if available
     #[cfg(not(target_arch = "wasm32"))]
     if is_real {
-        let handles = native_ws_handles().lock().unwrap();
+        let handles = native_ws_handles().lock().map_err(|_| EngineError {
+            message: "websocket handle map lock poisoned for read".to_string(),
+        })?;
         if let Some(handle) = handles.get(&conn_id) {
             ws_native::send_message(handle, &_message).map_err(|e| EngineError { message: e })?;
         }
@@ -3363,7 +3384,9 @@ async fn execute_ws_close(args: &[ScalarValue]) -> Result<ScalarValue, EngineErr
     // Close real connection if present
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let mut handles = native_ws_handles().lock().unwrap();
+        let mut handles = native_ws_handles().lock().map_err(|_| EngineError {
+            message: "websocket handle map lock poisoned for write".to_string(),
+        })?;
         if let Some(handle) = handles.get(&conn_id) {
             let _ = ws_native::close_connection(handle);
         }
@@ -3548,11 +3571,11 @@ pub async fn process_pending_ws_callbacks() {
 /// callbacks can fire and the browser stays responsive. Exits when the
 /// connection is closed or removed.
 #[cfg(target_arch = "wasm32")]
-async fn ws_background_dispatch(conn_id: i64) {
+async fn ws_background_dispatch(conn_id: i64) -> Result<(), EngineError> {
     loop {
         // Yield to the JS event loop for 200ms — lets onmessage callbacks fire
         // and buffer messages while keeping the main thread free for rendering.
-        sleep_ms(200).await;
+        sleep_ms(200).await?;
 
         // Check the connection is still alive
         let alive = with_ext_read(|ext| {
@@ -3566,27 +3589,39 @@ async fn ws_background_dispatch(conn_id: i64) {
 
         drain_and_dispatch_ws(conn_id).await;
     }
+    Ok(())
 }
 
 /// Sleep for `ms` milliseconds, yielding to the browser event loop.
 /// Uses `js_sys::global()` so this works in both Window and Web Worker contexts.
 #[cfg(target_arch = "wasm32")]
-async fn sleep_ms(ms: i32) {
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
+async fn sleep_ms(ms: i32) -> Result<(), EngineError> {
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
         let global = js_sys::global();
-        let set_timeout =
-            js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("setTimeout"))
-                .expect("setTimeout not found on global");
-        let set_timeout: js_sys::Function = set_timeout.into();
-        set_timeout
-            .call2(
-                &wasm_bindgen::JsValue::undefined(),
-                &resolve,
-                &wasm_bindgen::JsValue::from(ms),
-            )
-            .expect("setTimeout call failed");
+        let set_timeout = match js_sys::Reflect::get(&global, &JsValue::from_str("setTimeout")) {
+            Ok(function) => function,
+            Err(error) => {
+                let _ = reject.call1(&JsValue::undefined(), &error);
+                return;
+            }
+        };
+        let set_timeout = match set_timeout.dyn_into::<js_sys::Function>() {
+            Ok(function) => function,
+            Err(error) => {
+                let _ = reject.call1(&JsValue::undefined(), &error);
+                return;
+            }
+        };
+        if let Err(error) = set_timeout.call2(&JsValue::undefined(), &resolve, &JsValue::from(ms)) {
+            let _ = reject.call1(&JsValue::undefined(), &error);
+        }
     });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map(|_| ())
+        .map_err(|error| EngineError {
+            message: format!("setTimeout call failed: {error:?}"),
+        })
 }
 
 /// Drain buffered messages for a connection and dispatch the on_message callback.

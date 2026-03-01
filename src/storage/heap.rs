@@ -369,15 +369,23 @@ fn global_storage() -> &'static RwLock<InMemoryStorage> {
 }
 
 pub(crate) fn with_storage_read<T>(f: impl FnOnce(&InMemoryStorage) -> T) -> T {
-    let storage = global_storage()
-        .read()
-        .expect("global storage lock poisoned for read");
+    let storage = match global_storage().read() {
+        Ok(storage) => storage,
+        Err(poisoned) => {
+            debug_assert!(false, "global storage lock poisoned for read");
+            poisoned.into_inner()
+        }
+    };
     f(&storage)
 }
 
 pub(crate) fn with_storage_write<T>(f: impl FnOnce(&mut InMemoryStorage) -> T) -> T {
-    let mut storage = global_storage()
-        .write()
-        .expect("global storage lock poisoned for write");
+    let mut storage = match global_storage().write() {
+        Ok(storage) => storage,
+        Err(poisoned) => {
+            debug_assert!(false, "global storage lock poisoned for write");
+            poisoned.into_inner()
+        }
+    };
     f(&mut storage)
 }

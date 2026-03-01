@@ -28,18 +28,37 @@ fn default_gucs() -> HashMap<String, String> {
 
 /// Resets all GUC variables to their default values.
 pub fn reset_all_gucs() {
-    let mut guc = global_guc().write().expect("guc lock poisoned");
-    *guc = default_gucs();
+    with_guc_write(|guc| {
+        *guc = default_gucs();
+    });
 }
 
 pub(crate) fn with_guc_read<T>(f: impl FnOnce(&HashMap<String, String>) -> T) -> T {
-    let guc = global_guc().read().expect("guc lock poisoned");
+    let guc = match global_guc().read() {
+        Ok(guc) => guc,
+        Err(poisoned) => {
+            debug_assert!(false, "guc lock poisoned for read");
+            poisoned.into_inner()
+        }
+    };
     f(&guc)
 }
 
+fn with_guc_write<T>(f: impl FnOnce(&mut HashMap<String, String>) -> T) -> T {
+    let mut guc = match global_guc().write() {
+        Ok(guc) => guc,
+        Err(poisoned) => {
+            debug_assert!(false, "guc lock poisoned for write");
+            poisoned.into_inner()
+        }
+    };
+    f(&mut guc)
+}
+
 pub async fn execute_set(set_stmt: &SetStatement) -> Result<QueryResult, EngineError> {
-    let mut guc = global_guc().write().expect("guc lock poisoned");
-    guc.insert(set_stmt.name.clone(), set_stmt.value.clone());
+    with_guc_write(|guc| {
+        guc.insert(set_stmt.name.clone(), set_stmt.value.clone());
+    });
     Ok(QueryResult {
         columns: Vec::new(),
         rows: Vec::new(),
@@ -49,16 +68,16 @@ pub async fn execute_set(set_stmt: &SetStatement) -> Result<QueryResult, EngineE
 }
 
 pub async fn execute_show(show_stmt: &ShowStatement) -> Result<QueryResult, EngineError> {
-    let guc = global_guc().read().expect("guc lock poisoned");
-    let value = guc
-        .get(&show_stmt.name)
-        .or_else(|| {
-            guc.iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case(&show_stmt.name))
-                .map(|(_, v)| v)
-        })
-        .cloned()
-        .unwrap_or_default();
+    let value = with_guc_read(|guc| {
+        guc.get(&show_stmt.name)
+            .or_else(|| {
+                guc.iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(&show_stmt.name))
+                    .map(|(_, v)| v)
+            })
+            .cloned()
+            .unwrap_or_default()
+    });
     Ok(QueryResult {
         columns: vec![show_stmt.name.clone()],
         rows: vec![vec![ScalarValue::Text(value)]],

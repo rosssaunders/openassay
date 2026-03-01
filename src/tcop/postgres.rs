@@ -557,11 +557,15 @@ impl PostgresSession {
     where
         I: IntoIterator<Item = FrontendMessage>,
     {
-        tokio::runtime::Builder::new_current_thread()
+        match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("tokio runtime should start")
-            .block_on(self.run(messages))
+        {
+            Ok(runtime) => runtime.block_on(self.run(messages)),
+            Err(err) => vec![error_response_from_message(format!(
+                "failed to start tokio runtime: {err}"
+            ))],
+        }
     }
 
     async fn dispatch(

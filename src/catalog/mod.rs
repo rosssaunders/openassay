@@ -53,22 +53,22 @@ impl Catalog {
             oid_gen: OidGenerator::default(),
             schemas: HashMap::new(),
         };
-        catalog
-            .create_schema("pg_catalog")
-            .expect("bootstrap should create pg_catalog");
-        catalog
-            .create_schema("public")
-            .expect("bootstrap should create public schema");
-        catalog
-            .create_table(
-                "pg_catalog",
-                "dual",
-                TableKind::VirtualDual,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-            )
-            .expect("bootstrap should create pg_catalog.dual");
+        if let Err(error) = catalog.create_schema("pg_catalog") {
+            unreachable!("bootstrap should create pg_catalog: {}", error.message);
+        }
+        if let Err(error) = catalog.create_schema("public") {
+            unreachable!("bootstrap should create public schema: {}", error.message);
+        }
+        if let Err(error) = catalog.create_table(
+            "pg_catalog",
+            "dual",
+            TableKind::VirtualDual,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ) {
+            unreachable!("bootstrap should create pg_catalog.dual: {}", error.message);
+        }
         catalog
     }
 
@@ -89,7 +89,7 @@ impl Catalog {
             });
         }
 
-        let schema_oid = self.oid_gen.next_oid();
+        let schema_oid = self.oid_gen.next_oid()?;
         self.schemas.insert(
             normalized_name.clone(),
             Schema::new(schema_oid, normalized_name),
@@ -136,7 +136,7 @@ impl Catalog {
             });
         }
 
-        let table_oid = self.oid_gen.next_oid();
+        let table_oid = self.oid_gen.next_oid()?;
         let mut normalized_columns = Vec::with_capacity(columns.len());
         for (idx, column) in columns.into_iter().enumerate() {
             let column_name = normalize_name(&column.name)?;
@@ -151,7 +151,7 @@ impl Catalog {
                 });
             }
             normalized_columns.push(Column::new(
-                self.oid_gen.next_oid(),
+                self.oid_gen.next_oid()?,
                 column_name,
                 column.type_signature,
                 idx as u16,
@@ -451,7 +451,7 @@ impl Catalog {
                 });
             }
             normalized_columns.push(Column::new(
-                self.oid_gen.next_oid(),
+                self.oid_gen.next_oid()?,
                 column_name,
                 TypeSignature::Text,
                 idx as u16,
@@ -659,7 +659,7 @@ impl Catalog {
             ..
         } = column;
 
-        let column_oid = self.oid_gen.next_oid();
+        let column_oid = self.oid_gen.next_oid()?;
         let ordinal = table.columns().len() as u16;
         table.add_column(Column::new(
             column_oid,
@@ -1762,16 +1762,24 @@ fn global_catalog() -> &'static RwLock<Catalog> {
 }
 
 pub fn with_catalog_read<T>(f: impl FnOnce(&Catalog) -> T) -> T {
-    let catalog = global_catalog()
-        .read()
-        .expect("global catalog lock poisoned for read");
+    let catalog = match global_catalog().read() {
+        Ok(catalog) => catalog,
+        Err(poisoned) => {
+            debug_assert!(false, "global catalog lock poisoned for read");
+            poisoned.into_inner()
+        }
+    };
     f(&catalog)
 }
 
 pub fn with_catalog_write<T>(f: impl FnOnce(&mut Catalog) -> T) -> T {
-    let mut catalog = global_catalog()
-        .write()
-        .expect("global catalog lock poisoned for write");
+    let mut catalog = match global_catalog().write() {
+        Ok(catalog) => catalog,
+        Err(poisoned) => {
+            debug_assert!(false, "global catalog lock poisoned for write");
+            poisoned.into_inner()
+        }
+    };
     f(&mut catalog)
 }
 

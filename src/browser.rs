@@ -280,10 +280,10 @@ fn ensure_baseline_snapshot() {
 fn baseline_snapshot_clone() -> EngineStateSnapshot {
     ensure_baseline_snapshot();
     BASELINE_SNAPSHOT.with(|slot: &RefCell<Option<EngineStateSnapshot>>| {
-        slot.borrow()
-            .as_ref()
-            .expect("baseline snapshot should be initialized")
-            .clone()
+        match slot.borrow().as_ref() {
+            Some(snapshot) => snapshot.clone(),
+            None => unreachable!("baseline snapshot should be initialized"),
+        }
     })
 }
 

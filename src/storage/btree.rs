@@ -448,9 +448,9 @@ fn split_node(node: BTreeNode) -> (BTreeNode, BTreeEntry, BTreeNode) {
         BTreeNode::Leaf { mut entries } => {
             let split_idx = entries.len() / 2;
             let right_entries = entries.split_off(split_idx + 1);
-            let median = entries
-                .pop()
-                .expect("split leaf node must have a median entry");
+            let Some(median) = entries.pop() else {
+                unreachable!("split leaf node must have a median entry");
+            };
             (
                 BTreeNode::Leaf { entries },
                 median,
@@ -466,9 +466,9 @@ fn split_node(node: BTreeNode) -> (BTreeNode, BTreeEntry, BTreeNode) {
             let split_idx = entries.len() / 2;
             let right_children = children.split_off(split_idx + 1);
             let right_entries = entries.split_off(split_idx + 1);
-            let median = entries
-                .pop()
-                .expect("split internal node must have a median entry");
+            let Some(median) = entries.pop() else {
+                unreachable!("split internal node must have a median entry");
+            };
             (
                 BTreeNode::Internal { entries, children },
                 median,
@@ -524,10 +524,11 @@ fn range_scan_node(
                     out.push((entry.key.clone(), entry.offsets.clone()));
                 }
             }
-            let last_child = children
-                .last()
-                .expect("internal nodes must contain at least one child");
-            range_scan_node(last_child, start, end, out);
+            if let Some(last_child) = children.last() {
+                range_scan_node(last_child, start, end, out);
+            } else {
+                debug_assert!(false, "internal nodes must contain at least one child");
+            }
         }
     }
 }

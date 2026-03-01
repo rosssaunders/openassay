@@ -2390,7 +2390,7 @@ fn parse_language_name(input: &str) -> Result<(String, usize), PlPgSqlCompileErr
         });
     }
 
-    let first = input.chars().next().expect("checked is_empty");
+    let first = next_char_at(input, 0, "language name start")?;
     if first == '\'' {
         let (name, consumed) = parse_single_quoted_string(input)?;
         return Ok((name, consumed));
@@ -2433,7 +2433,7 @@ fn parse_sql_string_literal(input: &str) -> Result<(String, usize), PlPgSqlCompi
         });
     }
 
-    let first = input.chars().next().expect("checked is_empty");
+    let first = next_char_at(input, 0, "quoted DO body start")?;
     if first == '\'' {
         return parse_single_quoted_string(input);
     }
@@ -2462,10 +2462,7 @@ fn parse_single_quoted_string(input: &str) -> Result<(String, usize), PlPgSqlCom
     let mut result = String::new();
     let mut idx = 1usize;
     while idx < input.len() {
-        let ch = input[idx..]
-            .chars()
-            .next()
-            .expect("slice index checked by loop");
+        let ch = next_char_at(input, idx, "single-quoted string body")?;
         idx += ch.len_utf8();
         if ch == '\'' {
             if idx < input.len() && input[idx..].starts_with('\'') {
@@ -2499,10 +2496,7 @@ fn parse_dollar_quoted_string(input: &str) -> Result<(String, usize), PlPgSqlCom
 
     let mut tag_end = 1usize;
     while tag_end < input.len() {
-        let ch = input[tag_end..]
-            .chars()
-            .next()
-            .expect("slice index checked by loop");
+        let ch = next_char_at(input, tag_end, "dollar-quoted string tag")?;
         if ch == '$' {
             tag_end += 1;
             break;
@@ -2541,6 +2535,18 @@ fn parse_dollar_quoted_string(input: &str) -> Result<(String, usize), PlPgSqlCom
         line: 1,
         column: input.len() + 1,
     })
+}
+
+fn next_char_at(input: &str, idx: usize, context: &str) -> Result<char, PlPgSqlCompileError> {
+    input
+        .get(idx..)
+        .and_then(|rest| rest.chars().next())
+        .ok_or_else(|| PlPgSqlCompileError {
+            message: format!("unexpected None: {context}"),
+            position: idx.min(input.len()),
+            line: 1,
+            column: idx.min(input.len()) + 1,
+        })
 }
 
 #[cfg(test)]

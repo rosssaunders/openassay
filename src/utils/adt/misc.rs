@@ -115,7 +115,7 @@ impl<'a> ArrayLiteralParser<'a> {
         }
     }
 
-    fn expect(&mut self, expected: u8) -> Result<(), EngineError> {
+    fn expect_byte(&mut self, expected: u8) -> Result<(), EngineError> {
         match self.bump() {
             Some(found) if found == expected => Ok(()),
             _ => Err(EngineError {
@@ -126,7 +126,7 @@ impl<'a> ArrayLiteralParser<'a> {
 
     fn parse_array(&mut self) -> Result<ScalarValue, EngineError> {
         self.skip_whitespace();
-        self.expect(b'{')?;
+        self.expect_byte(b'{')?;
         self.skip_whitespace();
         let mut elements = Vec::new();
 
@@ -167,7 +167,7 @@ impl<'a> ArrayLiteralParser<'a> {
     }
 
     fn parse_quoted_text(&mut self) -> Result<String, EngineError> {
-        self.expect(b'"')?;
+        self.expect_byte(b'"')?;
         let mut out = String::new();
         while let Some(byte) = self.bump() {
             match byte {

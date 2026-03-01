@@ -2,6 +2,8 @@ use std::cmp::Ordering;
 use std::sync::{OnceLock, RwLock};
 
 use serde_json::Value as JsonValue;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{JsCast, JsValue};
 
 use crate::commands::sequence::{
     normalize_sequence_name_from_text, sequence_next_value, set_sequence_value,
@@ -47,43 +49,66 @@ use crate::utils::adt::string_functions::{
 static LAST_SEQUENCE_VALUE: OnceLock<RwLock<Option<i64>>> = OnceLock::new();
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn sleep_for_duration(duration: std::time::Duration) {
+async fn sleep_for_duration(duration: std::time::Duration) -> Result<(), EngineError> {
     tokio::time::sleep(duration).await;
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn sleep_for_duration(duration: std::time::Duration) {
+async fn sleep_for_duration(duration: std::time::Duration) -> Result<(), EngineError> {
     let ms = duration.as_millis().min(i32::MAX as u128) as i32;
-    let promise = js_sys::Promise::new(&mut |resolve, _| {
+    let promise = js_sys::Promise::new(&mut |resolve, reject| {
         let global = js_sys::global();
-        let set_timeout =
-            js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("setTimeout"))
-                .expect("setTimeout not found on global");
-        let set_timeout: js_sys::Function = set_timeout.into();
-        set_timeout
-            .call2(
-                &wasm_bindgen::JsValue::NULL,
-                &resolve,
-                &wasm_bindgen::JsValue::from_f64(f64::from(ms)),
-            )
-            .expect("setTimeout call failed");
+        let set_timeout = match js_sys::Reflect::get(&global, &JsValue::from_str("setTimeout")) {
+            Ok(function) => function,
+            Err(error) => {
+                let _ = reject.call1(&JsValue::undefined(), &error);
+                return;
+            }
+        };
+        let set_timeout = match set_timeout.dyn_into::<js_sys::Function>() {
+            Ok(function) => function,
+            Err(error) => {
+                let _ = reject.call1(&JsValue::undefined(), &error);
+                return;
+            }
+        };
+        if let Err(error) =
+            set_timeout.call2(&JsValue::NULL, &resolve, &JsValue::from_f64(f64::from(ms)))
+        {
+            let _ = reject.call1(&JsValue::undefined(), &error);
+        }
     });
-    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map(|_| ())
+        .map_err(|error| EngineError {
+            message: format!("setTimeout call failed: {error:?}"),
+        })
 }
 
 fn with_last_sequence_value_read<T>(f: impl FnOnce(&Option<i64>) -> T) -> T {
-    let guard = LAST_SEQUENCE_VALUE
-        .get_or_init(|| RwLock::new(None))
-        .read()
-        .expect("last sequence value lock poisoned for read");
+    let guard = match LAST_SEQUENCE_VALUE.get_or_init(|| RwLock::new(None)).read() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            debug_assert!(false, "last sequence value lock poisoned for read");
+            poisoned.into_inner()
+        }
+    };
     f(&guard)
 }
 
 fn with_last_sequence_value_write<T>(f: impl FnOnce(&mut Option<i64>) -> T) -> T {
-    let mut guard = LAST_SEQUENCE_VALUE
+    let mut guard = match LAST_SEQUENCE_VALUE
         .get_or_init(|| RwLock::new(None))
         .write()
-        .expect("last sequence value lock poisoned for write");
+    {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            debug_assert!(false, "last sequence value lock poisoned for write");
+            poisoned.into_inner()
+        }
+    };
     f(&mut guard)
 }
 
@@ -712,7 +737,7 @@ pub(crate) async fn eval_scalar_function(
             }
             if seconds > 0.0 {
                 let sleep_for = std::time::Duration::from_secs_f64(seconds.min(60.0));
-                sleep_for_duration(sleep_for).await;
+                sleep_for_duration(sleep_for).await?;
             }
             Ok(ScalarValue::Null)
         }

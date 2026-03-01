@@ -525,7 +525,11 @@ pub(crate) fn parse_datetime_text(text: &str) -> Result<DateTimeValue, EngineErr
     // (e.g. "12:30:45", "13:30:25.575401", "11:59 PM"). Detect by: no T separator
     // found, no time_part split, and the string looks like HH:MM...
     if time_part.is_none() && date_part.contains(':') {
-        let colon_pos = date_part.find(':').unwrap();
+        let Some(colon_pos) = date_part.find(':') else {
+            return Err(EngineError {
+                message: "unexpected None: time separator".to_string(),
+            });
+        };
         // An hour is at most 2 digits (0-24); a 4-digit year before ':' is a date
         if colon_pos <= 2
             && let Ok((hour, minute, second, microsecond)) = parse_time_text(date_part)
@@ -1267,7 +1271,9 @@ fn parse_datetime_parts_with_format(
             continue;
         }
 
-        let ch = fmt[fmt_idx..].chars().next().unwrap();
+        let ch = fmt[fmt_idx..].chars().next().ok_or_else(|| EngineError {
+            message: "unexpected None: to_timestamp/to_date format token".to_string(),
+        })?;
         let ch_len = ch.len_utf8();
         if in_idx >= bytes.len() || bytes[in_idx] != ch as u8 {
             return Err(EngineError {

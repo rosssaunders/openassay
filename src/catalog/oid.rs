@@ -1,3 +1,5 @@
+use super::CatalogError;
+
 pub type Oid = u32;
 
 pub const FIRST_NORMAL_OID: Oid = 16_384;
@@ -18,12 +20,11 @@ impl OidGenerator {
         Self { next: start }
     }
 
-    pub fn next_oid(&mut self) -> Oid {
+    pub fn next_oid(&mut self) -> Result<Oid, CatalogError> {
         let oid = self.next;
-        self.next = self
-            .next
-            .checked_add(1)
-            .expect("catalog OID space exhausted");
-        oid
+        self.next = self.next.checked_add(1).ok_or_else(|| CatalogError {
+            message: "catalog OID space exhausted".to_string(),
+        })?;
+        Ok(oid)
     }
 }

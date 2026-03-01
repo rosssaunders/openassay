@@ -1560,15 +1560,24 @@ fn raise_condition_to_sqlstate(condname: &str) -> Option<String> {
 }
 
 fn sqlstate_internal() -> i32 {
-    sqlstate_code_to_int("XX000").expect("valid internal SQLSTATE")
+    match sqlstate_code_to_int("XX000") {
+        Some(code) => code,
+        None => unreachable!("hard-coded SQLSTATE XX000 must be valid"),
+    }
 }
 
 fn sqlstate_query_canceled() -> i32 {
-    sqlstate_code_to_int("57014").expect("valid query canceled SQLSTATE")
+    match sqlstate_code_to_int("57014") {
+        Some(code) => code,
+        None => unreachable!("hard-coded SQLSTATE 57014 must be valid"),
+    }
 }
 
 fn sqlstate_assert_failure() -> i32 {
-    sqlstate_code_to_int("P0004").expect("valid assert failure SQLSTATE")
+    match sqlstate_code_to_int("P0004") {
+        Some(code) => code,
+        None => unreachable!("hard-coded SQLSTATE P0004 must be valid"),
+    }
 }
 
 fn try_eval_direct_expression(estate: &PLpgSQLExecState, expr: &str) -> Option<ScalarValue> {
