@@ -407,6 +407,7 @@ fn run_sql_statement_with_timeout(session: PostgresSession, sql: &str) -> Statem
 }
 
 /// Normalize output for comparison (remove timestamps, variable data, etc.)
+#[allow(dead_code)]
 fn normalize_output(output: &str) -> String {
     output
         .lines()
