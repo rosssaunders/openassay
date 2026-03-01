@@ -1346,7 +1346,6 @@ fn render_query_to_sql(query: &crate::parser::ast::Query, pretty: bool) -> Strin
     sql
 }
 
-#[allow(dead_code)]
 fn render_select_to_sql(select: &crate::parser::ast::SelectStatement) -> String {
     let mut sql = String::from("SELECT");
 
@@ -1459,7 +1458,6 @@ fn render_select_to_sql(select: &crate::parser::ast::SelectStatement) -> String 
     sql
 }
 
-#[allow(dead_code)]
 fn render_table_expr_to_sql(table: &crate::parser::ast::TableExpression) -> String {
     use crate::parser::ast::TableExpression;
 
@@ -1533,7 +1531,6 @@ fn render_table_expr_to_sql(table: &crate::parser::ast::TableExpression) -> Stri
     }
 }
 
-#[allow(dead_code)]
 fn unary_op_to_sql(op: &crate::parser::ast::UnaryOp) -> &'static str {
     use crate::parser::ast::UnaryOp;
     match op {
@@ -1543,7 +1540,6 @@ fn unary_op_to_sql(op: &crate::parser::ast::UnaryOp) -> &'static str {
     }
 }
 
-#[allow(dead_code)]
 fn binary_op_to_sql(op: &crate::parser::ast::BinaryOp) -> &'static str {
     use crate::parser::ast::BinaryOp;
     match op {
@@ -1587,7 +1583,6 @@ fn binary_op_to_sql(op: &crate::parser::ast::BinaryOp) -> &'static str {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn render_expr_to_sql(expr: &crate::parser::ast::Expr) -> String {
     use crate::parser::ast::Expr;
 
