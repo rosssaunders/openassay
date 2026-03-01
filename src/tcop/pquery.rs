@@ -1301,16 +1301,6 @@ pub(crate) fn current_cte_binding(name: &str) -> Option<CteBinding> {
     })
 }
 
-#[allow(dead_code)]
-fn with_cte_context<T>(ctes: HashMap<String, CteBinding>, f: impl FnOnce() -> T) -> T {
-    ACTIVE_CTE_STACK.with(|stack| {
-        stack.borrow_mut().push(ctes);
-        let out = f();
-        stack.borrow_mut().pop();
-        out
-    })
-}
-
 pub(crate) async fn with_cte_context_async<T, F, Fut>(ctes: HashMap<String, CteBinding>, f: F) -> T
 where
     F: FnOnce() -> Fut,
