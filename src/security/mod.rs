@@ -33,16 +33,24 @@ fn global_security() -> &'static RwLock<SecurityState> {
 }
 
 pub fn with_security_read<T>(f: impl FnOnce(&SecurityState) -> T) -> T {
-    let guard = global_security()
-        .read()
-        .expect("global security lock poisoned for read");
+    let guard = match global_security().read() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            debug_assert!(false, "global security lock poisoned for read");
+            poisoned.into_inner()
+        }
+    };
     f(&guard)
 }
 
 pub fn with_security_write<T>(f: impl FnOnce(&mut SecurityState) -> T) -> T {
-    let mut guard = global_security()
-        .write()
-        .expect("global security lock poisoned for write");
+    let mut guard = match global_security().write() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            debug_assert!(false, "global security lock poisoned for write");
+            poisoned.into_inner()
+        }
+    };
     f(&mut guard)
 }
 

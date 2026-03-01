@@ -20,9 +20,13 @@ fn global_refresh_scheduler() -> &'static RwLock<RefreshScheduler> {
 }
 
 fn with_refresh_scheduler_write<T>(f: impl FnOnce(&mut RefreshScheduler) -> T) -> T {
-    let mut scheduler = global_refresh_scheduler()
-        .write()
-        .expect("global refresh scheduler lock poisoned for write");
+    let mut scheduler = match global_refresh_scheduler().write() {
+        Ok(scheduler) => scheduler,
+        Err(poisoned) => {
+            debug_assert!(false, "global refresh scheduler lock poisoned for write");
+            poisoned.into_inner()
+        }
+    };
     f(&mut scheduler)
 }
 

@@ -28,16 +28,24 @@ fn global_sequences() -> &'static RwLock<HashMap<String, SequenceState>> {
 }
 
 pub fn with_sequences_read<T>(f: impl FnOnce(&HashMap<String, SequenceState>) -> T) -> T {
-    let sequences = global_sequences()
-        .read()
-        .expect("global sequences lock poisoned for read");
+    let sequences = match global_sequences().read() {
+        Ok(sequences) => sequences,
+        Err(poisoned) => {
+            debug_assert!(false, "global sequences lock poisoned for read");
+            poisoned.into_inner()
+        }
+    };
     f(&sequences)
 }
 
 pub fn with_sequences_write<T>(f: impl FnOnce(&mut HashMap<String, SequenceState>) -> T) -> T {
-    let mut sequences = global_sequences()
-        .write()
-        .expect("global sequences lock poisoned for write");
+    let mut sequences = match global_sequences().write() {
+        Ok(sequences) => sequences,
+        Err(poisoned) => {
+            debug_assert!(false, "global sequences lock poisoned for write");
+            poisoned.into_inner()
+        }
+    };
     f(&mut sequences)
 }
 

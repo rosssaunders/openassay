@@ -111,13 +111,13 @@ pub fn tokenize(source: &str) -> Result<Vec<PlPgSqlToken>, PlPgSqlScanError> {
     let mut column = 1usize;
 
     while idx < source.len() {
-        let ch = next_char(source, idx).expect("idx validated by loop condition");
+        let ch = next_char_checked(source, idx, line, column)?;
 
         if ch.is_whitespace() {
             let start = idx;
             idx += ch.len_utf8();
             while idx < source.len() {
-                let c = next_char(source, idx).expect("idx validated by loop condition");
+                let c = next_char_checked(source, idx, line, column)?;
                 if !c.is_whitespace() {
                     break;
                 }
@@ -131,7 +131,7 @@ pub fn tokenize(source: &str) -> Result<Vec<PlPgSqlToken>, PlPgSqlScanError> {
             let start = idx;
             idx += 2;
             while idx < source.len() {
-                let c = next_char(source, idx).expect("idx validated by loop condition");
+                let c = next_char_checked(source, idx, line, column)?;
                 idx += c.len_utf8();
                 if c == '\n' {
                     break;
@@ -156,7 +156,7 @@ pub fn tokenize(source: &str) -> Result<Vec<PlPgSqlToken>, PlPgSqlScanError> {
                     idx += 2;
                     continue;
                 }
-                let c = next_char(source, idx).expect("idx validated by loop condition");
+                let c = next_char_checked(source, idx, line, column)?;
                 idx += c.len_utf8();
             }
             if depth != 0 {
@@ -178,7 +178,7 @@ pub fn tokenize(source: &str) -> Result<Vec<PlPgSqlToken>, PlPgSqlScanError> {
         if is_ident_start(ch) {
             idx += ch.len_utf8();
             while idx < source.len() {
-                let c = next_char(source, idx).expect("idx validated by loop condition");
+                let c = next_char_checked(source, idx, line, column)?;
                 if !is_ident_part(c) {
                     break;
                 }
@@ -206,7 +206,7 @@ pub fn tokenize(source: &str) -> Result<Vec<PlPgSqlToken>, PlPgSqlScanError> {
         if ch.is_ascii_digit() {
             idx += ch.len_utf8();
             while idx < source.len() {
-                let c = next_char(source, idx).expect("idx validated by loop condition");
+                let c = next_char_checked(source, idx, line, column)?;
                 if !c.is_ascii_digit() {
                     break;
                 }
@@ -217,7 +217,7 @@ pub fn tokenize(source: &str) -> Result<Vec<PlPgSqlToken>, PlPgSqlScanError> {
                 idx += 1;
                 let mut has_frac_digit = false;
                 while idx < source.len() {
-                    let c = next_char(source, idx).expect("idx validated by loop condition");
+                    let c = next_char_checked(source, idx, line, column)?;
                     if !c.is_ascii_digit() {
                         break;
                     }
@@ -245,7 +245,7 @@ pub fn tokenize(source: &str) -> Result<Vec<PlPgSqlToken>, PlPgSqlScanError> {
             idx += 1;
             let mut terminated = false;
             while idx < source.len() {
-                let c = next_char(source, idx).expect("idx validated by loop condition");
+                let c = next_char_checked(source, idx, line, column)?;
                 idx += c.len_utf8();
                 if c == '\'' {
                     if idx < source.len() && source[idx..].starts_with('\'') {
@@ -310,7 +310,7 @@ pub fn tokenize(source: &str) -> Result<Vec<PlPgSqlToken>, PlPgSqlScanError> {
                 '+' | '-' | '*' | '/' | '%' | '<' | '>' | '!' | '|' => {
                     let mut end = idx;
                     while end < source.len() {
-                        let c = next_char(source, end).expect("idx validated by loop condition");
+                        let c = next_char_checked(source, end, token_line, token_col)?;
                         if !(c == '=' || c == '>' || c == '<' || c == '|' || c == '!' || c == '#') {
                             break;
                         }
@@ -402,6 +402,20 @@ pub fn extract_sql_expression(
 
 fn next_char(source: &str, idx: usize) -> Option<char> {
     source.get(idx..)?.chars().next()
+}
+
+fn next_char_checked(
+    source: &str,
+    idx: usize,
+    line: usize,
+    column: usize,
+) -> Result<char, PlPgSqlScanError> {
+    next_char(source, idx).ok_or_else(|| PlPgSqlScanError {
+        message: format!("unexpected None: scanner index {idx}"),
+        position: idx.min(source.len()),
+        line,
+        column,
+    })
 }
 
 fn is_ident_start(ch: char) -> bool {
