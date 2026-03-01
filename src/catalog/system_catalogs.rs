@@ -61,6 +61,7 @@ fn is_pg_catalog_virtual_relation(relation: &str) -> bool {
             | "pg_index"
             | "pg_attrdef"
             | "pg_inherits"
+            | "pg_am"
             | "pg_statistic"
     )
 }
@@ -392,6 +393,14 @@ fn virtual_relation_column_defs(
                 name: "context".to_string(),
                 type_oid: PG_TEXT_OID,
             },
+            VirtualRelationColumnDef {
+                name: "source".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "pending_restart".to_string(),
+                type_oid: PG_BOOL_OID,
+            },
         ],
         ("pg_catalog", "pg_tables") => vec![
             VirtualRelationColumnDef {
@@ -458,6 +467,14 @@ fn virtual_relation_column_defs(
             },
             VirtualRelationColumnDef {
                 name: "prosrc".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "proargnames".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "proargtypes".to_string(),
                 type_oid: PG_TEXT_OID,
             },
         ],
@@ -540,6 +557,24 @@ fn virtual_relation_column_defs(
             },
             VirtualRelationColumnDef {
                 name: "indkey".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+        ],
+        ("pg_catalog", "pg_am") => vec![
+            VirtualRelationColumnDef {
+                name: "oid".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "amname".to_string(),
+                type_oid: PG_TEXT_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "amhandler".to_string(),
+                type_oid: PG_INT8_OID,
+            },
+            VirtualRelationColumnDef {
+                name: "amtype".to_string(),
                 type_oid: PG_TEXT_OID,
             },
         ],

@@ -12,6 +12,7 @@ use std::arch::x86_64::{
     _mm256_setzero_pd, _mm256_setzero_si256, _mm256_storeu_pd, _mm256_storeu_si256,
 };
 
+use crate::commands::create_table::type_signature_from_ast;
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
 use crate::executor::exec_expr::{
     EngineFuture, EvalScope, eval_any_all, eval_between_predicate, eval_binary, eval_cast_scalar,
@@ -20,9 +21,9 @@ use crate::executor::exec_expr::{
 };
 use crate::parser::ast::SubqueryRef;
 use crate::parser::ast::{
-    Expr, GroupByExpr, JoinCondition, JoinExpr, JoinType, OrderByExpr, Query, QueryExpr,
-    SelectItem, SelectQuantifier, SelectStatement, SetOperator, SetQuantifier, TableExpression,
-    TableFunctionRef, TableRef, WindowFrameBound,
+    Expr, FunctionParamMode, GroupByExpr, JoinCondition, JoinExpr, JoinType, OrderByExpr, Query,
+    QueryExpr, SelectItem, SelectQuantifier, SelectStatement, SetOperator, SetQuantifier,
+    TableExpression, TableFunctionRef, TableRef, WindowFrameBound,
 };
 use crate::security::{self, RlsCommand, TablePrivilege};
 use crate::storage::tuple::ScalarValue;
@@ -3082,6 +3083,8 @@ fn virtual_relation_rows(
                         ScalarValue::Text(String::new()),
                         ScalarValue::Text("string".to_string()), // vartype
                         ScalarValue::Text("user".to_string()),   // context
+                        ScalarValue::Text("default".to_string()),
+                        ScalarValue::Bool(false),
                     ]
                 })
                 .collect()
@@ -3138,6 +3141,38 @@ fn virtual_relation_rows(
                     .iter()
                     .enumerate()
                     .map(|(i, f)| {
+                        let input_params = f
+                            .params
+                            .iter()
+                            .filter(|param| {
+                                matches!(
+                                    param.mode,
+                                    FunctionParamMode::In | FunctionParamMode::InOut
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        let arg_type_oids = input_params
+                            .iter()
+                            .map(|param| {
+                                type_signature_to_oid(type_signature_from_ast(
+                                    param.data_type.clone(),
+                                ))
+                            })
+                            .collect::<Vec<_>>();
+                        let proargtypes = arg_type_oids
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let arg_names = input_params
+                            .iter()
+                            .map(|param| param.name.clone().unwrap_or_default())
+                            .collect::<Vec<_>>();
+                        let proargnames = if arg_names.iter().all(|name| name.is_empty()) {
+                            ScalarValue::Null
+                        } else {
+                            ScalarValue::Text(format!("{{{}}}", arg_names.join(",")))
+                        };
                         vec![
                             ScalarValue::Int(90000 + i as i64),
                             ScalarValue::Text(f.name.last().cloned().unwrap_or_default()),
@@ -3145,6 +3180,8 @@ fn virtual_relation_rows(
                             ScalarValue::Int(10), // proowner: superuser
                             ScalarValue::Int(14), // prolang: 14 = sql
                             ScalarValue::Text(String::new()), // prosrc placeholder
+                            proargnames,
+                            ScalarValue::Text(proargtypes),
                         ]
                     })
                     .collect()
@@ -3366,6 +3403,20 @@ fn virtual_relation_rows(
                 Ok(rows)
             })
         }
+        ("pg_catalog", "pg_am") => Ok(vec![
+            vec![
+                ScalarValue::Int(403),                     // oid
+                ScalarValue::Text("btree".to_string()),    // amname
+                ScalarValue::Int(0),                       // amhandler placeholder
+                ScalarValue::Text("i".to_string()),        // amtype (index)
+            ],
+            vec![
+                ScalarValue::Int(405),                     // oid
+                ScalarValue::Text("hash".to_string()),     // amname
+                ScalarValue::Int(0),                       // amhandler placeholder
+                ScalarValue::Text("i".to_string()),        // amtype (index)
+            ],
+        ]),
         ("pg_catalog", "pg_attrdef") => with_catalog_read(|catalog| {
             let mut rows = Vec::new();
             for schema in catalog.schemas() {
