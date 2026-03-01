@@ -1,0 +1,95 @@
+name: pg-update-check
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # daily at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Check for new PostgreSQL releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          CURRENT_MAJOR=18
+          CURRENT_MINOR=0
+
+          # Fetch all release tags once
+          TAGS=$(git ls-remote --tags https://github.com/postgres/postgres | grep -oP 'refs/tags/REL_\K[0-9]+_[0-9]+$')
+
+          # --- Check for new major release ---
+          LATEST_MAJOR=$(echo "$TAGS" \
+            | grep -oP '^[0-9]+(?=_0$)' \
+            | sort -n \
+            | tail -1)
+
+          echo "Current tracked: PG${CURRENT_MAJOR}.${CURRENT_MINOR}"
+          echo "Latest major release: PG${LATEST_MAJOR}"
+
+          if [ "$LATEST_MAJOR" -gt "$CURRENT_MAJOR" ]; then
+            TITLE="PostgreSQL ${LATEST_MAJOR} released — update OpenAssay target"
+            EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+              --search "\"$TITLE\"" --state open --json number --jq length)
+            if [ "$EXISTING" = "0" ]; then
+              BODY=$(cat <<EOF
+          PostgreSQL ${LATEST_MAJOR} has been released. OpenAssay currently targets PG${CURRENT_MAJOR}.
+
+          **Update checklist:**
+          - [ ] Update compatibility suite to PG${LATEST_MAJOR} regression tests
+          - [ ] Update \`compat.yml\` workflow references
+          - [ ] Update \`COMPATIBILITY.md\`
+          - [ ] Update \`README.md\` version references
+          - [ ] Run full regression suite against PG${LATEST_MAJOR}
+          - [ ] Update \`CURRENT_MAJOR\` in this workflow
+          EOF
+          )
+              gh issue create --repo "$GITHUB_REPOSITORY" \
+                --title "$TITLE" \
+                --body "$BODY" \
+                --label "postgres-update"
+              echo "Created major version issue"
+            else
+              echo "Major version issue already exists"
+            fi
+          fi
+
+          # --- Check for new minor/hotfix release of current major ---
+          LATEST_MINOR=$(echo "$TAGS" \
+            | grep -oP "^${CURRENT_MAJOR}_\K[0-9]+" \
+            | sort -n \
+            | tail -1)
+
+          echo "Latest PG${CURRENT_MAJOR} minor: ${LATEST_MINOR}"
+
+          if [ "$LATEST_MINOR" -gt "$CURRENT_MINOR" ]; then
+            TITLE="PostgreSQL ${CURRENT_MAJOR}.${LATEST_MINOR} hotfix released"
+            EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+              --search "\"$TITLE\"" --state open --json number --jq length)
+            if [ "$EXISTING" = "0" ]; then
+              BODY=$(cat <<EOF
+          PostgreSQL ${CURRENT_MAJOR}.${LATEST_MINOR} has been released (currently tracking ${CURRENT_MAJOR}.${CURRENT_MINOR}).
+
+          Hotfix releases can include bug fixes and behavioural changes that may affect compatibility.
+
+          **Checklist:**
+          - [ ] Review [PG${CURRENT_MAJOR}.${LATEST_MINOR} release notes](https://www.postgresql.org/docs/release/${CURRENT_MAJOR}-${LATEST_MINOR}.html)
+          - [ ] Check for changes to regression test expected outputs
+          - [ ] Run compatibility suite and compare results
+          - [ ] Update \`CURRENT_MINOR\` in this workflow
+          EOF
+          )
+              gh issue create --repo "$GITHUB_REPOSITORY" \
+                --title "$TITLE" \
+                --body "$BODY" \
+                --label "postgres-update"
+              echo "Created hotfix issue"
+            else
+              echo "Hotfix issue already exists"
+            fi
+          else
+            echo "No new PG${CURRENT_MAJOR} hotfix found"
+          fi
