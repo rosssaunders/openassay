@@ -174,6 +174,10 @@ pub struct ReplicationSlot {
     pub snapshot_name: Option<String>,
 }
 
+// TODO(#79): CopyBothResponse is parsed from the wire but the streaming replication
+// handler discards the payload (see WireMessage::CopyBothResponse(_) => continue).
+// The overall_format and column_formats fields are never inspected. Wire up the read
+// path when the replication stream needs to negotiate text vs binary column encoding.
 #[derive(Debug)]
 pub struct CopyBothResponse {
     pub overall_format: u8,
