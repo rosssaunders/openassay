@@ -804,6 +804,10 @@ pub(crate) fn sync_wasm_ws_state(conn_id: i64) {
     }
 }
 
+// TODO(#79): UserEnumType metadata is stored but never read back for type dispatch.
+// The proxy does not yet use this information to handle user-defined enum types in
+// query results. Implement a read path or remove the scaffolding when enum support
+// is prioritized.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) struct UserEnumType {
@@ -811,6 +815,10 @@ pub(crate) struct UserEnumType {
     pub(crate) labels: Vec<String>,
 }
 
+// TODO(#79): UserDomain metadata is stored but never read back for type dispatch.
+// The proxy does not yet resolve domain types to their base types when processing
+// query results. Implement a read path or remove the scaffolding when domain support
+// is prioritized.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) struct UserDomain {
