@@ -304,14 +304,22 @@ impl Parser {
                 "expected ')' after CREATE INDEX column list",
             )?;
             if self.consume_ident("include") {
-                let _included_columns = self.parse_identifier_list_in_parens()?;
+                return Err(self.error_at_current("CREATE INDEX INCLUDE clause is not supported"));
             }
             if self.consume_ident("nulls") {
-                let _not = self.consume_keyword(Keyword::Not);
-                self.expect_keyword(
-                    Keyword::Distinct,
-                    "expected DISTINCT after NULLS in CREATE INDEX",
-                )?;
+                return Err(self.error_at_current(
+                    "CREATE INDEX NULLS [NOT] DISTINCT clause is not supported",
+                ));
+            }
+            if self.consume_keyword(Keyword::With) {
+                return Err(self.error_at_current(
+                    "CREATE INDEX WITH (...) storage parameters are not supported",
+                ));
+            }
+            if self.consume_ident("tablespace") {
+                return Err(
+                    self.error_at_current("CREATE INDEX TABLESPACE clause is not supported")
+                );
             }
             if generated_name {
                 name = Self::default_index_name(&table_name, &columns);
@@ -8303,6 +8311,48 @@ mod tests {
         assert_eq!(
             create.columns,
             vec!["unique1".to_string(), "unique2".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_create_index_include_clause() {
+        let err = parse_statement("CREATE INDEX idx_users_email ON users (email) INCLUDE (id)")
+            .expect_err("parse should fail");
+        assert!(
+            err.message
+                .contains("CREATE INDEX INCLUDE clause is not supported")
+        );
+    }
+
+    #[test]
+    fn rejects_create_index_with_storage_parameters_clause() {
+        let err =
+            parse_statement("CREATE INDEX idx_users_email ON users (email) WITH (fillfactor = 70)")
+                .expect_err("parse should fail");
+        assert!(
+            err.message
+                .contains("CREATE INDEX WITH (...) storage parameters are not supported")
+        );
+    }
+
+    #[test]
+    fn rejects_create_index_nulls_distinct_clause() {
+        let err =
+            parse_statement("CREATE UNIQUE INDEX idx_users_email ON users (email) NULLS DISTINCT")
+                .expect_err("parse should fail");
+        assert!(
+            err.message
+                .contains("CREATE INDEX NULLS [NOT] DISTINCT clause is not supported")
+        );
+    }
+
+    #[test]
+    fn rejects_create_index_tablespace_clause() {
+        let err = parse_statement("CREATE INDEX idx_users_email ON users (email) TABLESPACE fast")
+            .expect_err("parse should fail");
+        assert!(
+            err.message
+                .contains("CREATE INDEX TABLESPACE clause is not supported")
         );
     }
 
