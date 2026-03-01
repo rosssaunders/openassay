@@ -2284,16 +2284,28 @@ fn eval_generate_series(
     if int_mode {
         let start = match args[0] {
             ScalarValue::Int(v) => v,
-            _ => unreachable!(),
+            _ => {
+                return Err(EngineError {
+                    message: format!("{fn_name}() expected integer argument for start"),
+                });
+            }
         };
         let stop = match args[1] {
             ScalarValue::Int(v) => v,
-            _ => unreachable!(),
+            _ => {
+                return Err(EngineError {
+                    message: format!("{fn_name}() expected integer argument for stop"),
+                });
+            }
         };
         let step = if args.len() == 3 {
             match args[2] {
                 ScalarValue::Int(v) => v,
-                _ => unreachable!(),
+                _ => {
+                    return Err(EngineError {
+                        message: format!("{fn_name}() expected integer argument for step"),
+                    });
+                }
             }
         } else if start <= stop {
             1

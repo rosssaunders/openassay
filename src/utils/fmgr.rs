@@ -638,7 +638,14 @@ pub(crate) async fn eval_scalar_function(
                     };
                     (mode, Some(args[1].render()), args[2].render())
                 }
-                _ => unreachable!("trim() arity checked in match guard"),
+                _ => {
+                    return Err(EngineError {
+                        message: format!(
+                            "trim() called with unexpected number of arguments: {}",
+                            args.len()
+                        ),
+                    });
+                }
             };
             Ok(ScalarValue::Text(trim_text(
                 &input,

@@ -2010,7 +2010,9 @@ pub(crate) fn eval_like_predicate(
                 message: "ESCAPE string must be a single character".to_string(),
             });
         }
-        Some(escape_str.chars().next().unwrap())
+        Some(escape_str.chars().next().ok_or_else(|| EngineError {
+            message: "ESCAPE string must not be empty".to_string(),
+        })?)
     } else {
         None
     };

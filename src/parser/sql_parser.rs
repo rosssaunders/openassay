@@ -4156,7 +4156,7 @@ impl Parser {
                     value: value_str,
                 });
             }
-            unreachable!()
+            return Err(self.error_at_current("expected string literal after type keyword"));
         }
         if self.consume_keyword(Keyword::Cast) {
             self.expect_token(

@@ -85,10 +85,10 @@ impl BTreeIndex {
         out
     }
 
-    pub(crate) fn delete(&mut self, key: &[ScalarValue], offset: usize) -> bool {
-        let removed = Self::delete_internal(&mut self.root, key, Some(offset), self.min_entries);
+    pub(crate) fn delete(&mut self, key: &[ScalarValue], offset: usize) -> Result<bool, String> {
+        let removed = Self::delete_internal(&mut self.root, key, Some(offset), self.min_entries)?;
         self.shrink_root_if_needed();
-        removed
+        Ok(removed)
     }
 
     pub(crate) fn remap_offsets_after_deletions(&mut self, removed_offsets: &[usize]) {
@@ -184,7 +184,7 @@ impl BTreeIndex {
         key: &[ScalarValue],
         offset: Option<usize>,
         min_entries: usize,
-    ) -> bool {
+    ) -> Result<bool, String> {
         let (entries_len, idx, found_match, is_leaf) = match node {
             BTreeNode::Leaf { entries } => {
                 let idx = find_key_index(entries, key);
@@ -202,10 +202,10 @@ impl BTreeIndex {
 
         if is_leaf {
             let BTreeNode::Leaf { entries } = node else {
-                unreachable!("leaf branch must hold a leaf node");
+                return Err("leaf branch must hold a leaf node".to_string());
             };
             if !found_match || idx >= entries_len {
-                return false;
+                return Ok(false);
             }
             if let Some(offset_value) = offset {
                 let Some(pos) = entries[idx]
@@ -213,19 +213,19 @@ impl BTreeIndex {
                     .iter()
                     .position(|existing| *existing == offset_value)
                 else {
-                    return false;
+                    return Ok(false);
                 };
                 entries[idx].offsets.remove(pos);
                 if !entries[idx].offsets.is_empty() {
-                    return true;
+                    return Ok(true);
                 }
             }
             entries.remove(idx);
-            return true;
+            return Ok(true);
         }
 
         let BTreeNode::Internal { entries, children } = node else {
-            unreachable!("internal branch must hold an internal node");
+            return Err("internal branch must hold an internal node".to_string());
         };
 
         if found_match {
@@ -235,15 +235,15 @@ impl BTreeIndex {
                     .iter()
                     .position(|existing| *existing == offset_value)
                 else {
-                    return false;
+                    return Ok(false);
                 };
                 entries[idx].offsets.remove(pos);
                 if !entries[idx].offsets.is_empty() {
-                    return true;
+                    return Ok(true);
                 }
             }
             if children[idx].entry_count() > min_entries {
-                let predecessor = max_entry(&children[idx]);
+                let predecessor = max_entry(&children[idx])?;
                 entries[idx] = predecessor.clone();
                 return Self::delete_internal(
                     &mut children[idx],
@@ -253,7 +253,7 @@ impl BTreeIndex {
                 );
             }
             if children[idx + 1].entry_count() > min_entries {
-                let successor = min_entry(&children[idx + 1]);
+                let successor = min_entry(&children[idx + 1])?;
                 entries[idx] = successor.clone();
                 return Self::delete_internal(
                     &mut children[idx + 1],
@@ -262,13 +262,13 @@ impl BTreeIndex {
                     min_entries,
                 );
             }
-            Self::merge_children(entries, children, idx);
+            Self::merge_children(entries, children, idx)?;
             return Self::delete_internal(&mut children[idx], key, None, min_entries);
         }
 
         let mut child_idx = idx;
         if children[child_idx].entry_count() == min_entries {
-            child_idx = Self::fill_child(entries, children, child_idx, min_entries);
+            child_idx = Self::fill_child(entries, children, child_idx, min_entries)?;
         }
         Self::delete_internal(&mut children[child_idx], key, offset, min_entries)
     }
@@ -278,32 +278,36 @@ impl BTreeIndex {
         children: &mut Vec<BTreeNode>,
         idx: usize,
         min_entries: usize,
-    ) -> usize {
+    ) -> Result<usize, String> {
         if idx > 0 && children[idx - 1].entry_count() > min_entries {
-            Self::borrow_from_prev(entries, children, idx);
-            return idx;
+            Self::borrow_from_prev(entries, children, idx)?;
+            return Ok(idx);
         }
         if idx + 1 < children.len() && children[idx + 1].entry_count() > min_entries {
-            Self::borrow_from_next(entries, children, idx);
-            return idx;
+            Self::borrow_from_next(entries, children, idx)?;
+            return Ok(idx);
         }
         if idx + 1 < children.len() {
-            Self::merge_children(entries, children, idx);
-            idx
+            Self::merge_children(entries, children, idx)?;
+            Ok(idx)
         } else {
-            Self::merge_children(entries, children, idx - 1);
-            idx - 1
+            Self::merge_children(entries, children, idx - 1)?;
+            Ok(idx - 1)
         }
     }
 
-    fn borrow_from_prev(entries: &mut [BTreeEntry], children: &mut [BTreeNode], idx: usize) {
+    fn borrow_from_prev(
+        entries: &mut [BTreeEntry],
+        children: &mut [BTreeNode],
+        idx: usize,
+    ) -> Result<(), String> {
         let (left_slice, right_slice) = children.split_at_mut(idx);
         let left = left_slice
             .last_mut()
-            .expect("left sibling must exist for borrow_from_prev");
+            .ok_or_else(|| "left sibling must exist for borrow_from_prev".to_string())?;
         let child = right_slice
             .first_mut()
-            .expect("child must exist for borrow_from_prev");
+            .ok_or_else(|| "child must exist for borrow_from_prev".to_string())?;
 
         match (left, child) {
             (
@@ -316,7 +320,7 @@ impl BTreeIndex {
             ) => {
                 let borrowed = left_entries
                     .pop()
-                    .expect("left sibling must have an entry to borrow");
+                    .ok_or_else(|| "left sibling must have an entry to borrow".to_string())?;
                 let old_parent = std::mem::replace(&mut entries[idx - 1], borrowed);
                 child_entries.insert(0, old_parent);
             }
@@ -332,26 +336,31 @@ impl BTreeIndex {
             ) => {
                 let borrowed = left_entries
                     .pop()
-                    .expect("left sibling must have an entry to borrow");
-                let borrowed_child = left_children
-                    .pop()
-                    .expect("left sibling internal node must have child to borrow");
+                    .ok_or_else(|| "left sibling must have an entry to borrow".to_string())?;
+                let borrowed_child = left_children.pop().ok_or_else(|| {
+                    "left sibling internal node must have child to borrow".to_string()
+                })?;
                 let old_parent = std::mem::replace(&mut entries[idx - 1], borrowed);
                 child_entries.insert(0, old_parent);
                 child_children.insert(0, borrowed_child);
             }
-            _ => unreachable!("B-Tree siblings must be the same node type"),
+            _ => return Err("B-Tree siblings must be the same node type".to_string()),
         }
+        Ok(())
     }
 
-    fn borrow_from_next(entries: &mut [BTreeEntry], children: &mut [BTreeNode], idx: usize) {
+    fn borrow_from_next(
+        entries: &mut [BTreeEntry],
+        children: &mut [BTreeNode],
+        idx: usize,
+    ) -> Result<(), String> {
         let (left_slice, right_slice) = children.split_at_mut(idx + 1);
         let child = left_slice
             .last_mut()
-            .expect("child must exist for borrow_from_next");
+            .ok_or_else(|| "child must exist for borrow_from_next".to_string())?;
         let right = right_slice
             .first_mut()
-            .expect("right sibling must exist for borrow_from_next");
+            .ok_or_else(|| "right sibling must exist for borrow_from_next".to_string())?;
 
         match (child, right) {
             (
@@ -382,16 +391,21 @@ impl BTreeIndex {
                 child_entries.push(old_parent);
                 child_children.push(borrowed_child);
             }
-            _ => unreachable!("B-Tree siblings must be the same node type"),
+            _ => return Err("B-Tree siblings must be the same node type".to_string()),
         }
+        Ok(())
     }
 
-    fn merge_children(entries: &mut Vec<BTreeEntry>, children: &mut Vec<BTreeNode>, idx: usize) {
+    fn merge_children(
+        entries: &mut Vec<BTreeEntry>,
+        children: &mut Vec<BTreeNode>,
+        idx: usize,
+    ) -> Result<(), String> {
         let separator = entries.remove(idx);
         let right = children.remove(idx + 1);
         let left = children
             .get_mut(idx)
-            .expect("left child must exist for merge");
+            .ok_or_else(|| "left child must exist for merge".to_string())?;
 
         match (left, right) {
             (
@@ -419,8 +433,9 @@ impl BTreeIndex {
                 left_entries.extend(right_entries);
                 left_children.extend(right_children);
             }
-            _ => unreachable!("B-Tree siblings must be the same node type"),
+            _ => return Err("B-Tree siblings must be the same node type".to_string()),
         }
+        Ok(())
     }
 }
 
@@ -536,30 +551,30 @@ fn within_bounds(
     true
 }
 
-fn min_entry(node: &BTreeNode) -> BTreeEntry {
+fn min_entry(node: &BTreeNode) -> Result<BTreeEntry, String> {
     match node {
         BTreeNode::Leaf { entries } => entries
             .first()
-            .expect("leaf node must contain entries")
-            .clone(),
+            .cloned()
+            .ok_or_else(|| "leaf node must contain entries".to_string()),
         BTreeNode::Internal { children, .. } => min_entry(
             children
                 .first()
-                .expect("internal node must contain children"),
+                .ok_or_else(|| "internal node must contain children".to_string())?,
         ),
     }
 }
 
-fn max_entry(node: &BTreeNode) -> BTreeEntry {
+fn max_entry(node: &BTreeNode) -> Result<BTreeEntry, String> {
     match node {
         BTreeNode::Leaf { entries } => entries
             .last()
-            .expect("leaf node must contain entries")
-            .clone(),
+            .cloned()
+            .ok_or_else(|| "leaf node must contain entries".to_string()),
         BTreeNode::Internal { children, .. } => max_entry(
             children
                 .last()
-                .expect("internal node must contain children"),
+                .ok_or_else(|| "internal node must contain children".to_string())?,
         ),
     }
 }
@@ -649,7 +664,7 @@ mod tests {
             index.insert(int_key(value), value as usize);
         }
         for value in (0..30).step_by(2) {
-            assert!(index.delete(&int_key(value), value as usize));
+            assert!(index.delete(&int_key(value), value as usize).unwrap());
         }
         for value in (0..30).step_by(2) {
             assert!(index.search(&int_key(value)).is_empty());

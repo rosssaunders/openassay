@@ -151,7 +151,7 @@ impl InMemoryStorage {
         if row_len != offset + 1 {
             for (index_name, composite_key) in inserted_keys {
                 if let Some(index) = self.index_mut_for_table(table_oid, &index_name) {
-                    let _ = index.btree.delete(&composite_key, offset);
+                    index.btree.delete(&composite_key, offset)?;
                 }
             }
             return Err("failed to append row to storage".to_string());
@@ -193,7 +193,7 @@ impl InMemoryStorage {
                 .ok_or_else(|| {
                     format!("index \"{index_name}\" does not exist for relation OID {table_oid}")
                 })?;
-            let _ = index.btree.delete(&old_key, offset);
+            index.btree.delete(&old_key, offset)?;
             index.btree.insert(new_key, offset);
         }
 
@@ -250,7 +250,7 @@ impl InMemoryStorage {
                             "index \"{index_name}\" does not exist for relation OID {table_oid}"
                         )
                     })?;
-                let _ = index.btree.delete(&composite_key, *offset);
+                index.btree.delete(&composite_key, *offset)?;
             }
         }
 
