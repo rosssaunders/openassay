@@ -5744,6 +5744,32 @@ fn test_jsonb_subscript_reads() {
 
     let result = run("SELECT ('{\"a\":1}'::jsonb)['missing'] IS NULL AS is_null");
     assert_eq!(result.rows, vec![vec![ScalarValue::Bool(true)]]);
+
+    with_isolated_state(|| {
+        let statement =
+            parse_statement("SELECT ('{\"a\":1}'::text)['a']").expect("parse should succeed");
+        let planned = plan_statement(statement).expect("plan should succeed");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("text subscript should not be treated as jsonb subscript");
+        assert!(
+            err.message.contains("array"),
+            "expected array-related error, got: {}",
+            err.message
+        );
+    });
+
+    with_isolated_state(|| {
+        let statement =
+            parse_statement("SELECT (ARRAY['{\"a\":1}'])[1]['a']").expect("parse should succeed");
+        let planned = plan_statement(statement).expect("plan should succeed");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("text array element subscript should not be treated as jsonb subscript");
+        assert!(
+            err.message.contains("array"),
+            "expected array-related error, got: {}",
+            err.message
+        );
+    });
 }
 
 #[test]

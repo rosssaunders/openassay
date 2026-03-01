@@ -488,7 +488,7 @@ pub(crate) fn eval_expr<'a>(
             Expr::ArraySubscript { expr, index } => {
                 let array_value = eval_expr(expr, scope, params).await?;
                 let index_value = eval_expr(index, scope, params).await?;
-                eval_array_subscript(array_value, index_value)
+                eval_array_subscript(array_value, index_value, should_use_json_subscript(expr))
             }
             Expr::ArraySlice { expr, start, end } => {
                 let array_value = eval_expr(expr, scope, params).await?;
@@ -502,7 +502,12 @@ pub(crate) fn eval_expr<'a>(
                 } else {
                     None
                 };
-                eval_array_slice(array_value, start_value, end_value)
+                eval_array_slice(
+                    array_value,
+                    start_value,
+                    end_value,
+                    should_use_json_subscript(expr),
+                )
             }
             Expr::TypedLiteral { type_name, value } => {
                 // Evaluate typed literals as CAST(value AS type_name)
@@ -1100,7 +1105,7 @@ pub(crate) fn eval_expr_with_window<'a>(
                     params,
                 )
                 .await?;
-                eval_array_subscript(array_value, index_value)
+                eval_array_subscript(array_value, index_value, should_use_json_subscript(expr))
             }
             Expr::ArraySlice { expr, start, end } => {
                 let array_value = eval_expr_with_window(
@@ -1142,7 +1147,12 @@ pub(crate) fn eval_expr_with_window<'a>(
                 } else {
                     None
                 };
-                eval_array_slice(array_value, start_value, end_value)
+                eval_array_slice(
+                    array_value,
+                    start_value,
+                    end_value,
+                    should_use_json_subscript(expr),
+                )
             }
             Expr::TypedLiteral { type_name, value } => {
                 // Evaluate typed literals as CAST(value AS type_name)
@@ -3717,22 +3727,44 @@ fn try_build_batch_insert(body: &str, param: &str, messages: &[String]) -> Optio
     Some(format!("{} {}", prefix, rows.join(", ")))
 }
 
+fn is_json_type_name(type_name: &str) -> bool {
+    type_name.eq_ignore_ascii_case("json") || type_name.eq_ignore_ascii_case("jsonb")
+}
+
+fn should_use_json_subscript(expr: &Expr) -> bool {
+    match expr {
+        Expr::Cast { type_name, .. } | Expr::TypedLiteral { type_name, .. } => {
+            is_json_type_name(type_name)
+        }
+        Expr::ArraySubscript { expr, .. } => should_use_json_subscript(expr),
+        Expr::Binary { op, .. } => matches!(
+            op,
+            BinaryOp::JsonGet
+                | BinaryOp::JsonPath
+                | BinaryOp::JsonConcat
+                | BinaryOp::JsonDelete
+                | BinaryOp::JsonDeletePath
+        ),
+        Expr::FunctionCall { name, .. } => name
+            .last()
+            .map(|part| part.to_ascii_lowercase().starts_with("json"))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 fn eval_array_subscript(
     array: ScalarValue,
     index: ScalarValue,
+    json_subscript: bool,
 ) -> Result<ScalarValue, EngineError> {
+    if json_subscript {
+        return eval_json_get_operator(array, index, false);
+    }
+
     // Get the array elements
     let array = match array {
-        ScalarValue::Text(text) => match parse_pg_array_literal(&text) {
-            Ok(parsed) => parsed,
-            Err(array_err) => {
-                let json_text = ScalarValue::Text(text.clone());
-                if parse_json_document_arg(&json_text, "json subscript", 1).is_ok() {
-                    return eval_json_get_operator(json_text, index, false);
-                }
-                return Err(array_err);
-            }
-        },
+        ScalarValue::Text(text) => parse_pg_array_literal(&text)?,
         other => other,
     };
     let elements = match array {
@@ -3778,21 +3810,17 @@ fn eval_array_slice(
     array: ScalarValue,
     start: Option<ScalarValue>,
     end: Option<ScalarValue>,
+    json_subscript: bool,
 ) -> Result<ScalarValue, EngineError> {
+    if json_subscript {
+        return Err(EngineError {
+            message: "jsonb subscript does not support slices".to_string(),
+        });
+    }
+
     // Get the array elements
     let array = match array {
-        ScalarValue::Text(text) => match parse_pg_array_literal(&text) {
-            Ok(parsed) => parsed,
-            Err(array_err) => {
-                let json_text = ScalarValue::Text(text.clone());
-                if parse_json_document_arg(&json_text, "json subscript", 1).is_ok() {
-                    return Err(EngineError {
-                        message: "jsonb subscript does not support slices".to_string(),
-                    });
-                }
-                return Err(array_err);
-            }
-        },
+        ScalarValue::Text(text) => parse_pg_array_literal(&text)?,
         other => other,
     };
     let elements = match array {
