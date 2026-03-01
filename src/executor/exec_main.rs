@@ -12,8 +12,8 @@ use std::arch::x86_64::{
     _mm256_setzero_pd, _mm256_setzero_si256, _mm256_storeu_pd, _mm256_storeu_si256,
 };
 
-use crate::commands::create_table::type_signature_from_ast;
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
+use crate::commands::create_table::type_signature_from_ast;
 use crate::executor::exec_expr::{
     EngineFuture, EvalScope, eval_any_all, eval_between_predicate, eval_binary, eval_cast_scalar,
     eval_expr, eval_expr_with_window, eval_is_distinct_from, eval_like_predicate, eval_unary,
@@ -3405,16 +3405,16 @@ fn virtual_relation_rows(
         }
         ("pg_catalog", "pg_am") => Ok(vec![
             vec![
-                ScalarValue::Int(403),                     // oid
-                ScalarValue::Text("btree".to_string()),    // amname
-                ScalarValue::Int(0),                       // amhandler placeholder
-                ScalarValue::Text("i".to_string()),        // amtype (index)
+                ScalarValue::Int(403),                  // oid
+                ScalarValue::Text("btree".to_string()), // amname
+                ScalarValue::Int(0),                    // amhandler placeholder
+                ScalarValue::Text("i".to_string()),     // amtype (index)
             ],
             vec![
-                ScalarValue::Int(405),                     // oid
-                ScalarValue::Text("hash".to_string()),     // amname
-                ScalarValue::Int(0),                       // amhandler placeholder
-                ScalarValue::Text("i".to_string()),        // amtype (index)
+                ScalarValue::Int(405),                 // oid
+                ScalarValue::Text("hash".to_string()), // amname
+                ScalarValue::Int(0),                   // amhandler placeholder
+                ScalarValue::Text("i".to_string()),    // amtype (index)
             ],
         ]),
         ("pg_catalog", "pg_attrdef") => with_catalog_read(|catalog| {
