@@ -1,9 +1,14 @@
+use openassay::tcop::engine::{restore_state, snapshot_state};
 use openassay::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
+
+use crate::regression_lock;
 
 /// Test openassay's core SQL capabilities using simplified test cases
 /// that don't rely on PostgreSQL's specific test table structures.
 #[test]
 fn test_openassay_supported_features() {
+    let _guard = regression_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let clean = snapshot_state();
     let mut session = PostgresSession::new();
     let mut passed = 0;
     let mut failed = 0;
@@ -272,4 +277,5 @@ fn test_openassay_supported_features() {
         passed > 10,
         "Too few core features are working (passed: {passed})"
     );
+    restore_state(clean);
 }

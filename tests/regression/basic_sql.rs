@@ -1,6 +1,9 @@
+use openassay::tcop::engine::{restore_state, snapshot_state};
 use openassay::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
 use std::fs;
 use std::path::Path;
+
+use crate::regression_lock;
 
 fn load_corpus() -> Vec<(String, String)> {
     let mut files = fs::read_dir(Path::new("tests/regression/corpus"))
@@ -63,7 +66,19 @@ fn run_fixture(sql: &str) -> Vec<Vec<String>> {
 
 #[test]
 fn regression_corpus_suite() {
+    let _guard = regression_lock().lock().unwrap_or_else(|e| e.into_inner());
+
+    // Force catalog initialization with a dummy query, then snapshot.
+    let mut warmup = PostgresSession::new();
+    warmup.run_sync([FrontendMessage::Query {
+        sql: "SELECT 1".to_string(),
+    }]);
+    let clean = snapshot_state();
+
     for (name, sql) in load_corpus() {
+        // Restore to warm-but-clean state before each fixture file
+        restore_state(clean.clone());
+
         let expected = parse_expected_rows(&sql);
         assert!(
             !expected.is_empty(),
@@ -72,4 +87,7 @@ fn regression_corpus_suite() {
         let rows = run_fixture(&sql);
         assert_eq!(rows, expected, "regression corpus mismatch in {name}");
     }
+
+    // Restore clean state after all fixtures
+    restore_state(clean);
 }

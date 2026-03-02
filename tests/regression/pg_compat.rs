@@ -1,9 +1,12 @@
+use openassay::tcop::engine::{restore_state, snapshot_state};
 use openassay::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
+
+use crate::regression_lock;
 
 const STATEMENT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RECORDED_ERRORS: usize = 200;
@@ -513,6 +516,12 @@ fn is_expected_plpgsql_error_probe(statement: &str) -> bool {
 /// Run PostgreSQL compatibility tests
 #[test]
 fn postgresql_compatibility_suite() {
+    let _guard = regression_lock().lock().unwrap_or_else(|e| e.into_inner());
+
+    // Snapshot clean state to isolate each test file from concurrent tests
+    // and from each other.
+    let clean = snapshot_state();
+
     let tests = load_pg_compat_tests();
     let mut results = HashMap::new();
     let mut passed = 0;
@@ -522,6 +531,9 @@ fn postgresql_compatibility_suite() {
     println!("Running {} PostgreSQL compatibility tests...", tests.len());
 
     for (test_name, sql, _expected) in tests {
+        // Restore clean state before each test file
+        restore_state(clean.clone());
+
         print!("Testing {test_name}... ");
 
         let mut session = PostgresSession::new();
@@ -678,12 +690,17 @@ fn postgresql_compatibility_suite() {
     assert!(
         !(passed == 0 && failed > 0),
         "No tests passed - there might be a fundamental issue"
-    )
+    );
+
+    // Restore clean state after all tests
+    restore_state(clean);
 }
 
 /// Test individual PostgreSQL features that openassay claims to support
 #[test]
 fn test_core_postgresql_features() {
+    let _guard = regression_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let clean = snapshot_state();
     let mut session = PostgresSession::new();
 
     // Test basic SELECT
@@ -725,4 +742,5 @@ fn test_core_postgresql_features() {
     assert!(result.is_ok(), "JOIN failed: {result:?}");
 
     println!("Core PostgreSQL features test completed successfully!");
+    restore_state(clean);
 }
