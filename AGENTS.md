@@ -238,15 +238,3 @@ Requires `wasm-pack`: `cargo install wasm-pack`. Then `scripts/build_wasm.sh`.
 cd tests/integration
 npm install
 npm test
-```
-Spins up real PostgreSQL in Docker, tests replication against OpenAssay.
-
-## Dependency Notes
-
-- **Core async:** Tokio (native), web-sys (WASM)
-- **JSON:** serde_json
-- **HTTP:** reqwest with rustls
-- **Cryptography:** sha2, hmac, pbkdf2
-- **Parsing:** regex for pattern matching
-- **Decimals:** rust_decimal with maths features
-- **Tests:** Criterion for benchmarking, proptest for property testing
