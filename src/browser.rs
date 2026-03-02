@@ -4,7 +4,11 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde_json::json;
 
-use crate::tcop::engine::{EngineStateSnapshot, restore_state, snapshot_state};
+use crate::arrow::record_batch::query_result_to_arrow_ipc;
+use crate::parser::sql_parser::parse_statement;
+use crate::tcop::engine::{
+    EngineStateSnapshot, execute_planned_query, plan_statement, restore_state, snapshot_state,
+};
 use crate::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
 
 #[cfg(target_arch = "wasm32")]
@@ -71,6 +75,44 @@ pub async fn execute_sql_http_json(sql: &str) -> String {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = run_sql_http_json))]
 pub async fn run_sql_http_json(sql: &str) -> String {
     execute_sql_json_internal(sql, true).await
+}
+
+/// Execute a SQL statement and return the result as Arrow IPC file format bytes.
+///
+/// The first statement that produces a result set is converted to an Arrow
+/// [`RecordBatch`](arrow::record_batch::RecordBatch) and serialised to the
+/// Arrow IPC file format.  Returns an empty `Vec` if no result set was
+/// produced or if an error occurred.
+///
+/// # JavaScript usage (Apache Arrow JS)
+///
+/// ```javascript
+/// const bytes = await wasm.execute_sql_arrow("SELECT * FROM data");
+/// const table = arrow.tableFromIPC(new Uint8Array(bytes));
+/// ```
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = execute_sql_arrow))]
+pub async fn execute_sql_arrow(sql: &str) -> Vec<u8> {
+    execute_sql_arrow_internal(sql).await.unwrap_or_default()
+}
+
+async fn execute_sql_arrow_internal(sql: &str) -> Result<Vec<u8>, String> {
+    ensure_baseline_snapshot();
+
+    #[cfg(target_arch = "wasm32")]
+    process_pending_ws_callbacks().await;
+
+    let statement = parse_statement(sql).map_err(|e| e.to_string())?;
+    let planned = plan_statement(statement).map_err(|e| e.to_string())?;
+    let result = execute_planned_query(&planned, &[])
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let trimmed = sql.trim();
+    if !trimmed.is_empty() {
+        push_snapshot_log(trimmed.to_string());
+    }
+
+    query_result_to_arrow_ipc(&result).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = export_state_snapshot))]
