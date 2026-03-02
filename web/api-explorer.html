@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenAssay API Explorer</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-theme-quartz.css"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1020;
+        --panel: #0f172a;
+        --panel-border: #1e293b;
+        --text: #dbe4f0;
+        --muted: #94a3b8;
+        --accent: #22c55e;
+        --accent-hover: #16a34a;
+        --error: #ef4444;
+      }
+
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+
+      html, body {
+        height: 100%;
+        background: radial-gradient(circle at top, #1e293b 0%, #0b1020 50%, #05080f 100%);
+        color: var(--text);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      }
+
+      .app {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 1.5rem 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+        height: 100vh;
+      }
+
+      /* Header */
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .header h1 {
+        font-size: 1.1rem;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      .header .badge {
+        font-size: 0.7rem;
+        background: #1a2e1a;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        padding: 0.15rem 0.4rem;
+        white-space: nowrap;
+      }
+
+      .status {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      /* URL Bar */
+      .url-bar {
+        display: flex;
+        gap: 0.5rem;
+        align-items: stretch;
+      }
+
+      .url-bar .method {
+        border: 1px solid var(--panel-border);
+        border-radius: 6px;
+        background: #111827;
+        color: var(--accent);
+        font-family: inherit;
+        font-size: 0.85rem;
+        font-weight: 600;
+        padding: 0 0.75rem;
+        cursor: default;
+        display: flex;
+        align-items: center;
+      }
+
+      .url-bar input {
+        flex: 1;
+        border: 1px solid var(--panel-border);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--text);
+        font-family: inherit;
+        font-size: 0.9rem;
+        padding: 0.6rem 0.75rem;
+        outline: none;
+        transition: border-color 0.15s;
+      }
+
+      .url-bar input:focus {
+        border-color: var(--accent);
+      }
+
+      .url-bar input::placeholder {
+        color: var(--muted);
+      }
+
+      .url-bar .path-input {
+        width: 180px;
+        flex: none;
+      }
+
+      .url-bar button {
+        border: none;
+        border-radius: 6px;
+        background: var(--accent);
+        color: #000;
+        font-family: inherit;
+        font-size: 0.9rem;
+        font-weight: 600;
+        padding: 0.6rem 1.5rem;
+        cursor: pointer;
+        transition: background 0.15s;
+        white-space: nowrap;
+      }
+
+      .url-bar button:hover { background: var(--accent-hover); }
+      .url-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+      /* Examples */
+      .examples {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .examples span {
+        color: var(--muted);
+        font-size: 0.8rem;
+      }
+
+      .examples button {
+        border: 1px solid var(--panel-border);
+        border-radius: 6px;
+        background: #111827;
+        color: var(--muted);
+        cursor: pointer;
+        padding: 0.3rem 0.6rem;
+        font-size: 0.78rem;
+        font-family: inherit;
+        transition: all 0.15s;
+      }
+
+      .examples button:hover {
+        border-color: var(--accent);
+        color: var(--text);
+      }
+
+      /* SQL Preview */
+      .sql-preview {
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 0.75rem 1rem;
+        font-size: 0.82rem;
+        color: var(--muted);
+        overflow-x: auto;
+        white-space: pre;
+        line-height: 1.5;
+        position: relative;
+      }
+
+      .sql-preview .label {
+        position: absolute;
+        top: 0.4rem;
+        right: 0.6rem;
+        font-size: 0.65rem;
+        color: #475569;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .sql-preview .keyword { color: #7dd3fc; }
+      .sql-preview .string { color: #86efac; }
+      .sql-preview .func { color: #c4b5fd; }
+      .sql-preview .comment { color: #475569; }
+
+      /* Info bar */
+      .info-bar {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+        font-size: 0.8rem;
+        color: var(--muted);
+      }
+
+      .info-bar .tag {
+        background: #111827;
+        border: 1px solid var(--panel-border);
+        border-radius: 4px;
+        padding: 0.2rem 0.5rem;
+      }
+
+      .info-bar .error { color: var(--error); }
+
+      /* Grid */
+      .grid-container {
+        flex: 1;
+        min-height: 0;
+        border: 1px solid var(--panel-border);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+
+      #result-grid {
+        width: 100%;
+        height: 100%;
+      }
+
+      .ag-theme-quartz-dark {
+        --ag-foreground-color: #dbe4f0;
+        --ag-background-color: #0f172a;
+        --ag-header-foreground-color: #cbd5e1;
+        --ag-header-background-color: #111827;
+        --ag-odd-row-background-color: #0c1324;
+        --ag-border-color: #1e293b;
+        --ag-row-hover-color: #17213a;
+      }
+
+      /* Empty state */
+      .empty-state {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
+        color: var(--muted);
+        border: 1px dashed var(--panel-border);
+        border-radius: 8px;
+        min-height: 200px;
+      }
+
+      .empty-state .icon { font-size: 2.5rem; opacity: 0.5; }
+      .empty-state p { font-size: 0.9rem; text-align: center; max-width: 400px; }
+
+      /* Spinner */
+      .spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid var(--panel-border);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.6s linear infinite;
+        vertical-align: middle;
+        margin-right: 0.4rem;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <!-- Header -->
+      <div class="header">
+        <h1>OpenAssay API Explorer</h1>
+        <span class="badge">json_table()</span>
+        <span class="status" id="status">Loading…</span>
+      </div>
+
+      <!-- URL Bar -->
+      <div class="url-bar">
+        <span class="method">GET</span>
+        <input
+          type="text"
+          id="url-input"
+          placeholder="https://api.example.com/data"
+          value="https://test.deribit.com/api/v2/public/get_currencies"
+          spellcheck="false"
+        />
+        <input
+          type="text"
+          id="path-input"
+          class="path-input"
+          placeholder="JSON path (e.g. result)"
+          value="result"
+          spellcheck="false"
+        />
+        <button id="go-btn" type="button" disabled>Go</button>
+      </div>
+
+      <!-- Examples -->
+      <div class="examples">
+        <span>Try:</span>
+        <button data-url="https://test.deribit.com/api/v2/public/get_currencies" data-path="result">Deribit Currencies</button>
+        <button data-url="https://api.coindesk.com/v1/bpi/currentprice.json" data-path="bpi">Bitcoin Price</button>
+        <button data-url="https://api.github.com/repos/openclaw/openclaw/commits?per_page=10" data-path="">GitHub Commits</button>
+        <button data-url="https://jsonplaceholder.typicode.com/users" data-path="">Users (JSONPlaceholder)</button>
+        <button data-url="https://jsonplaceholder.typicode.com/posts?_limit=20" data-path="">Posts</button>
+        <button data-url="https://api.open-meteo.com/v1/forecast?latitude=51.82&longitude=-0.35&current=temperature_2m,wind_speed_10m" data-path="current">Harpenden Weather</button>
+      </div>
+
+      <!-- Generated SQL -->
+      <div class="sql-preview" id="sql-preview">
+        <span class="label">Generated SQL</span>
+        <span class="comment">-- Paste a URL and click Go</span>
+      </div>
+
+      <!-- Info bar -->
+      <div class="info-bar" id="info-bar" style="display: none;">
+        <span id="row-count" class="tag"></span>
+        <span id="col-count" class="tag"></span>
+        <span id="elapsed" class="tag"></span>
+      </div>
+
+      <!-- Empty state (shown before first query) -->
+      <div class="empty-state" id="empty-state">
+        <div class="icon">⚡</div>
+        <p>Paste any JSON API URL above and click <strong>Go</strong> to explore the data with SQL — powered by <code>json_table()</code></p>
+        <p style="font-size: 0.78rem; color: #475569;">Replaces Postman for quick API exploration. No auth, no setup — just SQL.</p>
+      </div>
+
+      <!-- Grid (hidden until first result) -->
+      <div class="grid-container" id="grid-container" style="display: none;">
+        <div id="result-grid" class="ag-theme-quartz-dark"></div>
+      </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
+    <script>
+      const urlInput = document.getElementById("url-input");
+      const pathInput = document.getElementById("path-input");
+      const goBtn = document.getElementById("go-btn");
+      const statusEl = document.getElementById("status");
+      const sqlPreview = document.getElementById("sql-preview");
+      const infoBar = document.getElementById("info-bar");
+      const rowCountEl = document.getElementById("row-count");
+      const colCountEl = document.getElementById("col-count");
+      const elapsedEl = document.getElementById("elapsed");
+      const emptyState = document.getElementById("empty-state");
+      const gridContainer = document.getElementById("grid-container");
+      const resultGridEl = document.getElementById("result-grid");
+
+      let worker = null;
+      let workerReady = false;
+      let workerMsgId = 0;
+      const workerCallbacks = new Map();
+      let gridApi = null;
+      let running = false;
+
+      // ── Grid ──────────────────────────────────────────────────────────────
+
+      function initGrid() {
+        if (!resultGridEl || !window.agGrid) return;
+        const opts = {
+          columnDefs: [],
+          rowData: [],
+          defaultColDef: {
+            resizable: true,
+            sortable: true,
+            filter: true,
+            minWidth: 120,
+            wrapText: true,
+            autoHeight: true,
+          },
+          animateRows: false,
+        };
+        if (typeof window.agGrid.createGrid === "function") {
+          gridApi = window.agGrid.createGrid(resultGridEl, opts);
+        } else if (typeof window.agGrid.Grid === "function") {
+          new window.agGrid.Grid(resultGridEl, opts);
+          gridApi = opts.api || null;
+        }
+      }
+
+      function applyGridData(columnDefs, rowData) {
+        if (!gridApi) return;
+        if (typeof gridApi.setGridOption === "function") {
+          gridApi.setGridOption("columnDefs", columnDefs);
+          gridApi.setGridOption("rowData", rowData);
+        } else {
+          gridApi.setColumnDefs?.(columnDefs);
+          gridApi.setRowData?.(rowData);
+        }
+        setTimeout(() => {
+          try { gridApi.sizeColumnsToFit?.(); } catch (_) {}
+        }, 50);
+      }
+
+      // ── Worker ────────────────────────────────────────────────────────────
+
+      function initWorker() {
+        return new Promise((resolve, reject) => {
+          worker = new Worker("worker.js", { type: "module" });
+          worker.onmessage = (e) => {
+            const msg = e.data;
+            if (msg.type === "ready") { workerReady = true; resolve(); return; }
+            if (msg.type === "init_error") { reject(new Error(msg.error)); return; }
+            const cb = workerCallbacks.get(msg.id);
+            if (cb) {
+              workerCallbacks.delete(msg.id);
+              msg.type === "error" ? cb.reject(new Error(msg.error)) : cb.resolve(msg.data);
+            }
+          };
+          worker.onerror = reject;
+        });
+      }
+
+      function workerCall(type, extra) {
+        return new Promise((resolve, reject) => {
+          const id = ++workerMsgId;
+          workerCallbacks.set(id, { resolve, reject });
+          worker.postMessage({ type, id, ...extra });
+        });
+      }
+
+      // ── SQL Generation ────────────────────────────────────────────────────
+
+      function buildSql(url, path) {
+        const escapedUrl = url.replace(/'/g, "''");
+        const parts = [`'${escapedUrl}'`];
+        if (path.trim()) {
+          path.trim().split(".").forEach(seg => {
+            parts.push(`'${seg.replace(/'/g, "''")}'`);
+          });
+        }
+        return `SELECT * FROM json_table(\n  ${parts.join(",\n  ")}\n);`;
+      }
+
+      function highlightSql(sql) {
+        let h = sql
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+        // Keywords
+        h = h.replace(/\b(SELECT|FROM|ORDER BY|LIMIT|WHERE|AS|AND|OR|NOT|NULL|TRUE|FALSE|CAST|IN)\b/gi,
+          '<span class="keyword">$1</span>');
+        // Strings
+        h = h.replace(/'([^']*)'/g, "'<span class=\"string\">$1</span>'");
+        // Functions
+        h = h.replace(/\b(json_table)\b/gi, '<span class="func">$1</span>');
+        // Comments
+        h = h.replace(/(--.*)/g, '<span class="comment">$1</span>');
+        return h;
+      }
+
+      function updateSqlPreview() {
+        const url = urlInput.value.trim();
+        const path = pathInput.value.trim();
+        if (!url) {
+          sqlPreview.innerHTML = '<span class="label">Generated SQL</span><span class="comment">-- Paste a URL and click Go</span>';
+          return;
+        }
+        const sql = buildSql(url, path);
+        sqlPreview.innerHTML = '<span class="label">Generated SQL</span>' + highlightSql(sql);
+      }
+
+      // ── Run Query ─────────────────────────────────────────────────────────
+
+      async function runQuery() {
+        const url = urlInput.value.trim();
+        if (!url || !workerReady || running) return;
+
+        running = true;
+        goBtn.disabled = true;
+        goBtn.innerHTML = '<span class="spinner"></span>Fetching…';
+        infoBar.style.display = "none";
+
+        const sql = buildSql(url, pathInput.value);
+        updateSqlPreview();
+
+        const t0 = performance.now();
+        try {
+          const out = await workerCall("exec_sql", { sql });
+          const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+          const payload = typeof out === "string" ? JSON.parse(out) : out;
+
+          if (!payload?.ok || !Array.isArray(payload.results)) {
+            const errMsg = payload?.rendered || payload?.results?.[0]?.error || "Unknown error";
+            showError(errMsg);
+            return;
+          }
+
+          // Find the last result with columns
+          let tabular = null;
+          for (let i = payload.results.length - 1; i >= 0; i--) {
+            if (payload.results[i].columns?.length > 0) {
+              tabular = payload.results[i];
+              break;
+            }
+          }
+
+          if (!tabular || !tabular.rows?.length) {
+            showError("No rows returned. Check the URL returns JSON and the path is correct.");
+            return;
+          }
+
+          // Show grid
+          emptyState.style.display = "none";
+          gridContainer.style.display = "flex";
+
+          const columnDefs = tabular.columns.map(name => ({
+            field: name,
+            headerName: name,
+          }));
+          const rowData = tabular.rows.map(row => {
+            const record = {};
+            tabular.columns.forEach((name, idx) => {
+              record[name] = row[idx] ?? "";
+            });
+            return record;
+          });
+
+          applyGridData(columnDefs, rowData);
+
+          // Info bar
+          rowCountEl.textContent = `${tabular.rows.length} rows`;
+          colCountEl.textContent = `${tabular.columns.length} columns`;
+          elapsedEl.textContent = `${elapsed}s`;
+          infoBar.style.display = "flex";
+
+        } catch (err) {
+          showError(err.message || String(err));
+        } finally {
+          running = false;
+          goBtn.disabled = false;
+          goBtn.textContent = "Go";
+        }
+      }
+
+      function showError(msg) {
+        emptyState.style.display = "flex";
+        gridContainer.style.display = "none";
+        infoBar.style.display = "flex";
+        rowCountEl.textContent = "";
+        colCountEl.textContent = "";
+        elapsedEl.innerHTML = `<span class="error">Error: ${msg.substring(0, 200)}</span>`;
+      }
+
+      // ── Example Buttons ───────────────────────────────────────────────────
+
+      document.querySelectorAll(".examples button").forEach(btn => {
+        btn.addEventListener("click", () => {
+          urlInput.value = btn.dataset.url;
+          pathInput.value = btn.dataset.path || "";
+          updateSqlPreview();
+          runQuery();
+        });
+      });
+
+      // ── Event Listeners ───────────────────────────────────────────────────
+
+      urlInput.addEventListener("input", updateSqlPreview);
+      pathInput.addEventListener("input", updateSqlPreview);
+      urlInput.addEventListener("keydown", e => { if (e.key === "Enter") runQuery(); });
+      pathInput.addEventListener("keydown", e => { if (e.key === "Enter") runQuery(); });
+      goBtn.addEventListener("click", runQuery);
+
+      // ── Init ──────────────────────────────────────────────────────────────
+
+      initGrid();
+      updateSqlPreview();
+
+      (async () => {
+        try {
+          await initWorker();
+          // Pre-load http extension
+          await workerCall("exec_sql", { sql: "CREATE EXTENSION IF NOT EXISTS http;" });
+          statusEl.textContent = "Ready";
+          statusEl.style.color = "var(--accent)";
+          goBtn.disabled = false;
+        } catch (err) {
+          statusEl.textContent = "WASM failed to load";
+          statusEl.style.color = "var(--error)";
+          console.error("WASM init error:", err);
+        }
+      })();
+    </script>
+  </body>
+</html>
