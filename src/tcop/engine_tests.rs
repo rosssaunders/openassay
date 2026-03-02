@@ -160,6 +160,46 @@ fn exposes_pg_catalog_virtual_relations_for_introspection() {
 }
 
 #[test]
+fn pg_proc_reports_argument_metadata() {
+    let results = run_batch(&[
+        "CREATE FUNCTION add_one(x int8) RETURNS int8 LANGUAGE SQL AS $$ SELECT $1 + 1 $$",
+        "SELECT proname, proargtypes, proargnames FROM pg_proc WHERE proname = 'add_one'",
+    ]);
+    assert_eq!(
+        results[1].rows,
+        vec![vec![
+            ScalarValue::Text("add_one".to_string()),
+            ScalarValue::Text("20".to_string()),
+            ScalarValue::Text("{x}".to_string())
+        ]]
+    );
+}
+
+#[test]
+fn pg_settings_includes_source_and_pending_restart() {
+    let r = run("SELECT source, pending_restart FROM pg_settings WHERE name = 'server_version'");
+    assert_eq!(
+        r.rows,
+        vec![vec![
+            ScalarValue::Text("default".to_string()),
+            ScalarValue::Bool(false)
+        ]]
+    );
+}
+
+#[test]
+fn pg_am_exposes_access_methods() {
+    let r = run("SELECT amname, amtype FROM pg_am WHERE amname = 'btree'");
+    assert_eq!(
+        r.rows,
+        vec![vec![
+            ScalarValue::Text("btree".to_string()),
+            ScalarValue::Text("i".to_string())
+        ]]
+    );
+}
+
+#[test]
 fn exposes_information_schema_tables_and_columns() {
     let results = run_batch(&[
         "CREATE TABLE events (event_day date, created_at timestamp)",
