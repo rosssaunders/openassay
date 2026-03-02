@@ -161,42 +161,75 @@ fn exposes_pg_catalog_virtual_relations_for_introspection() {
 
 #[test]
 fn pg_proc_reports_argument_metadata() {
-    let results = run_batch(&[
-        "CREATE FUNCTION add_one(x int8) RETURNS int8 LANGUAGE SQL AS $$ SELECT $1 + 1 $$",
-        "SELECT proname, proargtypes, proargnames FROM pg_proc WHERE proname = 'add_one'",
-    ]);
-    assert_eq!(
-        results[1].rows,
-        vec![vec![
-            ScalarValue::Text("add_one".to_string()),
-            ScalarValue::Text("20".to_string()),
-            ScalarValue::Text("{x}".to_string())
-        ]]
-    );
+    use crate::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
+
+    with_isolated_state(|| {
+        let mut session = PostgresSession::new();
+        let out = session.run_sync([
+            FrontendMessage::Query {
+                sql: "CREATE FUNCTION add_one(x int8) RETURNS int8 LANGUAGE SQL AS $$ SELECT $1 + 1 $$".to_string(),
+            },
+            FrontendMessage::Query {
+                sql: "SELECT proname, proargtypes, proargnames FROM pg_proc WHERE proname = 'add_one'".to_string(),
+            },
+        ]);
+        let rows: Vec<Vec<String>> = out
+            .iter()
+            .filter_map(|msg| match msg {
+                BackendMessage::DataRow { values } => Some(values.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![vec![
+                "add_one".to_string(),
+                "20".to_string(),
+                "{x}".to_string()
+            ]]
+        );
+    });
 }
 
 #[test]
 fn pg_settings_includes_source_and_pending_restart() {
-    let r = run("SELECT source, pending_restart FROM pg_settings WHERE name = 'server_version'");
-    assert_eq!(
-        r.rows,
-        vec![vec![
-            ScalarValue::Text("default".to_string()),
-            ScalarValue::Bool(false)
-        ]]
-    );
+    use crate::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
+
+    with_isolated_state(|| {
+        let mut session = PostgresSession::new();
+        let out = session.run_sync([FrontendMessage::Query {
+            sql: "SELECT source, pending_restart FROM pg_settings WHERE name = 'server_version'"
+                .to_string(),
+        }]);
+        let rows: Vec<Vec<String>> = out
+            .iter()
+            .filter_map(|msg| match msg {
+                BackendMessage::DataRow { values } => Some(values.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows, vec![vec!["default".to_string(), "f".to_string()]]);
+    });
 }
 
 #[test]
 fn pg_am_exposes_access_methods() {
-    let r = run("SELECT amname, amtype FROM pg_am WHERE amname = 'btree'");
-    assert_eq!(
-        r.rows,
-        vec![vec![
-            ScalarValue::Text("btree".to_string()),
-            ScalarValue::Text("i".to_string())
-        ]]
-    );
+    use crate::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
+
+    with_isolated_state(|| {
+        let mut session = PostgresSession::new();
+        let out = session.run_sync([FrontendMessage::Query {
+            sql: "SELECT amname, amtype FROM pg_am WHERE amname = 'btree'".to_string(),
+        }]);
+        let rows: Vec<Vec<String>> = out
+            .iter()
+            .filter_map(|msg| match msg {
+                BackendMessage::DataRow { values } => Some(values.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows, vec![vec!["btree".to_string(), "i".to_string()]]);
+    });
 }
 
 #[test]

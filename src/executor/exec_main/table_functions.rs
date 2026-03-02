@@ -1761,6 +1761,26 @@ pub(super) fn virtual_relation_rows(
                 ScalarValue::Int(-1),    // rolconnlimit: -1 means unlimited
             ]])
         }
+        ("pg_catalog", "pg_am") => Ok(vec![
+            vec![
+                ScalarValue::Int(403),
+                ScalarValue::Text("btree".to_string()),
+                ScalarValue::Int(0),
+                ScalarValue::Text("i".to_string()),
+            ],
+            vec![
+                ScalarValue::Int(405),
+                ScalarValue::Text("hash".to_string()),
+                ScalarValue::Int(0),
+                ScalarValue::Text("i".to_string()),
+            ],
+            vec![
+                ScalarValue::Int(2),
+                ScalarValue::Text("heap".to_string()),
+                ScalarValue::Int(0),
+                ScalarValue::Text("t".to_string()),
+            ],
+        ]),
         ("pg_catalog", "pg_settings") => Ok(crate::commands::variable::with_guc_read(|guc| {
             guc.iter()
                 .map(|(name, value)| {
@@ -1771,6 +1791,8 @@ pub(super) fn virtual_relation_rows(
                         ScalarValue::Text(String::new()),
                         ScalarValue::Text("string".to_string()), // vartype
                         ScalarValue::Text("user".to_string()),   // context
+                        ScalarValue::Text("default".to_string()), // source
+                        ScalarValue::Bool(false),                // pending_restart
                     ]
                 })
                 .collect()
@@ -1827,13 +1849,55 @@ pub(super) fn virtual_relation_rows(
                     .iter()
                     .enumerate()
                     .map(|(i, f)| {
+                        // Build proargnames: {name1,name2,...}
+                        let arg_names: Vec<String> = f
+                            .params
+                            .iter()
+                            .map(|p| p.name.clone().unwrap_or_default())
+                            .collect();
+                        let proargnames = format!("{{{}}}", arg_names.join(","));
+
+                        // Build proargtypes: space-separated type OIDs
+                        let arg_type_oids: Vec<String> = f
+                            .params
+                            .iter()
+                            .map(|p| {
+                                use crate::parser::ast::TypeName as TN;
+                                match &p.data_type {
+                                    TN::Bool => "16",
+                                    TN::Int2 => "21",
+                                    TN::Int4 | TN::Serial => "23",
+                                    TN::Int8 | TN::BigSerial => "20",
+                                    TN::Float4 => "700",
+                                    TN::Float8 => "701",
+                                    TN::Text | TN::Name => "25",
+                                    TN::Varchar | TN::Char => "1043",
+                                    TN::Numeric => "1700",
+                                    TN::Date => "1082",
+                                    TN::Timestamp => "1114",
+                                    TN::TimestampTz => "1184",
+                                    TN::Uuid => "2950",
+                                    TN::Json => "114",
+                                    TN::Jsonb => "3802",
+                                    TN::Bytea => "17",
+                                    TN::Time => "1083",
+                                    TN::Interval => "1186",
+                                    _ => "25", // fallback to text
+                                }
+                                .to_string()
+                            })
+                            .collect();
+                        let proargtypes = arg_type_oids.join(" ");
+
                         vec![
                             ScalarValue::Int(90000 + i as i64),
                             ScalarValue::Text(f.name.last().cloned().unwrap_or_default()),
                             ScalarValue::Int(0),  // pronamespace placeholder
                             ScalarValue::Int(10), // proowner: superuser
                             ScalarValue::Int(14), // prolang: 14 = sql
-                            ScalarValue::Text(String::new()), // prosrc placeholder
+                            ScalarValue::Text(f.body.clone()), // prosrc
+                            ScalarValue::Text(proargnames),
+                            ScalarValue::Text(proargtypes),
                         ]
                     })
                     .collect()
