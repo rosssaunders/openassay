@@ -60,6 +60,7 @@
 
 pub mod access;
 pub mod analyzer;
+pub mod arrow;
 pub mod browser;
 pub mod catalog;
 pub mod commands;
