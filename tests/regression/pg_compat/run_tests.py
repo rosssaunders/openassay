@@ -9,11 +9,28 @@ import json
 from pathlib import Path
 import re
 
+def find_psql():
+    """Find psql binary — check PATH first, then known locations."""
+    import shutil
+    found = shutil.which("psql")
+    if found:
+        return found
+    for candidate in [
+        "/home/linuxbrew/.linuxbrew/opt/libpq/bin/psql",
+        "/usr/bin/psql",
+        "/usr/local/bin/psql",
+    ]:
+        if os.path.isfile(candidate):
+            return candidate
+    raise RuntimeError("psql not found. Install postgresql-client or set PATH.")
+
+
 class PostgresRegressionRunner:
     def __init__(self, project_root):
         self.project_root = Path(project_root)
         self.test_dir = self.project_root / "tests" / "regression" / "pg_compat"
         self.server_proc = None
+        self.psql_bin = find_psql()
         self.results = {}
         self.total_statements = 0
         self.passed_statements = 0
@@ -101,7 +118,7 @@ class PostgresRegressionRunner:
         print(f"Running {sql_file} ({description})...")
         
         psql_cmd = [
-            "/home/linuxbrew/.linuxbrew/opt/libpq/bin/psql",
+            self.psql_bin,
             "-h", "localhost",
             "-p", "55432",
             "-U", "postgres",
@@ -141,8 +158,10 @@ class PostgresRegressionRunner:
             return passed_statements, total_statements, output_summary
             
         except subprocess.TimeoutExpired:
-            return 0, total_statements, "TIMEOUT: Test took longer than 60 seconds"
+            print(f"  TIMEOUT: {sql_file} took longer than 300 seconds")
+            return 0, total_statements, "TIMEOUT: Test took longer than 300 seconds"
         except Exception as e:
+            print(f"  EXCEPTION running {sql_file}: {e}")
             return 0, total_statements, f"EXCEPTION: {str(e)}"
     
     def run_setup(self):
