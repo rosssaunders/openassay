@@ -1188,43 +1188,98 @@ pub async fn eval_aggregate_function(
             let mut int_values = Vec::with_capacity(rows.len());
             let mut float_values = Vec::new();
             let mut decimal_total = rust_decimal::Decimal::ZERO;
-            let mut count = 0u64;
+            let mut numeric_count = 0u64;
             let mut saw_decimal = false;
+            let mut saw_numeric = false;
+            let mut vector_sum: Option<Vec<f64>> = None;
+            let mut vector_count = 0u64;
             for row in rows {
-                match row.args[0] {
+                match &row.args[0] {
                     ScalarValue::Null => {}
                     ScalarValue::Int(v) => {
-                        int_values.push(v);
-                        decimal_total += rust_decimal::Decimal::from(v);
-                        count += 1;
+                        if vector_sum.is_some() {
+                            return Err(EngineError {
+                                message: "avg() cannot mix vector and numeric values".to_string(),
+                            });
+                        }
+                        int_values.push(*v);
+                        decimal_total += rust_decimal::Decimal::from(*v);
+                        numeric_count += 1;
+                        saw_numeric = true;
                     }
                     ScalarValue::Float(v) => {
-                        float_values.push(v);
-                        decimal_total += rust_decimal::Decimal::try_from(v)
+                        if vector_sum.is_some() {
+                            return Err(EngineError {
+                                message: "avg() cannot mix vector and numeric values".to_string(),
+                            });
+                        }
+                        float_values.push(*v);
+                        decimal_total += rust_decimal::Decimal::try_from(*v)
                             .unwrap_or(rust_decimal::Decimal::ZERO);
-                        count += 1;
+                        numeric_count += 1;
+                        saw_numeric = true;
                     }
                     ScalarValue::Numeric(v) => {
+                        if vector_sum.is_some() {
+                            return Err(EngineError {
+                                message: "avg() cannot mix vector and numeric values".to_string(),
+                            });
+                        }
                         float_values.push(v.to_string().parse::<f64>().unwrap_or(0.0));
-                        decimal_total += v;
+                        decimal_total += *v;
                         saw_decimal = true;
-                        count += 1;
+                        numeric_count += 1;
+                        saw_numeric = true;
+                    }
+                    ScalarValue::Vector(v) => {
+                        if saw_numeric {
+                            return Err(EngineError {
+                                message: "avg() cannot mix vector and numeric values".to_string(),
+                            });
+                        }
+                        if let Some(sum) = &mut vector_sum {
+                            if sum.len() != v.len() {
+                                return Err(EngineError {
+                                    message: format!(
+                                        "avg() expects vectors of the same dimension ({} != {})",
+                                        sum.len(),
+                                        v.len()
+                                    ),
+                                });
+                            }
+                            for (total, value) in sum.iter_mut().zip(v.iter()) {
+                                *total += *value as f64;
+                            }
+                        } else {
+                            vector_sum = Some(v.iter().map(|value| *value as f64).collect());
+                        }
+                        vector_count += 1;
                     }
                     _ => {
                         return Err(EngineError {
-                            message: "avg() expects numeric values".to_string(),
+                            message: "avg() expects numeric or vector values".to_string(),
                         });
                     }
                 }
             }
-            if count == 0 {
+            if let Some(sum) = vector_sum {
+                if vector_count == 0 {
+                    return Ok(ScalarValue::Null);
+                }
+                return Ok(ScalarValue::Vector(
+                    sum.into_iter()
+                        .map(|value| (value / vector_count as f64) as f32)
+                        .collect(),
+                ));
+            }
+            if numeric_count == 0 {
                 Ok(ScalarValue::Null)
             } else if saw_decimal {
-                let avg = decimal_total / rust_decimal::Decimal::from(count);
+                let avg = decimal_total / rust_decimal::Decimal::from(numeric_count);
                 Ok(ScalarValue::Numeric(avg))
             } else {
                 let float_total = sum_i64_fast(&int_values) as f64 + sum_f64_fast(&float_values);
-                Ok(ScalarValue::Float(float_total / count as f64))
+                Ok(ScalarValue::Float(float_total / numeric_count as f64))
             }
         }
         "min" | "max" => {

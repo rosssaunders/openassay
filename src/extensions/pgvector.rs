@@ -1,5 +1,6 @@
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::EngineError;
+use crate::utils::adt::misc::parse_i64_scalar;
 use crate::utils::adt::vector::{
     coerce_scalar_to_vector, cosine_distance, inner_product, l1_distance, l2_distance, vector_dims,
     vector_norm,
@@ -61,6 +62,50 @@ pub(crate) fn eval_pgvector_function(
             }
             let vec = coerce_scalar_to_vector(&args[0], None, "vector_norm()")?;
             Ok(ScalarValue::Float(vector_norm(&vec)))
+        }
+        "vector_to_float4" if args.len() == 1 => {
+            if matches!(args[0], ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            let vec = coerce_scalar_to_vector(&args[0], None, "vector_to_float4()")?;
+            Ok(ScalarValue::Array(
+                vec.into_iter()
+                    .map(|value| ScalarValue::Float(value as f64))
+                    .collect(),
+            ))
+        }
+        "subvector" if args.len() == 3 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let vec = coerce_scalar_to_vector(&args[0], None, "subvector()")?;
+            let start = parse_i64_scalar(&args[1], "subvector() start must be an integer")?;
+            let count = parse_i64_scalar(&args[2], "subvector() count must be an integer")?;
+            if start < 1 {
+                return Err(EngineError {
+                    message: "subvector() start must be >= 1".to_string(),
+                });
+            }
+            if count < 0 {
+                return Err(EngineError {
+                    message: "subvector() count must be >= 0".to_string(),
+                });
+            }
+            let start_idx = (start - 1) as usize;
+            if start_idx >= vec.len() || count == 0 {
+                return Ok(ScalarValue::Vector(Vec::new()));
+            }
+            let end_idx = start_idx.saturating_add(count as usize).min(vec.len());
+            Ok(ScalarValue::Vector(vec[start_idx..end_idx].to_vec()))
+        }
+        "vector_concat" if args.len() == 2 => {
+            if args.iter().any(|arg| matches!(arg, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let mut left = coerce_scalar_to_vector(&args[0], None, "vector_concat()")?;
+            let right = coerce_scalar_to_vector(&args[1], None, "vector_concat()")?;
+            left.extend(right);
+            Ok(ScalarValue::Vector(left))
         }
         _ => Err(EngineError {
             message: format!("function pgvector.{fn_name}() does not exist"),

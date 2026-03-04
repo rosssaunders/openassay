@@ -21,6 +21,7 @@ const PG_NUMERIC_OID: u32 = 1700;
 const PG_DATE_OID: u32 = 1082;
 const PG_TIMESTAMP_OID: u32 = 1114;
 const PG_VECTOR_OID: u32 = 6000;
+const PG_FLOAT4_ARRAY_OID: u32 = 1021;
 
 pub(crate) fn type_signature_to_oid(ty: TypeSignature) -> u32 {
     match ty {
@@ -178,8 +179,18 @@ fn infer_function_return_oid(
         | "position" | "ascii" | "pg_backend_pid" | "width_bucket" | "scale" | "factorial"
         | "num_nulls" | "num_nonnulls" => PG_INT8_OID,
         "extract" | "date_part" => PG_INT8_OID,
-        "avg" | "stddev" | "stddev_samp" | "stddev_pop" | "variance" | "var_samp" | "var_pop"
-        | "corr" | "covar_pop" | "covar_samp" | "regr_slope" | "regr_intercept" | "regr_r2"
+        "avg" => args
+            .first()
+            .map(|expr| {
+                if infer_expr_type_oid(expr, scope, ctes) == PG_VECTOR_OID {
+                    PG_VECTOR_OID
+                } else {
+                    PG_FLOAT8_OID
+                }
+            })
+            .unwrap_or(PG_FLOAT8_OID),
+        "stddev" | "stddev_samp" | "stddev_pop" | "variance" | "var_samp" | "var_pop" | "corr"
+        | "covar_pop" | "covar_samp" | "regr_slope" | "regr_intercept" | "regr_r2"
         | "regr_avgx" | "regr_avgy" | "regr_sxx" | "regr_sxy" | "regr_syy" | "percentile_cont" => {
             PG_FLOAT8_OID
         }
@@ -237,6 +248,8 @@ fn infer_function_return_oid(
             PG_FLOAT8_OID
         }
         "vector_dims" => PG_INT8_OID,
+        "subvector" | "vector_concat" => PG_VECTOR_OID,
+        "vector_to_float4" => PG_FLOAT4_ARRAY_OID,
         _ => PG_TEXT_OID,
     }
 }
@@ -301,7 +314,9 @@ fn infer_expr_type_oid(
                 | BinaryOp::VectorInnerProduct
                 | BinaryOp::VectorCosineDistance => PG_FLOAT8_OID,
                 BinaryOp::Add => {
-                    if (left_oid == PG_DATE_OID || left_oid == PG_TIMESTAMP_OID)
+                    if left_oid == PG_VECTOR_OID && right_oid == PG_VECTOR_OID {
+                        PG_VECTOR_OID
+                    } else if (left_oid == PG_DATE_OID || left_oid == PG_TIMESTAMP_OID)
                         && right_oid == PG_INT8_OID
                     {
                         left_oid
@@ -314,7 +329,9 @@ fn infer_expr_type_oid(
                     }
                 }
                 BinaryOp::Sub => {
-                    if (left_oid == PG_DATE_OID || left_oid == PG_TIMESTAMP_OID)
+                    if left_oid == PG_VECTOR_OID && right_oid == PG_VECTOR_OID {
+                        PG_VECTOR_OID
+                    } else if (left_oid == PG_DATE_OID || left_oid == PG_TIMESTAMP_OID)
                         && (right_oid == PG_DATE_OID || right_oid == PG_TIMESTAMP_OID)
                     {
                         PG_INT8_OID
@@ -328,8 +345,14 @@ fn infer_expr_type_oid(
                         infer_numeric_result_oid(left_oid, right_oid)
                     }
                 }
-                BinaryOp::Mul
-                | BinaryOp::Div
+                BinaryOp::Mul => {
+                    if left_oid == PG_VECTOR_OID && right_oid == PG_VECTOR_OID {
+                        PG_VECTOR_OID
+                    } else {
+                        infer_numeric_result_oid(left_oid, right_oid)
+                    }
+                }
+                BinaryOp::Div
                 | BinaryOp::Mod
                 | BinaryOp::Pow
                 | BinaryOp::ShiftLeft
