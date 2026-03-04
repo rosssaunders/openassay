@@ -6015,27 +6015,190 @@ fn test_pgcrypto_functions() {
 }
 
 #[test]
-fn test_pgvector_functions_and_operators() {
+fn test_pgvector_table_roundtrip_and_nearest_neighbor() {
     with_isolated_state(|| {
         run_statement("CREATE EXTENSION vector", &[]);
+        run_statement(
+            "CREATE TABLE items (id serial, name text, embedding vector(3))",
+            &[],
+        );
+        run_statement(
+            "INSERT INTO items (name, embedding) VALUES ('item1', '[1,2,3]')",
+            &[],
+        );
+        run_statement(
+            "INSERT INTO items (name, embedding) VALUES ('item2', '[4,5,6]')",
+            &[],
+        );
+
+        let all_rows = run_statement("SELECT * FROM items ORDER BY id", &[]);
+        assert_eq!(all_rows.rows.len(), 2);
+        assert_eq!(all_rows.rows[0][0], ScalarValue::Int(1));
+        assert_eq!(all_rows.rows[0][1], ScalarValue::Text("item1".to_string()));
+        assert_eq!(
+            all_rows.rows[0][2],
+            ScalarValue::Vector(vec![1.0_f32, 2.0_f32, 3.0_f32])
+        );
+        assert_eq!(all_rows.rows[1][0], ScalarValue::Int(2));
+        assert_eq!(all_rows.rows[1][1], ScalarValue::Text("item2".to_string()));
+        assert_eq!(
+            all_rows.rows[1][2],
+            ScalarValue::Vector(vec![4.0_f32, 5.0_f32, 6.0_f32])
+        );
+
+        let nearest = run_statement(
+            "SELECT name, embedding <-> '[1,2,3]' AS distance FROM items ORDER BY distance LIMIT 2",
+            &[],
+        );
+        assert_eq!(nearest.rows.len(), 2);
+        assert_eq!(nearest.rows[0][0], ScalarValue::Text("item1".to_string()));
+        assert_eq!(nearest.rows[0][1], ScalarValue::Float(0.0));
+        assert_eq!(nearest.rows[1][0], ScalarValue::Text("item2".to_string()));
+        match &nearest.rows[1][1] {
+            ScalarValue::Float(v) => assert!((*v - 5.196_152_422_706_632).abs() < 1e-9),
+            value => panic!("expected float distance, got {value:?}"),
+        }
+    });
+}
+
+#[test]
+fn test_pgvector_arithmetic_casts_and_distance_functions() {
+    with_isolated_state(|| {
+        run_statement("CREATE EXTENSION vector", &[]);
+
+        let arithmetic = run_statement(
+            "SELECT '[1,2,3]'::vector + '[4,5,6]'::vector, '[4,5,6]'::vector - '[1,2,3]'::vector, '[1,2,3]'::vector * '[4,5,6]'::vector",
+            &[],
+        );
+        assert_eq!(
+            arithmetic.rows[0][0],
+            ScalarValue::Vector(vec![5.0_f32, 7.0_f32, 9.0_f32])
+        );
+        assert_eq!(
+            arithmetic.rows[0][1],
+            ScalarValue::Vector(vec![3.0_f32, 3.0_f32, 3.0_f32])
+        );
+        assert_eq!(
+            arithmetic.rows[0][2],
+            ScalarValue::Vector(vec![4.0_f32, 10.0_f32, 18.0_f32])
+        );
+
+        let casts = run_statement("SELECT '[1,2,3]'::vector, ARRAY[1,2,3]::vector", &[]);
+        assert_eq!(
+            casts.rows[0][0],
+            ScalarValue::Vector(vec![1.0_f32, 2.0_f32, 3.0_f32])
+        );
+        assert_eq!(
+            casts.rows[0][1],
+            ScalarValue::Vector(vec![1.0_f32, 2.0_f32, 3.0_f32])
+        );
+
         let distances = run_statement(
-            "SELECT l2_distance('[1,2]', '[4,6]'), l1_distance('[1,2]', '[4,6]'), cosine_distance('[1,0]', '[0,1]')",
+            "SELECT l2_distance('[1,2]', '[4,6]'), l1_distance('[1,2]', '[4,6]'), cosine_distance('[1,0]', '[0,1]'), inner_product('[1,2,3]', '[4,5,6]'), vector_dims('[1,2,3]'), vector_norm('[3,4]'), '[1,2]' <-> '[4,6]'",
             &[],
         );
         assert_eq!(distances.rows[0][0], ScalarValue::Float(5.0));
         assert_eq!(distances.rows[0][1], ScalarValue::Float(7.0));
         assert_eq!(distances.rows[0][2], ScalarValue::Float(1.0));
+        assert_eq!(distances.rows[0][3], ScalarValue::Float(32.0));
+        assert_eq!(distances.rows[0][4], ScalarValue::Int(3));
+        assert_eq!(distances.rows[0][5], ScalarValue::Float(5.0));
+        assert_eq!(distances.rows[0][6], ScalarValue::Float(5.0));
+    });
+}
 
-        let extras = run_statement(
-            "SELECT inner_product('[1,2,3]', '[4,5,6]'), vector_dims('[1,2,3]'), vector_norm('[3,4]')",
+#[test]
+fn test_pgvector_avg_and_helper_functions() {
+    with_isolated_state(|| {
+        run_statement("CREATE EXTENSION vector", &[]);
+        run_statement("CREATE TABLE embeddings (v vector(3))", &[]);
+        run_statement("INSERT INTO embeddings VALUES ('[1,2,3]')", &[]);
+        run_statement("INSERT INTO embeddings VALUES ('[4,5,6]')", &[]);
+        run_statement("INSERT INTO embeddings VALUES (NULL)", &[]);
+
+        let avg = run_statement("SELECT avg(v) FROM embeddings", &[]);
+        assert_eq!(
+            avg.rows[0][0],
+            ScalarValue::Vector(vec![2.5_f32, 3.5_f32, 4.5_f32])
+        );
+
+        let helpers = run_statement(
+            "SELECT vector_to_float4('[1,2,3]'::vector), subvector('[1,2,3,4]'::vector, 2, 2), vector_concat('[1,2]'::vector, '[3,4]'::vector)",
             &[],
         );
-        assert_eq!(extras.rows[0][0], ScalarValue::Float(32.0));
-        assert_eq!(extras.rows[0][1], ScalarValue::Int(3));
-        assert_eq!(extras.rows[0][2], ScalarValue::Float(5.0));
+        assert_eq!(
+            helpers.rows[0][0],
+            ScalarValue::Array(vec![
+                ScalarValue::Float(1.0),
+                ScalarValue::Float(2.0),
+                ScalarValue::Float(3.0),
+            ])
+        );
+        assert_eq!(
+            helpers.rows[0][1],
+            ScalarValue::Vector(vec![2.0_f32, 3.0_f32])
+        );
+        assert_eq!(
+            helpers.rows[0][2],
+            ScalarValue::Vector(vec![1.0_f32, 2.0_f32, 3.0_f32, 4.0_f32])
+        );
+    });
+}
 
-        let op_result = run_statement("SELECT '[1,2]' <-> '[4,6]' AS dist", &[]);
-        assert_eq!(op_result.rows[0][0], ScalarValue::Float(5.0));
+#[test]
+fn test_pgvector_dimension_mismatch_errors() {
+    with_isolated_state(|| {
+        run_statement("CREATE EXTENSION vector", &[]);
+        run_statement("CREATE TABLE items (embedding vector(3))", &[]);
+
+        let statement = parse_statement("INSERT INTO items VALUES ('[1,2]')").unwrap();
+        let planned = plan_statement(statement).unwrap();
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("vector dimension mismatch should fail");
+        assert!(err.message.contains("expects vector dimension 3"));
+
+        let statement = parse_statement("SELECT '[1,2]'::vector + '[1,2,3]'::vector").unwrap();
+        let planned = plan_statement(statement).unwrap();
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("vector arithmetic dimension mismatch should fail");
+        assert!(
+            err.message
+                .contains("vector addition expects vectors of the same dimension")
+        );
+
+        run_statement("CREATE TABLE varying_embeddings (v vector)", &[]);
+        run_statement("INSERT INTO varying_embeddings VALUES ('[1,2]')", &[]);
+        run_statement("INSERT INTO varying_embeddings VALUES ('[1,2,3]')", &[]);
+
+        let statement = parse_statement("SELECT avg(v) FROM varying_embeddings").unwrap();
+        let planned = plan_statement(statement).unwrap();
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("avg(vector) dimension mismatch should fail");
+        assert!(
+            err.message
+                .contains("avg() expects vectors of the same dimension")
+        );
+    });
+}
+
+#[test]
+fn test_pgvector_null_handling() {
+    with_isolated_state(|| {
+        run_statement("CREATE EXTENSION vector", &[]);
+        let nulls = run_statement(
+            "SELECT NULL::vector + '[1,2]'::vector, NULL::vector - '[1,2]'::vector, NULL::vector * '[1,2]'::vector, vector_concat(NULL::vector, '[1,2]'::vector), subvector(NULL::vector, 1, 1), vector_to_float4(NULL::vector), l2_distance(NULL::vector, '[1,2]'::vector)",
+            &[],
+        );
+        assert!(
+            nulls.rows[0]
+                .iter()
+                .all(|value| matches!(value, ScalarValue::Null))
+        );
+
+        run_statement("CREATE TABLE nullable_vectors (v vector(2))", &[]);
+        run_statement("INSERT INTO nullable_vectors VALUES (NULL), ('[1,2]')", &[]);
+        let avg = run_statement("SELECT avg(v) FROM nullable_vectors", &[]);
+        assert_eq!(avg.rows[0][0], ScalarValue::Vector(vec![1.0_f32, 2.0_f32]));
     });
 }
 
@@ -6656,7 +6819,7 @@ fn json_table_deribit_column_row_width() {
 
 #[test]
 fn json_table_deribit_pgwire() {
-    use crate::tcop::postgres::{FrontendMessage, PostgresSession, BackendMessage};
+    use crate::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         let mut session = PostgresSession::new();
@@ -6665,7 +6828,7 @@ fn json_table_deribit_pgwire() {
                 sql: "SELECT * FROM json_table('https://www.deribit.com/api/v2/public/get_currencies', 'result') ORDER BY currency;".to_string(),
             }
         ]).await;
-        
+
         let mut row_desc_count = 0usize;
         let mut row_count = 0;
         let mut error = None;

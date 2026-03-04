@@ -200,6 +200,16 @@ const KNOWN_FUNCTIONS: &[(&str, usize, usize)] = &[
     ("http_delete", 1, 1),
     ("http_head", 1, 1),
     ("urlencode", 1, 1),
+    // pgvector extension
+    ("l2_distance", 2, 2),
+    ("cosine_distance", 2, 2),
+    ("inner_product", 2, 2),
+    ("l1_distance", 2, 2),
+    ("vector_norm", 1, 1),
+    ("vector_dims", 1, 1),
+    ("vector_to_float4", 1, 1),
+    ("subvector", 3, 3),
+    ("vector_concat", 2, 2),
     // Misc
     ("pg_typeof", 1, 1),
     ("pg_input_is_valid", 2, 2),

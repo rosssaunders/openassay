@@ -42,6 +42,7 @@ use crate::utils::adt::misc::{
     compare_values_for_predicate, parse_bool_scalar, parse_f64_numeric_scalar, parse_f64_scalar,
     parse_i64_scalar, parse_nullable_bool, parse_pg_array_literal, truthy,
 };
+use crate::utils::adt::vector::coerce_scalar_to_vector;
 use crate::utils::fmgr::eval_scalar_function;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::{JsCast, JsValue};
@@ -2224,6 +2225,10 @@ pub(crate) fn eval_cast_scalar(
             Ok(ScalarValue::Text(format_timestamp(dt)))
         }
         "interval" => eval_interval_cast(&value),
+        "vector" => {
+            let vector = coerce_scalar_to_vector(&value, None, "cannot cast value to vector")?;
+            Ok(ScalarValue::Vector(vector))
+        }
         "json" | "jsonb" => {
             // For JSON/JSONB casts, validate that the input is valid JSON
             let text = value.render();
@@ -2423,6 +2428,12 @@ pub(crate) fn eval_binary(
         Add => eval_add(left, right),
         Sub => eval_sub(left, right),
         Mul => {
+            if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
+                return Ok(ScalarValue::Null);
+            }
+            if let (ScalarValue::Vector(a), ScalarValue::Vector(b)) = (&left, &right) {
+                return eval_vector_elementwise(a, b, "vector multiplication", |x, y| x * y);
+            }
             // interval * numeric or numeric * interval
             let left_is_interval = matches!(&left, ScalarValue::Text(t) if is_interval_text(t));
             let right_is_interval = matches!(&right, ScalarValue::Text(t) if is_interval_text(t));
@@ -2575,6 +2586,9 @@ fn eval_add(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
     if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
     }
+    if let (ScalarValue::Vector(a), ScalarValue::Vector(b)) = (&left, &right) {
+        return eval_vector_elementwise(a, b, "vector addition", |x, y| x + y);
+    }
 
     if parse_numeric_operand(&left).is_ok() && parse_numeric_operand(&right).is_ok() {
         return numeric_bin(
@@ -2625,6 +2639,9 @@ fn eval_add(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
 fn eval_sub(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, EngineError> {
     if matches!(left, ScalarValue::Null) || matches!(right, ScalarValue::Null) {
         return Ok(ScalarValue::Null);
+    }
+    if let (ScalarValue::Vector(a), ScalarValue::Vector(b)) = (&left, &right) {
+        return eval_vector_elementwise(a, b, "vector subtraction", |x, y| x - y);
     }
 
     if parse_numeric_operand(&left).is_ok() && parse_numeric_operand(&right).is_ok() {
@@ -2691,6 +2708,29 @@ fn eval_sub(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, Engine
     Err(EngineError {
         message: "numeric operation expects numeric values".to_string(),
     })
+}
+
+fn eval_vector_elementwise(
+    left: &[f32],
+    right: &[f32],
+    context: &str,
+    op: impl Fn(f32, f32) -> f32,
+) -> Result<ScalarValue, EngineError> {
+    if left.len() != right.len() {
+        return Err(EngineError {
+            message: format!(
+                "{context} expects vectors of the same dimension ({} != {})",
+                left.len(),
+                right.len()
+            ),
+        });
+    }
+    Ok(ScalarValue::Vector(
+        left.iter()
+            .zip(right.iter())
+            .map(|(a, b)| op(*a, *b))
+            .collect(),
+    ))
 }
 
 fn eval_logical_or(left: ScalarValue, right: ScalarValue) -> Result<ScalarValue, EngineError> {
@@ -3023,6 +3063,9 @@ async fn eval_function(
                     | "l1_distance"
                     | "vector_dims"
                     | "vector_norm"
+                    | "vector_to_float4"
+                    | "subvector"
+                    | "vector_concat"
             )
         {
             return eval_pgvector_function(fname, &values);
