@@ -1696,6 +1696,15 @@ fn table_function_output_columns(function: &TableFunctionRef) -> Vec<String> {
             "catcode".to_string(),
             "catdesc".to_string(),
         ],
+        "iceberg_metadata" => vec![
+            "table_uuid".to_string(),
+            "format_version".to_string(),
+            "last_updated".to_string(),
+            "current_schema_id".to_string(),
+            "partition_spec".to_string(),
+            "snapshot_count".to_string(),
+            "total_data_files".to_string(),
+        ],
         "pg_input_error_info" => vec![
             "message".to_string(),
             "detail".to_string(),
@@ -1735,6 +1744,15 @@ fn table_function_output_type_oids(function: &TableFunctionRef, count: usize) ->
         | "jsonb_populate_record"
         | "json_populate_recordset"
         | "jsonb_populate_recordset" => Vec::new(),
+        "iceberg_metadata" => vec![
+            PG_TEXT_OID, // table_uuid
+            20,          // format_version (int8)
+            20,          // last_updated (int8)
+            20,          // current_schema_id (int8)
+            PG_TEXT_OID, // partition_spec
+            20,          // snapshot_count (int8)
+            20,          // total_data_files (int8)
+        ],
         "pg_input_error_info" => vec![PG_TEXT_OID, PG_TEXT_OID, PG_TEXT_OID, PG_TEXT_OID],
         _ => vec![PG_TEXT_OID],
     };
