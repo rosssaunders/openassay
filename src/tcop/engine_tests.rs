@@ -6638,3 +6638,64 @@ fn test_special_datetime_values() {
         ScalarValue::Text("1970-01-01 00:00:00".to_string())
     );
 }
+
+#[test]
+fn json_table_deribit_column_row_width() {
+    with_isolated_state(|| {
+        let result = run_statement(
+            "SELECT * FROM json_table('https://www.deribit.com/api/v2/public/get_currencies', 'result') ORDER BY currency",
+            &[],
+        );
+        eprintln!("columns: {} {:?}", result.columns.len(), result.columns);
+        for (i, row) in result.rows.iter().enumerate() {
+            eprintln!("row {}: {} values", i, row.len());
+            assert_eq!(row.len(), result.columns.len(), "row {i} width mismatch");
+        }
+    });
+}
+
+#[test]
+fn json_table_deribit_pgwire() {
+    use crate::tcop::postgres::{FrontendMessage, PostgresSession, BackendMessage};
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut session = PostgresSession::new();
+        let messages = session.run([
+            FrontendMessage::Query {
+                sql: "SELECT * FROM json_table('https://www.deribit.com/api/v2/public/get_currencies', 'result') ORDER BY currency;".to_string(),
+            }
+        ]).await;
+        
+        let mut row_desc_count = 0usize;
+        let mut row_count = 0;
+        let mut error = None;
+        for msg in &messages {
+            match msg {
+                BackendMessage::RowDescription { fields } => {
+                    row_desc_count = fields.len();
+                    eprintln!("RowDescription: {} fields: {:?}", fields.len(), fields.iter().map(|f| &f.name).collect::<Vec<_>>());
+                }
+                BackendMessage::DataRow { values } => {
+                    row_count += 1;
+                    eprintln!("DataRow {}: {} values", row_count, values.len());
+                }
+                BackendMessage::DataRowBinary { values } => {
+                    row_count += 1;
+                    eprintln!("DataRowBinary {}: {} values", row_count, values.len());
+                }
+                BackendMessage::ErrorResponse { message, .. } => {
+                    eprintln!("ErrorResponse: {message}");
+                    error = Some(message.clone());
+                }
+                other => {
+                    eprintln!("Other: {:?}", std::mem::discriminant(other));
+                }
+            }
+        }
+        if let Some(err) = error {
+            panic!("pgwire error: {err}");
+        }
+        assert!(row_desc_count > 0, "should have RowDescription with fields");
+        assert!(row_count > 0, "should have data rows");
+    });
+}

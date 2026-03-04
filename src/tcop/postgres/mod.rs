@@ -802,6 +802,7 @@ impl PostgresSession {
             ExecutionOutcome::Query(result) => {
                 if let Some((portal, prev_cursor, prev_desc_sent)) = portal_state {
                     let fields = row_description
+                        .filter(|f| !f.is_empty())
                         .map(|fields| fields.to_vec())
                         .unwrap_or_else(|| {
                             infer_row_description_fields(&result.columns, &result.rows)
@@ -842,6 +843,7 @@ impl PostgresSession {
                 }
 
                 let fields = row_description
+                    .filter(|f| !f.is_empty())
                     .map(|fields| fields.to_vec())
                     .unwrap_or_else(|| infer_row_description_fields(&result.columns, &result.rows));
                 out.push(BackendMessage::RowDescription {
