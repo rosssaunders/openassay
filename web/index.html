@@ -3,7 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OpenAssay Browser Test</title>
+    <title>OpenAssay</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/dockview-core@4.3.1/dist/styles/dockview.css"
+    />
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/ag-grid-community/styles/ag-grid.css"
@@ -15,12 +25,15 @@
     <style>
       :root {
         color-scheme: dark;
-        --bg: #0b1020;
-        --panel: #0f172a;
-        --panel-border: #1e293b;
-        --text: #dbe4f0;
-        --muted: #94a3b8;
-        --accent: #22c55e;
+        --bg: #070a0f;
+        --panel: #11161f;
+        --border: #263241;
+        --fg: #d8e0ea;
+        --muted: #8ea1b8;
+        --accent: #2fb2ff;
+        --green: #22c55e;
+        --error: #ef4444;
+        --mono: "JetBrains Mono", SFMono-Regular, Menlo, monospace;
       }
 
       * {
@@ -29,724 +42,1624 @@
 
       html,
       body {
+        margin: 0;
         height: 100%;
-        margin: 0;
-        background: radial-gradient(circle at top, #1e293b 0%, #0b1020 50%, #05080f 100%);
-        color: var(--text);
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-          "Courier New", monospace;
+        width: 100%;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at top left, #152133 0%, transparent 35%),
+          radial-gradient(circle at 85% 20%, #10253d 0%, transparent 34%),
+          linear-gradient(180deg, #090d14 0%, #06090e 100%);
+        color: var(--fg);
+        font-family: var(--mono);
       }
 
-      .app {
-        max-width: 1100px;
-        margin: 0 auto;
-        padding: 1rem;
+      #app {
+        height: 100%;
         display: grid;
-        gap: 0.75rem;
+        grid-template-rows: 44px minmax(0, 1fr) 28px;
       }
 
-      .title {
-        margin: 0;
-        font-size: 1rem;
-        font-weight: 600;
+      .header {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: grid;
+        grid-template-columns:
+          auto
+          minmax(260px, 1fr)
+          minmax(150px, 210px)
+          minmax(150px, 220px)
+          auto
+          auto;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(7, 10, 15, 0.95);
+        backdrop-filter: blur(6px);
       }
 
-      .toolbar {
+      .brand {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        color: var(--fg);
+        white-space: nowrap;
+      }
+
+      .url-input,
+      .path-input,
+      .preset-select {
+        width: 100%;
+        height: 31px;
+        border: 1px solid var(--border);
+        background: rgba(17, 22, 31, 0.95);
+        color: var(--fg);
+        border-radius: 6px;
+        padding: 0 10px;
+        font-family: var(--mono);
+        font-size: 12px;
+        outline: none;
+      }
+
+      .url-input {
+        font-size: 13px;
+      }
+
+      .url-input:focus,
+      .path-input:focus,
+      .preset-select:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 1px rgba(47, 178, 255, 0.25);
+      }
+
+      .url-input::placeholder,
+      .path-input::placeholder {
+        color: var(--muted);
+      }
+
+      .actions {
         display: flex;
         align-items: center;
-        gap: 0.75rem;
+        gap: 8px;
       }
 
-      .toolbar button {
-        border: 1px solid var(--panel-border);
+      .run-btn {
+        height: 31px;
+        min-width: 42px;
+        border: 1px solid #2b7fb2;
+        background: linear-gradient(180deg, #2fb2ff 0%, #1686cf 100%);
+        color: #04141f;
         border-radius: 6px;
-        background: #111827;
-        color: var(--text);
+        font-family: var(--mono);
+        font-size: 13px;
+        font-weight: 700;
         cursor: pointer;
-        padding: 0.45rem 0.75rem;
       }
 
-      .toolbar button:hover {
-        border-color: var(--accent);
+      .run-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
       }
 
-      .toolbar button.active {
-        border-color: var(--accent);
-        background: #1a2e1a;
-        color: var(--accent);
+      .status-badge {
+        height: 30px;
+        display: inline-flex;
+        align-items: center;
+        border: 1px solid var(--border);
+        background: #0b111a;
+        color: var(--muted);
+        border-radius: 999px;
+        padding: 0 10px;
+        font-size: 11px;
+        white-space: nowrap;
       }
 
-      .examples {
+      .status-badge.ready {
+        border-color: rgba(34, 197, 94, 0.45);
+        color: #8ef2b5;
+      }
+
+      .status-badge.running {
+        border-color: rgba(47, 178, 255, 0.45);
+        color: #87d7ff;
+      }
+
+      .status-badge.error {
+        border-color: rgba(239, 68, 68, 0.55);
+        color: #ff9a9a;
+      }
+
+      .workspace {
+        min-height: 0;
+        min-width: 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .footer {
         display: flex;
-        gap: 0.5rem;
-      }
-
-      .examples button {
-        border: 1px solid var(--panel-border);
-        border-radius: 6px;
-        background: #111827;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 0 10px;
+        font-size: 11px;
         color: var(--muted);
-        cursor: pointer;
-        padding: 0.35rem 0.65rem;
-        font-size: 0.8rem;
-        font-family: inherit;
+        background: #070b12;
       }
 
-      .examples button:hover {
-        border-color: var(--accent);
-        color: var(--text);
+      .footer span {
+        white-space: nowrap;
       }
 
-      .examples button.active {
-        border-color: var(--accent);
-        background: #1a2e1a;
-        color: var(--accent);
-      }
-
-      .status {
-        color: var(--muted);
-        font-size: 0.85rem;
-      }
-
-      #editor {
-        width: 100%;
-        height: 55vh;
-        border: 1px solid var(--panel-border);
-        border-radius: 8px;
-        overflow: hidden;
-      }
-
-      .output {
-        border: 1px solid var(--panel-border);
-        border-radius: 8px;
+      .panel-root {
+        height: 100%;
+        min-height: 0;
+        min-width: 0;
+        position: relative;
         background: var(--panel);
-        padding: 0.75rem;
       }
 
-      .output h2 {
-        margin: 0 0 0.5rem;
-        font-size: 0.9rem;
+      .results-host {
+        height: 100%;
+        min-height: 0;
+        min-width: 0;
+        position: relative;
+      }
+
+      .results-grid {
+        width: 100%;
+        height: 100%;
+      }
+
+      .results-overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        color: var(--muted);
+        font-size: 13px;
+        pointer-events: none;
+        z-index: 5;
+        padding: 16px;
+      }
+
+      .results-overlay.hidden {
+        display: none;
+      }
+
+      .results-overlay.error {
+        color: #ff9a9a;
+        background: rgba(60, 11, 17, 0.5);
+      }
+
+      .spinner {
+        width: 14px;
+        height: 14px;
+        border: 2px solid rgba(47, 178, 255, 0.2);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        margin-right: 8px;
+        display: inline-block;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .editor-host {
+        width: 100%;
+        height: 100%;
+      }
+
+      .sql-panel {
+        height: 100%;
+        display: grid;
+        grid-template-rows: 34px minmax(0, 1fr);
+      }
+
+      .sql-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 8px;
+        border-bottom: 1px solid var(--border);
+        background: #0d131d;
+      }
+
+      .sql-run-btn {
+        height: 24px;
+        border: 1px solid #2b7fb2;
+        background: linear-gradient(180deg, #2fb2ff 0%, #1686cf 100%);
+        color: #04141f;
+        border-radius: 5px;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 700;
+        cursor: pointer;
+        padding: 0 9px;
+      }
+
+      .sql-hint {
+        font-size: 11px;
         color: var(--muted);
       }
 
-      #result-editor {
-        width: 100%;
-        height: 20vh;
-        border: 1px solid var(--panel-border);
-        border-radius: 8px;
-        overflow: hidden;
+      .history-list {
+        height: 100%;
+        overflow: auto;
+        padding: 8px;
+        display: grid;
+        gap: 8px;
       }
 
-      #result-grid {
-        width: 100%;
-        height: 54vh;
-        border: 1px solid var(--panel-border);
-        border-radius: 8px;
-        overflow: hidden;
+      .history-item {
+        border: 1px solid var(--border);
+        background: #0d131d;
+        border-radius: 6px;
+        padding: 8px;
+        cursor: pointer;
+        color: var(--fg);
+        text-align: left;
+        font-family: var(--mono);
+      }
+
+      .history-item:hover {
+        border-color: var(--accent);
+      }
+
+      .history-item .line1 {
+        font-size: 11px;
+        color: #b6c8de;
+        margin-bottom: 5px;
+      }
+
+      .history-item .line2 {
+        font-size: 10px;
+        color: var(--muted);
+      }
+
+      .history-empty {
+        font-size: 12px;
+        color: var(--muted);
+        padding: 10px;
+      }
+
+      .dockview-theme-abyss {
+        --dv-color-abyss-dark: var(--bg);
+        --dv-color-abyss: var(--panel);
+        --dv-color-abyss-light: #121a25;
+        --dv-color-abyss-lighter: var(--border);
+        --dv-color-abyss-accent: var(--accent);
+        --dv-color-abyss-primary-text: var(--fg);
+        --dv-color-abyss-secondary-text: var(--muted);
+        --dv-tabs-and-actions-container-height: 30px;
+        --dv-tab-font-size: 11px;
+        --dv-tab-margin: 0;
+        --dv-sash-color: #1a2432;
+        --dv-active-sash-color: #2b3f56;
+      }
+
+      .dockview-theme-abyss .dv-groupview {
+        border: 1px solid #1b2532;
+      }
+
+      .dockview-theme-abyss .dv-tab.dv-active-tab {
+        box-shadow: inset 0 -1px 0 0 var(--accent);
       }
 
       .ag-theme-quartz-dark {
-        --ag-foreground-color: #dbe4f0;
-        --ag-background-color: #0f172a;
-        --ag-header-foreground-color: #cbd5e1;
-        --ag-header-background-color: #111827;
-        --ag-odd-row-background-color: #0c1324;
-        --ag-border-color: #1e293b;
-        --ag-row-hover-color: #17213a;
+        --ag-foreground-color: var(--fg);
+        --ag-background-color: #0f1520;
+        --ag-header-foreground-color: #c9d5e3;
+        --ag-header-background-color: #141d2a;
+        --ag-odd-row-background-color: #0b121d;
+        --ag-border-color: #213043;
+        --ag-row-hover-color: #162334;
+        --ag-font-size: 12px;
+        --ag-font-family: var(--mono);
+        --ag-header-height: 31px;
+        --ag-grid-size: 5px;
+        --ag-cell-horizontal-padding: 8px;
+      }
+
+      @media (max-width: 1200px) {
+        .header {
+          grid-template-columns: auto minmax(200px, 1fr) auto;
+          grid-template-areas:
+            "brand preset status"
+            "url url run"
+            "path path run";
+          height: auto;
+          min-height: 44px;
+        }
+
+        .brand {
+          grid-area: brand;
+        }
+
+        .preset-select {
+          grid-area: preset;
+        }
+
+        .actions {
+          grid-area: run;
+          justify-self: end;
+        }
+
+        .status-badge {
+          grid-area: status;
+          justify-self: end;
+        }
+
+        .url-input {
+          grid-area: url;
+        }
+
+        .path-input {
+          grid-area: path;
+        }
+      }
+
+      @media (max-width: 760px) {
+        #app {
+          grid-template-rows: auto minmax(0, 1fr) 28px;
+        }
+
+        .header {
+          grid-template-columns: 1fr 1fr;
+          grid-template-areas:
+            "brand status"
+            "preset run"
+            "url url"
+            "path path";
+        }
+
+        .actions {
+          justify-self: stretch;
+        }
+
+        .run-btn {
+          width: 100%;
+        }
       }
     </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "dockview-core": "https://cdn.jsdelivr.net/npm/dockview-core@4.3.1/dist/dockview-core.esm.js"
+        }
+      }
+    </script>
   </head>
   <body>
-    <main class="app">
-      <h1 class="title">OpenAssay Browser SQL Harness</h1>
-      <div class="toolbar">
-        <button id="run" type="button">Run (Cmd/Ctrl + Enter)</button>
-        <button id="export-snapshot" type="button">Export Snapshot</button>
-        <button id="import-snapshot" type="button">Import Snapshot</button>
-        <button id="reset-state" type="button">Reset DB</button>
-        <span class="status" id="status">Monaco: loading</span>
-      </div>
-      <div class="examples">
-        <span style="color: var(--muted); font-size: 0.8rem; align-self: center;">Examples:</span>
-        <button id="ex-deribit" class="active" type="button">Currencies</button>
-        <button id="ex-orderbook" type="button">Order Book</button>
-        <button id="ex-volsurface" type="button">Vol Surface</button>
-        <button id="ex-websocket" type="button">WebSocket</button>
-        <button id="ex-window" type="button">Window Functions</button>
-      </div>
-      <div id="editor"></div>
-      <section class="output">
-        <div id="result-grid" class="ag-theme-quartz-dark"></div>
-      </section>
-      <div id="result-editor" style="display:none;"></div>
-    </main>
+    <div id="app">
+      <header class="header">
+        <div class="brand">OpenAssay</div>
+        <input
+          id="url-input"
+          class="url-input"
+          spellcheck="false"
+          placeholder="Enter API URL... e.g. https://www.deribit.com/api/v2/public/get_currencies"
+        />
+        <input
+          id="path-input"
+          class="path-input"
+          spellcheck="false"
+          placeholder="JSON path (e.g. result)"
+        />
+        <select id="preset-select" class="preset-select" aria-label="Preset examples"></select>
+        <div class="actions">
+          <button id="run-url-btn" class="run-btn" type="button" aria-label="Fetch URL">▶</button>
+        </div>
+        <span id="status-badge" class="status-badge">WASM: loading</span>
+      </header>
+
+      <section id="dockview-root" class="workspace"></section>
+
+      <footer class="footer">
+        <span id="footer-row-count">Rows: 0</span>
+        <span id="footer-exec-time">Exec: 0 ms</span>
+        <span id="footer-status">WASM loading</span>
+      </footer>
+    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/ag-grid-community/dist/ag-grid-community.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
-    <script>
-      const statusEl = document.getElementById("status");
-      const resultEditorEl = document.getElementById("result-editor");
-      const resultGridEl = document.getElementById("result-grid");
-      const runBtn = document.getElementById("run");
-      const exportBtn = document.getElementById("export-snapshot");
-      const importBtn = document.getElementById("import-snapshot");
-      const resetBtn = document.getElementById("reset-state");
-      const SNAPSHOT_KEY = "openassay_snapshot_v1";
-      let editor;
-      let resultEditor;
-      let pendingResultText = "Loading WASM runtime...";
-      let worker = null;
-      let workerReady = false;
-      let workerMsgId = 0;
-      const workerCallbacks = new Map();
-      let monacoReady = false;
-      let gridReady = false;
-      let wasmStatus = "loading";
-      let snapshotRestored = false;
-      let httpMode = false;
-      let gridApi = null;
-      const gridOptions = {
-        columnDefs: [],
-        rowData: [],
-        defaultColDef: {
-          resizable: true,
-          sortable: true,
-          filter: true,
-          minWidth: 130,
-        },
-        animateRows: false,
+    <script type="module">
+      import { createDockview, themeAbyss } from "dockview-core";
+
+      const STORAGE_KEYS = {
+        snapshot: "openassay_snapshot_v1",
+        layout: "openassay_dockview_layout_v1",
+        uiState: "openassay_api_explorer_state_v1",
       };
 
-      function refreshStatus() {
-        const parts = [
-          `Monaco: ${monacoReady ? "ready" : "loading"}`,
-          `Grid: ${gridReady ? "ready" : "loading"}`,
-          `WASM: ${wasmStatus}`,
-        ];
-        if (snapshotRestored) {
-          parts.push("snapshot restored");
-        }
-        if (httpMode) {
-          parts.push("HTTP mode");
-        }
-        statusEl.textContent = parts.join(" | ");
+      const PRESETS = [
+        {
+          name: "Deribit Currencies",
+          url: "https://www.deribit.com/api/v2/public/get_currencies",
+          path: "result",
+        },
+        {
+          name: "Deribit BTC Options",
+          url: "https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency=BTC&kind=option",
+          path: "result",
+        },
+        {
+          name: "Deribit Orderbook",
+          url: "https://www.deribit.com/api/v2/public/get_order_book?instrument_name=BTC-PERPETUAL&depth=10",
+          path: "result.bids",
+        },
+        {
+          name: "GitHub Repos",
+          url: "https://api.github.com/users/rosssaunders/repos",
+          path: "",
+        },
+        {
+          name: "JSONPlaceholder",
+          url: "https://jsonplaceholder.typicode.com/users",
+          path: "",
+        },
+      ];
+
+      const nodes = {
+        urlInput: document.getElementById("url-input"),
+        pathInput: document.getElementById("path-input"),
+        presetSelect: document.getElementById("preset-select"),
+        runUrlBtn: document.getElementById("run-url-btn"),
+        statusBadge: document.getElementById("status-badge"),
+        footerRowCount: document.getElementById("footer-row-count"),
+        footerExecTime: document.getElementById("footer-exec-time"),
+        footerStatus: document.getElementById("footer-status"),
+        dockviewRoot: document.getElementById("dockview-root"),
+      };
+
+      const state = {
+        dockview: null,
+        gridApi: null,
+        worker: null,
+        workerReady: false,
+        workerMsgId: 0,
+        workerCallbacks: new Map(),
+        monaco: null,
+        monacoReady: false,
+        responseEditor: null,
+        sqlEditor: null,
+        responseHost: null,
+        sqlHost: null,
+        historyHost: null,
+        sqlRunButton: null,
+        gridHost: null,
+        gridOverlay: null,
+        wasmStatus: "loading",
+        queryStatus: "idle",
+        history: [],
+        currentRows: 0,
+        currentExecMs: 0,
+        currentRequestToken: 0,
+        layoutSaveTimer: null,
+        uiSaveTimer: null,
+        lastKnownSql: "",
+        lastResponseText: "{\n  \"status\": \"ready\",\n  \"message\": \"Raw response will appear here\"\n}",
+      };
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
       }
 
-      function setResult(text) {
-        const rendered = typeof text === "string" ? text : String(text);
-        pendingResultText = rendered;
-        if (resultEditor) {
-          resultEditor.setValue(rendered);
-        } else if (resultEditorEl) {
-          resultEditorEl.textContent = rendered;
-        }
-      }
+      function updateStatus(status, extraText = "") {
+        state.wasmStatus = status;
+        nodes.statusBadge.classList.remove("ready", "running", "error");
 
-      function isExecutionErrorText(value) {
-        return typeof value === "string" && value.startsWith("Execution error:");
-      }
-
-      function initGrid() {
-        if (!resultGridEl || !window.agGrid) {
-          gridReady = false;
-          return;
-        }
-        if (typeof window.agGrid.createGrid === "function") {
-          gridApi = window.agGrid.createGrid(resultGridEl, gridOptions);
-        } else if (typeof window.agGrid.Grid === "function") {
-          new window.agGrid.Grid(resultGridEl, gridOptions);
-          gridApi = gridOptions.api || null;
-        }
-        gridReady = !!gridApi;
-      }
-
-      function applyGridData(columnDefs, rowData) {
-        if (!gridApi) {
-          return;
-        }
-        if (typeof gridApi.setGridOption === "function") {
-          gridApi.setGridOption("columnDefs", columnDefs);
-          gridApi.setGridOption("rowData", rowData);
+        let text;
+        if (status === "ready") {
+          text = "WASM: ready";
+          nodes.statusBadge.classList.add("ready");
+        } else if (status === "running") {
+          text = "WASM: running";
+          nodes.statusBadge.classList.add("running");
+        } else if (status === "error") {
+          text = "WASM: error";
+          nodes.statusBadge.classList.add("error");
         } else {
-          if (typeof gridApi.setColumnDefs === "function") {
-            gridApi.setColumnDefs(columnDefs);
-          }
-          if (typeof gridApi.setRowData === "function") {
-            gridApi.setRowData(rowData);
+          text = "WASM: loading";
+        }
+
+        if (extraText) {
+          text += ` (${extraText})`;
+        }
+
+        nodes.statusBadge.textContent = text;
+        nodes.footerStatus.textContent = text;
+      }
+
+      function setQueryBusy(busy) {
+        state.queryStatus = busy ? "running" : "idle";
+        nodes.runUrlBtn.disabled = busy || !state.workerReady;
+      }
+
+      function parsePathSegments(path) {
+        if (!path || !path.trim()) {
+          return [];
+        }
+
+        return path
+          .split(",")
+          .flatMap((part) => part.split("."))
+          .map((part) => part.trim())
+          .filter(Boolean);
+      }
+
+      function formatPathSegments(pathSegments) {
+        return pathSegments.join(".");
+      }
+
+      function toSqlLiteral(value) {
+        return `'${String(value).replaceAll("'", "''")}'`;
+      }
+
+      function buildUrlSql(url, pathSegments) {
+        const args = [toSqlLiteral(url), ...pathSegments.map(toSqlLiteral)];
+        return `SELECT * FROM json_table(\n  ${args.join(",\n  ")}\n);`;
+      }
+
+      function maybeJsonParse(value) {
+        if (typeof value === "string") {
+          try {
+            return JSON.parse(value);
+          } catch (_err) {
+            return null;
           }
         }
-        setTimeout(function () {
-          if (gridApi && typeof gridApi.sizeColumnsToFit === "function") {
-            try {
-              gridApi.sizeColumnsToFit();
-            } catch (_err) {}
-          }
-        }, 0);
+        if (value && typeof value === "object") {
+          return value;
+        }
+        return null;
       }
 
-      function clearGrid() {
-        applyGridData([], []);
-      }
-
-      function selectGridResult(executionPayload) {
-        const results = Array.isArray(executionPayload && executionPayload.results)
-          ? executionPayload.results
-          : [];
-        for (let idx = results.length - 1; idx >= 0; idx -= 1) {
-          const result = results[idx];
-          if (Array.isArray(result.columns) && result.columns.length > 0) {
-            return result;
+      function selectTabularResult(payload) {
+        const results = Array.isArray(payload?.results) ? payload.results : [];
+        for (let i = results.length - 1; i >= 0; i -= 1) {
+          const item = results[i];
+          if (Array.isArray(item?.columns) && item.columns.length > 0) {
+            return item;
           }
         }
         return null;
       }
 
-      function renderGridFromExecutionPayload(executionPayload) {
-        const tabular = selectGridResult(executionPayload);
-        if (!tabular) {
-          clearGrid();
+      function autoDetectPath(parsedJson) {
+        if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
+          return [];
+        }
+
+        if (Array.isArray(parsedJson.result)) {
+          return ["result"];
+        }
+
+        if (Array.isArray(parsedJson.data)) {
+          return ["data"];
+        }
+
+        return [];
+      }
+
+      function normalizeCellValue(value) {
+        if (value === null || typeof value === "undefined") {
+          return null;
+        }
+
+        if (typeof value === "object") {
+          try {
+            return JSON.stringify(value);
+          } catch (_err) {
+            return String(value);
+          }
+        }
+
+        return value;
+      }
+
+      function setFooterStats(rows, execMs) {
+        state.currentRows = rows;
+        state.currentExecMs = execMs;
+        nodes.footerRowCount.textContent = `Rows: ${rows.toLocaleString()}`;
+        nodes.footerExecTime.textContent = `Exec: ${Math.round(execMs)} ms`;
+      }
+
+      function updateResultsPanelTitle(rows) {
+        const panel = state.dockview?.getPanel("results");
+        if (panel) {
+          panel.setTitle(`Results (${rows.toLocaleString()} rows)`);
+        }
+      }
+
+      function setGridOverlay(mode, message) {
+        if (!state.gridOverlay) {
           return;
         }
 
-        const columnDefs = tabular.columns.map(function (name) {
+        state.gridOverlay.className = "results-overlay";
+
+        if (mode === "hidden") {
+          state.gridOverlay.classList.add("hidden");
+          state.gridOverlay.innerHTML = "";
+          return;
+        }
+
+        if (mode === "error") {
+          state.gridOverlay.classList.add("error");
+        }
+
+        if (mode === "loading") {
+          state.gridOverlay.innerHTML = `<span class=\"spinner\"></span>${escapeHtml(message)}`;
+          return;
+        }
+
+        state.gridOverlay.innerHTML = escapeHtml(message);
+      }
+
+      function clearGrid() {
+        if (!state.gridApi) {
+          return;
+        }
+
+        if (typeof state.gridApi.setGridOption === "function") {
+          state.gridApi.setGridOption("columnDefs", []);
+          state.gridApi.setGridOption("rowData", []);
+        } else {
+          state.gridApi.setColumnDefs?.([]);
+          state.gridApi.setRowData?.([]);
+        }
+      }
+
+      function renderGrid(tabular) {
+        if (!state.gridApi) {
+          return 0;
+        }
+
+        const columns = Array.isArray(tabular.columns) ? tabular.columns : [];
+        const rows = Array.isArray(tabular.rows) ? tabular.rows : [];
+
+        const columnDefs = columns.map((name, index) => {
+          const fieldName = name && String(name).trim() ? String(name) : `column_${index + 1}`;
           return {
-            field: name,
-            headerName: name,
-            wrapText: true,
-            autoHeight: true,
+            field: fieldName,
+            headerName: fieldName,
+            minWidth: 130,
+            sortable: true,
+            filter: true,
+            resizable: true,
           };
         });
-        const rowData = (Array.isArray(tabular.rows) ? tabular.rows : []).map(function (row) {
+
+        const rowData = rows.map((row) => {
           const record = {};
-          tabular.columns.forEach(function (name, idx) {
-            record[name] = Array.isArray(row) ? row[idx] ?? "" : "";
-          });
+          for (let i = 0; i < columnDefs.length; i += 1) {
+            const key = columnDefs[i].field;
+            record[key] = Array.isArray(row) ? normalizeCellValue(row[i]) : null;
+          }
           return record;
         });
-        applyGridData(columnDefs, rowData);
-      }
 
-      function parseExecutionPayload(out) {
-        if (typeof out === "string") {
-          try {
-            return JSON.parse(out);
-          } catch (_err) {
-            return null;
-          }
+        if (typeof state.gridApi.setGridOption === "function") {
+          state.gridApi.setGridOption("columnDefs", columnDefs);
+          state.gridApi.setGridOption("rowData", rowData);
+        } else {
+          state.gridApi.setColumnDefs?.(columnDefs);
+          state.gridApi.setRowData?.(rowData);
         }
-        return out && typeof out === "object" ? out : null;
+
+        setTimeout(() => {
+          try {
+            if (state.gridApi?.autoSizeAllColumns) {
+              state.gridApi.autoSizeAllColumns(false);
+            } else {
+              state.gridApi?.sizeColumnsToFit?.();
+            }
+          } catch (_err) {}
+        }, 20);
+
+        return rowData.length;
       }
 
-      function initWorker() {
-        return new Promise(function (resolve, reject) {
-          worker = new Worker("worker.js", { type: "module" });
-          worker.onmessage = function (e) {
-            const msg = e.data;
-            if (msg.type === "ready") {
-              workerReady = true;
-              httpMode = msg.httpMode;
-              resolve();
-              return;
-            }
-            if (msg.type === "init_error") {
-              reject(new Error(msg.error));
-              return;
-            }
-            const cb = workerCallbacks.get(msg.id);
-            if (cb) {
-              workerCallbacks.delete(msg.id);
-              if (msg.type === "error") {
-                cb.reject(new Error(msg.error));
-              } else {
-                cb.resolve(msg.data);
-              }
-            }
-          };
-          worker.onerror = function (err) {
-            reject(err);
-          };
-        });
+      function setResponseText(value) {
+        const safeValue = typeof value === "string" ? value : String(value);
+        state.lastResponseText = safeValue;
+        if (state.responseEditor) {
+          state.responseEditor.setValue(safeValue);
+        }
       }
 
-      function workerCall(type, extra) {
-        return new Promise(function (resolve, reject) {
-          const id = ++workerMsgId;
-          workerCallbacks.set(id, { resolve: resolve, reject: reject });
-          const msg = { type: type, id: id };
-          if (extra) {
-            Object.keys(extra).forEach(function (k) { msg[k] = extra[k]; });
-          }
-          worker.postMessage(msg);
-        });
+      function setSqlText(value) {
+        const safeValue = typeof value === "string" ? value : String(value);
+        state.lastKnownSql = safeValue;
+        if (state.sqlEditor) {
+          state.sqlEditor.setValue(safeValue);
+        }
       }
 
-      async function persistSnapshotToLocalStorage() {
-        if (!workerReady) return;
+      function getSqlText() {
+        if (state.sqlEditor) {
+          return state.sqlEditor.getValue();
+        }
+        return state.lastKnownSql;
+      }
+
+      function renderHistory() {
+        if (!state.historyHost) {
+          return;
+        }
+
+        if (state.history.length === 0) {
+          state.historyHost.innerHTML =
+            '<div class="history-empty">No history yet. Run a URL query or SQL query to capture entries.</div>';
+          return;
+        }
+
+        const html = state.history
+          .map((item, index) => {
+            const line1 = item.type === "url"
+              ? `${item.url}${item.path ? ` :: ${item.path}` : ""}`
+              : `SQL :: ${item.sqlPreview}`;
+            const dt = new Date(item.timestamp).toLocaleTimeString();
+            const line2 = `${dt} • ${item.rows} rows • ${Math.round(item.ms)} ms${
+              item.ok ? "" : " • error"
+            }`;
+            return `<button class="history-item" data-history-index="${index}" type="button"><div class="line1">${escapeHtml(
+              line1
+            )}</div><div class="line2">${escapeHtml(line2)}</div></button>`;
+          })
+          .join("");
+
+        state.historyHost.innerHTML = html;
+      }
+
+      function addHistory(item) {
+        state.history.unshift(item);
+        if (state.history.length > 40) {
+          state.history.length = 40;
+        }
+        renderHistory();
+        scheduleUiStateSave();
+      }
+
+      function saveDockviewLayout() {
+        if (!state.dockview) {
+          return;
+        }
+
         try {
-          const snapshot = await workerCall("export_snapshot");
-          if (typeof snapshot === "string" && snapshot.trim()) {
-            localStorage.setItem(SNAPSHOT_KEY, snapshot);
+          const layout = state.dockview.toJSON();
+          localStorage.setItem(STORAGE_KEYS.layout, JSON.stringify(layout));
+        } catch (_err) {}
+      }
+
+      function scheduleDockviewLayoutSave() {
+        if (state.layoutSaveTimer) {
+          window.clearTimeout(state.layoutSaveTimer);
+        }
+        state.layoutSaveTimer = window.setTimeout(saveDockviewLayout, 200);
+      }
+
+      function scheduleUiStateSave() {
+        if (state.uiSaveTimer) {
+          window.clearTimeout(state.uiSaveTimer);
+        }
+        state.uiSaveTimer = window.setTimeout(saveUiState, 120);
+      }
+
+      function saveUiState() {
+        try {
+          const payload = {
+            url: nodes.urlInput.value,
+            path: nodes.pathInput.value,
+            history: state.history,
+            sql: getSqlText(),
+          };
+          localStorage.setItem(STORAGE_KEYS.uiState, JSON.stringify(payload));
+        } catch (_err) {}
+      }
+
+      function restoreUiState() {
+        try {
+          const text = localStorage.getItem(STORAGE_KEYS.uiState);
+          if (!text) {
+            return;
+          }
+          const parsed = JSON.parse(text);
+          if (typeof parsed.url === "string") {
+            nodes.urlInput.value = parsed.url;
+          }
+          if (typeof parsed.path === "string") {
+            nodes.pathInput.value = parsed.path;
+          }
+          if (typeof parsed.sql === "string") {
+            state.lastKnownSql = parsed.sql;
+          }
+          if (Array.isArray(parsed.history)) {
+            state.history = parsed.history.slice(0, 40);
           }
         } catch (_err) {}
       }
 
-      async function restoreSnapshotFromLocalStorage() {
-        if (!workerReady) return false;
-        const snapshot = localStorage.getItem(SNAPSHOT_KEY);
-        if (!snapshot) return false;
+      function initGrid() {
+        if (!state.gridHost || !window.agGrid) {
+          return;
+        }
+
+        const gridOptions = {
+          columnDefs: [],
+          rowData: [],
+          defaultColDef: {
+            sortable: true,
+            filter: true,
+            resizable: true,
+            minWidth: 120,
+          },
+          rowSelection: "multiple",
+          animateRows: false,
+          pagination: true,
+          paginationPageSize: 100,
+          suppressCellFocus: false,
+          rowBuffer: 35,
+        };
+
+        if (typeof window.agGrid.createGrid === "function") {
+          state.gridApi = window.agGrid.createGrid(state.gridHost, gridOptions);
+        } else if (typeof window.agGrid.Grid === "function") {
+          new window.agGrid.Grid(state.gridHost, gridOptions);
+          state.gridApi = gridOptions.api || null;
+        }
+      }
+
+      function loadMonaco() {
+        return new Promise((resolve, reject) => {
+          if (window.monaco && window.monaco.editor) {
+            resolve(window.monaco);
+            return;
+          }
+
+          if (typeof window.require !== "function") {
+            reject(new Error("Monaco loader not available"));
+            return;
+          }
+
+          window.MonacoEnvironment = {
+            getWorkerUrl() {
+              return (
+                "data:text/javascript;charset=utf-8," +
+                encodeURIComponent(
+                  "self.MonacoEnvironment={baseUrl:'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/'};" +
+                    "importScripts('https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/base/worker/workerMain.js');"
+                )
+              );
+            },
+          };
+
+          window.require.config({
+            paths: {
+              vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs",
+            },
+          });
+
+          window.require(["vs/editor/editor.main"], () => {
+            resolve(window.monaco);
+          }, reject);
+        });
+      }
+
+      function ensureEditorsReady() {
+        if (!state.monacoReady || !state.monaco) {
+          return;
+        }
+
+        if (state.responseHost && !state.responseEditor) {
+          state.responseEditor = state.monaco.editor.create(state.responseHost, {
+            value: state.lastResponseText,
+            language: "json",
+            readOnly: true,
+            domReadOnly: true,
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            theme: "vs-dark",
+            automaticLayout: true,
+            fontSize: 12,
+          });
+        }
+
+        if (state.sqlHost && !state.sqlEditor) {
+          state.sqlEditor = state.monaco.editor.create(state.sqlHost, {
+            value:
+              state.lastKnownSql ||
+              "SELECT * FROM json_table(\n  'https://www.deribit.com/api/v2/public/get_currencies',\n  'result'\n);",
+            language: "sql",
+            minimap: { enabled: false },
+            scrollBeyondLastLine: false,
+            theme: "vs-dark",
+            automaticLayout: true,
+            fontSize: 12,
+          });
+
+          state.sqlEditor.addCommand(
+            state.monaco.KeyMod.CtrlCmd | state.monaco.KeyCode.Enter,
+            () => runSqlFromEditor()
+          );
+        }
+      }
+
+      function createResultsRenderer() {
+        const root = document.createElement("div");
+        root.className = "panel-root results-host";
+
+        const grid = document.createElement("div");
+        grid.className = "results-grid ag-theme-quartz-dark";
+
+        const overlay = document.createElement("div");
+        overlay.className = "results-overlay";
+        overlay.textContent = "Enter a URL above to get started";
+
+        root.append(grid, overlay);
+
+        return {
+          element: root,
+          init() {
+            state.gridHost = grid;
+            state.gridOverlay = overlay;
+            if (!state.gridApi) {
+              initGrid();
+            }
+          },
+          layout() {
+            try {
+              state.gridApi?.sizeColumnsToFit?.();
+            } catch (_err) {}
+          },
+          dispose() {},
+        };
+      }
+
+      function createResponseRenderer() {
+        const root = document.createElement("div");
+        root.className = "panel-root";
+
+        const host = document.createElement("div");
+        host.className = "editor-host";
+        root.append(host);
+
+        return {
+          element: root,
+          init() {
+            state.responseHost = host;
+            ensureEditorsReady();
+          },
+          layout() {
+            state.responseEditor?.layout();
+          },
+          dispose() {},
+        };
+      }
+
+      function createSqlRenderer() {
+        const root = document.createElement("div");
+        root.className = "panel-root sql-panel";
+
+        const toolbar = document.createElement("div");
+        toolbar.className = "sql-toolbar";
+
+        const runButton = document.createElement("button");
+        runButton.className = "sql-run-btn";
+        runButton.type = "button";
+        runButton.textContent = "Run SQL";
+
+        const hint = document.createElement("span");
+        hint.className = "sql-hint";
+        hint.textContent = "Power user mode (Ctrl/Cmd + Enter)";
+
+        toolbar.append(runButton, hint);
+
+        const host = document.createElement("div");
+        host.className = "editor-host";
+
+        root.append(toolbar, host);
+
+        return {
+          element: root,
+          init() {
+            state.sqlHost = host;
+            state.sqlRunButton = runButton;
+            runButton.addEventListener("click", () => runSqlFromEditor());
+            ensureEditorsReady();
+          },
+          layout() {
+            state.sqlEditor?.layout();
+          },
+          dispose() {},
+        };
+      }
+
+      function createHistoryRenderer() {
+        const root = document.createElement("div");
+        root.className = "panel-root";
+
+        const list = document.createElement("div");
+        list.className = "history-list";
+        root.append(list);
+
+        list.addEventListener("click", (event) => {
+          const target = event.target instanceof HTMLElement ? event.target.closest("[data-history-index]") : null;
+          if (!target) {
+            return;
+          }
+
+          const index = Number(target.getAttribute("data-history-index"));
+          const item = state.history[index];
+          if (!item) {
+            return;
+          }
+
+          if (item.type === "url") {
+            nodes.urlInput.value = item.url;
+            nodes.pathInput.value = item.path;
+            runUrlQuery();
+            return;
+          }
+
+          if (item.type === "sql") {
+            setSqlText(item.sql);
+            runSqlFromEditor();
+          }
+        });
+
+        return {
+          element: root,
+          init() {
+            state.historyHost = list;
+            renderHistory();
+          },
+          layout() {},
+          dispose() {},
+        };
+      }
+
+      function buildDefaultLayout() {
+        state.dockview.clear();
+
+        const results = state.dockview.addPanel({
+          id: "results",
+          title: "Results",
+          component: "results",
+        });
+
+        const response = state.dockview.addPanel({
+          id: "response",
+          title: "Response",
+          component: "response",
+          position: {
+            referencePanel: results,
+            direction: "right",
+          },
+          initialWidth: Math.max(360, Math.floor(window.innerWidth * 0.35)),
+        });
+
+        const sql = state.dockview.addPanel({
+          id: "sql",
+          title: "SQL",
+          component: "sql",
+          position: {
+            referencePanel: response,
+            direction: "below",
+          },
+          initialHeight: 120,
+          inactive: true,
+        });
+
+        state.dockview.addPanel({
+          id: "history",
+          title: "History",
+          component: "history",
+          position: {
+            referencePanel: sql,
+            direction: "within",
+          },
+          inactive: true,
+        });
+
         try {
-          const out = await workerCall("import_snapshot", { snapshot: snapshot });
-          if (isExecutionErrorText(out)) {
-            localStorage.removeItem(SNAPSHOT_KEY);
-            try { await workerCall("reset_state"); } catch (_) {}
-            console.warn("Snapshot restore failed, cleared stale snapshot:", out);
+          sql.group.api.setSize({ height: 96 });
+        } catch (_err) {}
+      }
+
+      function restoreDockviewLayout() {
+        const raw = localStorage.getItem(STORAGE_KEYS.layout);
+        if (!raw) {
+          buildDefaultLayout();
+          return;
+        }
+
+        try {
+          state.dockview.fromJSON(JSON.parse(raw));
+          if (!state.dockview.totalPanels) {
+            buildDefaultLayout();
+          }
+        } catch (_err) {
+          buildDefaultLayout();
+        }
+      }
+
+      function initDockview() {
+        state.dockview = createDockview(nodes.dockviewRoot, {
+          theme: themeAbyss,
+          createComponent: (options) => {
+            if (options.name === "results") {
+              return createResultsRenderer();
+            }
+            if (options.name === "response") {
+              return createResponseRenderer();
+            }
+            if (options.name === "sql") {
+              return createSqlRenderer();
+            }
+            if (options.name === "history") {
+              return createHistoryRenderer();
+            }
+            return createResultsRenderer();
+          },
+        });
+
+        state.dockview.onDidLayoutChange(() => {
+          scheduleDockviewLayoutSave();
+        });
+
+        restoreDockviewLayout();
+      }
+
+      function initWorker() {
+        return new Promise((resolve, reject) => {
+          state.worker = new Worker("worker.js", { type: "module" });
+
+          state.worker.onmessage = (event) => {
+            const msg = event.data;
+            if (msg.type === "ready") {
+              state.workerReady = true;
+              resolve(msg);
+              return;
+            }
+
+            if (msg.type === "init_error") {
+              reject(new Error(msg.error || "Worker init error"));
+              return;
+            }
+
+            const callback = state.workerCallbacks.get(msg.id);
+            if (!callback) {
+              return;
+            }
+
+            state.workerCallbacks.delete(msg.id);
+            if (msg.type === "error") {
+              callback.reject(new Error(msg.error || "Worker call failed"));
+            } else {
+              callback.resolve(msg.data);
+            }
+          };
+
+          state.worker.onerror = (error) => {
+            reject(error);
+          };
+        });
+      }
+
+      function workerCall(type, extra = {}) {
+        return new Promise((resolve, reject) => {
+          if (!state.worker) {
+            reject(new Error("Worker not initialized"));
+            return;
+          }
+
+          const id = ++state.workerMsgId;
+          state.workerCallbacks.set(id, { resolve, reject });
+          state.worker.postMessage({ type, id, ...extra });
+        });
+      }
+
+      async function persistSnapshot() {
+        if (!state.workerReady) {
+          return;
+        }
+
+        try {
+          const snapshot = await workerCall("export_snapshot");
+          if (typeof snapshot === "string" && snapshot.trim()) {
+            localStorage.setItem(STORAGE_KEYS.snapshot, snapshot);
+          }
+        } catch (_err) {}
+      }
+
+      async function restoreSnapshot() {
+        if (!state.workerReady) {
+          return false;
+        }
+
+        const snapshot = localStorage.getItem(STORAGE_KEYS.snapshot);
+        if (!snapshot) {
+          return false;
+        }
+
+        try {
+          const out = await workerCall("import_snapshot", { snapshot });
+          if (typeof out === "string" && out.startsWith("Execution error:")) {
+            localStorage.removeItem(STORAGE_KEYS.snapshot);
+            await workerCall("reset_state").catch(() => {});
             return false;
           }
           return true;
-        } catch (err) {
-          localStorage.removeItem(SNAPSHOT_KEY);
-          try { await workerCall("reset_state"); } catch (_) {}
-          console.warn("Snapshot restore threw, cleared stale snapshot:", err);
+        } catch (_err) {
+          localStorage.removeItem(STORAGE_KEYS.snapshot);
+          await workerCall("reset_state").catch(() => {});
           return false;
         }
       }
 
-      async function initWorkerAndRestore() {
-        try {
-          await initWorker();
-          wasmStatus = "connected";
-          snapshotRestored = await restoreSnapshotFromLocalStorage();
-          refreshStatus();
-          setResult(snapshotRestored
-            ? "WASM engine connected. Previous session restored."
-            : "WASM engine connected. Run SQL to see results.");
-        } catch (err) {
-          wasmStatus = "not found";
-          refreshStatus();
-          setResult("WASM module failed to load. Rebuild with scripts/build_wasm.sh");
-          console.error("WASM load error", err);
+      async function executeSql(sql) {
+        if (!state.workerReady) {
+          throw new Error("WASM runtime is not ready");
         }
+
+        const out = await workerCall("exec_sql", { sql });
+        return {
+          out,
+          payload: maybeJsonParse(out),
+        };
       }
 
-      async function runSql() {
-        const sql = editor.getValue();
-        if (!sql.trim()) {
-          setResult("No SQL to run.");
+      function applyExecutionResult(payload, fallbackText) {
+        if (payload && Array.isArray(payload.results)) {
+          if (!payload.ok) {
+            const message =
+              typeof payload.rendered === "string"
+                ? payload.rendered
+                : "SQL execution failed.";
+            clearGrid();
+            setGridOverlay("error", message);
+            updateResultsPanelTitle(0);
+            return { ok: false, rows: 0, message };
+          }
+
+          const tabular = selectTabularResult(payload);
+          if (!tabular) {
+            clearGrid();
+            setGridOverlay("empty", "Query executed, but no tabular rows were returned.");
+            updateResultsPanelTitle(0);
+            return { ok: true, rows: 0, message: "No tabular rows returned." };
+          }
+
+          const rows = renderGrid(tabular);
+          if (rows === 0) {
+            setGridOverlay("empty", "No rows returned. Adjust URL or JSON path and try again.");
+          } else {
+            setGridOverlay("hidden", "");
+          }
+          updateResultsPanelTitle(rows);
+          return { ok: true, rows, message: "OK" };
+        }
+
+        clearGrid();
+        setGridOverlay("error", fallbackText || "Query returned an unrecognized payload.");
+        updateResultsPanelTitle(0);
+        return { ok: false, rows: 0, message: fallbackText || "Unrecognized payload" };
+      }
+
+      async function fetchRawJson(url) {
+        const response = await fetch(url, {
+          method: "GET",
+          headers: {
+            Accept: "application/json, text/plain;q=0.9, */*;q=0.8",
+          },
+        });
+
+        const text = await response.text();
+        const parsed = maybeJsonParse(text);
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText || "Request failed"}`);
+        }
+
+        return {
+          text,
+          parsed,
+          pretty: parsed ? JSON.stringify(parsed, null, 2) : text,
+        };
+      }
+
+      async function runUrlQuery() {
+        const url = nodes.urlInput.value.trim();
+        if (!url) {
+          setGridOverlay("error", "Please enter an API URL.");
           return;
         }
 
-        if (!workerReady) {
-          setResult("WASM engine not ready. Please wait for initialization.");
+        if (!state.workerReady) {
+          setGridOverlay("error", "WASM is still loading. Please wait.");
           return;
         }
+
+        const requestToken = ++state.currentRequestToken;
+        setQueryBusy(true);
+        updateStatus("running");
+        setGridOverlay("loading", "Fetching API and executing SQL...");
+
+        const started = performance.now();
+
+        let pathSegments = parsePathSegments(nodes.pathInput.value);
+        const rawFetchPromise = fetchRawJson(url);
+
+        if (pathSegments.length === 0) {
+          try {
+            const raw = await rawFetchPromise;
+            if (requestToken !== state.currentRequestToken) {
+              return;
+            }
+            setResponseText(raw.pretty);
+            const detected = autoDetectPath(raw.parsed);
+            if (detected.length > 0) {
+              pathSegments = detected;
+              nodes.pathInput.value = formatPathSegments(detected);
+            }
+          } catch (err) {
+            const message = err && err.message ? err.message : String(err);
+            setResponseText(JSON.stringify({ error: message }, null, 2));
+          }
+        } else {
+          rawFetchPromise
+            .then((raw) => {
+              if (requestToken === state.currentRequestToken) {
+                setResponseText(raw.pretty);
+              }
+            })
+            .catch((err) => {
+              if (requestToken === state.currentRequestToken) {
+                const message = err && err.message ? err.message : String(err);
+                setResponseText(JSON.stringify({ error: message }, null, 2));
+              }
+            });
+        }
+
+        const sql = buildUrlSql(url, pathSegments);
+        setSqlText(sql);
 
         try {
-          const out = await workerCall("exec_sql", { sql: sql });
-          const executionPayload = parseExecutionPayload(out);
-
-          if (executionPayload && Array.isArray(executionPayload.results)) {
-            const rendered =
-              typeof executionPayload.rendered === "string"
-                ? executionPayload.rendered
-                : JSON.stringify(executionPayload, null, 2);
-            setResult(rendered);
-            if (!executionPayload.ok) {
-              resultEditorEl.style.display = "block";
-              resultGridEl.style.display = "none";
-            } else {
-              resultEditorEl.style.display = "none";
-              resultGridEl.style.display = "block";
-              renderGridFromExecutionPayload(executionPayload);
-              await persistSnapshotToLocalStorage();
-            }
+          const { out, payload } = await executeSql(sql);
+          if (requestToken !== state.currentRequestToken) {
             return;
           }
 
-          const rendered = typeof out === "string" ? out : JSON.stringify(out, null, 2);
-          setResult(rendered);
-          clearGrid();
-          if (!isExecutionErrorText(rendered)) {
-            await persistSnapshotToLocalStorage();
+          const elapsedMs = performance.now() - started;
+          const render = applyExecutionResult(payload, typeof out === "string" ? out : "Execution failed");
+
+          setFooterStats(render.rows, elapsedMs);
+          updateStatus("ready");
+
+          addHistory({
+            type: "url",
+            timestamp: Date.now(),
+            url,
+            path: formatPathSegments(pathSegments),
+            sql,
+            sqlPreview: sql.split("\n")[0],
+            rows: render.rows,
+            ms: elapsedMs,
+            ok: render.ok,
+          });
+
+          if (render.ok) {
+            await persistSnapshot();
           }
         } catch (err) {
-          setResult("Execution error:\n" + (err && err.message ? err.message : String(err)));
+          if (requestToken !== state.currentRequestToken) {
+            return;
+          }
+
+          const message = err && err.message ? err.message : String(err);
           clearGrid();
+          setGridOverlay("error", message);
+          updateResultsPanelTitle(0);
+          setFooterStats(0, performance.now() - started);
+          updateStatus("error");
+
+          addHistory({
+            type: "url",
+            timestamp: Date.now(),
+            url,
+            path: formatPathSegments(pathSegments),
+            sql,
+            sqlPreview: sql.split("\n")[0],
+            rows: 0,
+            ms: performance.now() - started,
+            ok: false,
+          });
+        } finally {
+          if (requestToken === state.currentRequestToken) {
+            setQueryBusy(false);
+          }
+          scheduleUiStateSave();
         }
       }
 
-      async function exportSnapshot() {
-        if (!workerReady) {
-          setResult("Snapshot export function not found in WASM module.");
+      async function runSqlFromEditor() {
+        const sql = getSqlText().trim();
+        if (!sql) {
+          setGridOverlay("error", "SQL editor is empty.");
           return;
         }
+
+        if (!state.workerReady) {
+          setGridOverlay("error", "WASM is still loading. Please wait.");
+          return;
+        }
+
+        const requestToken = ++state.currentRequestToken;
+        setQueryBusy(true);
+        updateStatus("running");
+        setGridOverlay("loading", "Executing SQL...");
+
+        const started = performance.now();
 
         try {
-          const out = await workerCall("export_snapshot");
-          const snapshot = typeof out === "string" ? out : JSON.stringify(out, null, 2);
-          if (typeof snapshot === "string" && snapshot.trim()) {
-            localStorage.setItem(SNAPSHOT_KEY, snapshot);
+          const { out, payload } = await executeSql(sql);
+          if (requestToken !== state.currentRequestToken) {
+            return;
           }
-          try {
-            await navigator.clipboard.writeText(snapshot);
-            setResult("Snapshot exported and copied to clipboard.\n\n" + snapshot);
-          } catch (_err) {
-            setResult("Snapshot exported (clipboard unavailable).\n\n" + snapshot);
-          }
-        } catch (err) {
-          setResult("Snapshot export failed:\n" + (err && err.message ? err.message : String(err)));
-        }
-      }
 
-      async function importSnapshot() {
-        if (!workerReady) {
-          setResult("Snapshot import function not found in WASM module.");
-          return;
-        }
+          const elapsedMs = performance.now() - started;
+          const render = applyExecutionResult(payload, typeof out === "string" ? out : "Execution failed");
 
-        const pasted = window.prompt("Paste snapshot text");
-        if (pasted === null) {
-          return;
-        }
-        if (!pasted.trim()) {
-          setResult("Snapshot input is empty.");
-          return;
-        }
+          setFooterStats(render.rows, elapsedMs);
+          updateStatus(render.ok ? "ready" : "error");
 
-        try {
-          const out = await workerCall("import_snapshot", { snapshot: pasted });
-          const rendered = typeof out === "string" ? out : JSON.stringify(out, null, 2);
-          setResult(rendered);
-          if (!isExecutionErrorText(rendered)) {
-            localStorage.setItem(SNAPSHOT_KEY, pasted.trim());
+          addHistory({
+            type: "sql",
+            timestamp: Date.now(),
+            url: "",
+            path: "",
+            sql,
+            sqlPreview: sql.slice(0, 120).replaceAll("\n", " "),
+            rows: render.rows,
+            ms: elapsedMs,
+            ok: render.ok,
+          });
+
+          if (render.ok) {
+            await persistSnapshot();
           }
         } catch (err) {
-          setResult("Snapshot import failed:\n" + (err && err.message ? err.message : String(err)));
-        }
-      }
+          if (requestToken !== state.currentRequestToken) {
+            return;
+          }
 
-      async function resetState() {
-        if (!workerReady) {
-          localStorage.removeItem(SNAPSHOT_KEY);
-          setResult("Reset function not found in WASM module. Cleared local snapshot only.");
-          return;
-        }
-
-        try {
-          const out = await workerCall("reset_state");
-          localStorage.removeItem(SNAPSHOT_KEY);
-          setResult(typeof out === "string" ? out : JSON.stringify(out, null, 2));
+          const message = err && err.message ? err.message : String(err);
           clearGrid();
-        } catch (err) {
-          setResult("Reset failed:\n" + (err && err.message ? err.message : String(err)));
+          setGridOverlay("error", message);
+          updateResultsPanelTitle(0);
+          setFooterStats(0, performance.now() - started);
+          updateStatus("error");
+
+          addHistory({
+            type: "sql",
+            timestamp: Date.now(),
+            url: "",
+            path: "",
+            sql,
+            sqlPreview: sql.slice(0, 120).replaceAll("\n", " "),
+            rows: 0,
+            ms: performance.now() - started,
+            ok: false,
+          });
+        } finally {
+          if (requestToken === state.currentRequestToken) {
+            setQueryBusy(false);
+          }
+          scheduleUiStateSave();
         }
       }
 
-      window.MonacoEnvironment = {
-        getWorkerUrl: function () {
-          return (
-            "data:text/javascript;charset=utf-8," +
-            encodeURIComponent(
-              "self.MonacoEnvironment = { baseUrl: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/' };" +
-                "importScripts('https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/base/worker/workerMain.js');"
-            )
-          );
-        },
-      };
+      function wireHeader() {
+        nodes.presetSelect.innerHTML =
+          '<option value="">Examples</option>' +
+          PRESETS.map(
+            (preset, index) => `<option value="${index}">${escapeHtml(preset.name)}</option>`
+          ).join("");
 
-      require.config({
-        paths: {
-          vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs",
-        },
-      });
+        nodes.presetSelect.addEventListener("change", () => {
+          const index = Number(nodes.presetSelect.value);
+          if (!Number.isFinite(index) || index < 0 || index >= PRESETS.length) {
+            return;
+          }
+          const preset = PRESETS[index];
+          nodes.urlInput.value = preset.url;
+          nodes.pathInput.value = preset.path;
+          runUrlQuery();
+        });
 
-      initGrid();
-      refreshStatus();
-      initWorkerAndRestore();
+        nodes.runUrlBtn.addEventListener("click", runUrlQuery);
 
-      setTimeout(function () {
-        if (!monacoReady) {
-          setResult(
-            "Monaco editor is still loading. Check network access to https://cdn.jsdelivr.net/ and disable blockers for this page."
-          );
+        const onEnter = (event) => {
+          if (event.key === "Enter") {
+            runUrlQuery();
+          }
+        };
+
+        nodes.urlInput.addEventListener("keydown", onEnter);
+        nodes.pathInput.addEventListener("keydown", onEnter);
+
+        nodes.urlInput.addEventListener("input", scheduleUiStateSave);
+        nodes.pathInput.addEventListener("input", scheduleUiStateSave);
+      }
+
+      async function bootstrap() {
+        restoreUiState();
+        wireHeader();
+        initDockview();
+        renderHistory();
+
+        if (!nodes.urlInput.value.trim()) {
+          const first = PRESETS[0];
+          nodes.urlInput.value = first.url;
+          nodes.pathInput.value = first.path;
         }
-      }, 8000);
 
-      const examples = {
-        "ex-deribit": [
-          "-- Fetch cryptocurrency data from Deribit via json_table()",
-          "-- json_table(url, path...) fetches JSON and converts arrays to rows",
-          "SELECT * FROM json_table(",
-          "  'https://www.deribit.com/api/v2/public/get_currencies', 'result'",
-          ") ORDER BY currency;",
-        ].join("\n"),
-        "ex-orderbook": [
-          "-- Live Order Book from Deribit",
-          "-- Fetches the BTC-PERPETUAL order book and displays bids/asks",
-          "CREATE EXTENSION IF NOT EXISTS http;",
-          "",
-          "WITH resp AS (",
-          "  SELECT http_get('https://www.deribit.com/api/v2/public/get_order_book?instrument_name=BTC-PERPETUAL&depth=10') AS r",
-          "), raw AS (",
-          "  SELECT json_extract_path_text(r, 'content') AS body FROM resp",
-          "), book AS (",
-          "  SELECT json_extract_path(body, 'result') AS r FROM raw",
-          "), bids AS (",
-          "  SELECT",
-          "    'BID' AS side,",
-          "    json_extract_path_text(item, '0') AS price,",
-          "    json_extract_path_text(item, '1') AS amount",
-          "  FROM book, json_array_elements(json_extract_path(r, 'bids')) AS src(item)",
-          "), asks AS (",
-          "  SELECT",
-          "    'ASK' AS side,",
-          "    json_extract_path_text(item, '0') AS price,",
-          "    json_extract_path_text(item, '1') AS amount",
-          "  FROM book, json_array_elements(json_extract_path(r, 'asks')) AS src(item)",
-          ")",
-          "SELECT * FROM bids",
-          "UNION ALL",
-          "SELECT * FROM asks;",
-        ].join("\n"),
-        "ex-volsurface": [
-          "-- BTC Options Volatility Surface",
-          "-- Fetches all BTC options and displays implied vol by strike & expiry",
-          "CREATE EXTENSION IF NOT EXISTS http;",
-          "",
-          "WITH resp AS (",
-          "  SELECT http_get('https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency=BTC&kind=option') AS r",
-          "), raw AS (",
-          "  SELECT json_extract_path_text(r, 'content') AS body FROM resp",
-          "), options AS (",
-          "  SELECT item FROM raw,",
-          "    json_array_elements(json_extract_path(body, 'result')) AS src(item)",
-          "), parsed AS (",
-          "  SELECT",
-          "    json_extract_path_text(item, 'instrument_name') AS instrument,",
-          "    json_extract_path_text(item, 'mark_iv') AS mark_iv,",
-          "    json_extract_path_text(item, 'mark_price') AS mark_price,",
-          "    json_extract_path_text(item, 'underlying_price') AS underlying,",
-          "    json_extract_path_text(item, 'open_interest') AS open_interest,",
-          "    json_extract_path_text(item, 'volume') AS volume,",
-          "    json_extract_path_text(item, 'bid_price') AS bid,",
-          "    json_extract_path_text(item, 'ask_price') AS ask",
-          "  FROM options",
-          ")",
-          "SELECT",
-          "  instrument,",
-          "  mark_iv AS implied_vol,",
-          "  mark_price,",
-          "  underlying,",
-          "  open_interest,",
-          "  volume",
-          "FROM parsed",
-          "WHERE CAST(mark_iv AS DOUBLE PRECISION) > 0",
-          "ORDER BY CAST(mark_iv AS DOUBLE PRECISION) DESC",
-          "LIMIT 50;",
-        ].join("\n"),
-        "ex-websocket": [
-          "-- WebSocket Extension Demo  (run each block separately)",
-          "-- Streams live Binance trades into a SQL table via callback.",
-          "",
-          "-- Step 1: Setup — extension, table, and callback function",
-          "CREATE EXTENSION ws;",
-          "CREATE TABLE trades (payload TEXT);",
-          "CREATE FUNCTION on_trade(msg TEXT) RETURNS VOID AS $$",
-          "  INSERT INTO trades VALUES (msg);",
-          "$$ LANGUAGE sql;",
-          "",
-          "-- Step 2: Connect with on_message callback (run separately)",
-          "SELECT ws.connect(",
-          "  'wss://stream.binance.com:9443/ws/btcusdt@trade',",
-          "  NULL,         -- on_open",
-          "  'on_trade',   -- on_message: called for every incoming message",
-          "  NULL          -- on_close",
-          ") AS connection_id;",
-          "",
-          "-- Step 3: Query the table (run separately, repeat to see new rows)",
-          "SELECT count(*) AS trade_count FROM trades;",
-          "SELECT * FROM trades LIMIT 5;",
-          "",
-          "-- Step 4: Close when done",
-          "-- SELECT ws.close(1);",
-        ].join("\n"),
-        "ex-window": [
-          "-- Window Functions Demo",
-          "CREATE TABLE sales (",
-          "  region TEXT,",
-          "  product TEXT,",
-          "  amount INTEGER",
-          ");",
-          "",
-          "INSERT INTO sales VALUES",
-          "  ('North', 'Widget', 500),",
-          "  ('North', 'Gadget', 300),",
-          "  ('North', 'Widget', 200),",
-          "  ('South', 'Widget', 400),",
-          "  ('South', 'Gadget', 600),",
-          "  ('South', 'Widget', 150),",
-          "  ('East',  'Widget', 350),",
-          "  ('East',  'Gadget', 450);",
-          "",
-          "SELECT",
-          "  region,",
-          "  product,",
-          "  amount,",
-          "  SUM(amount) OVER (PARTITION BY region) AS region_total,",
-          "  RANK() OVER (PARTITION BY region ORDER BY amount DESC) AS rank_in_region,",
-          "  ROW_NUMBER() OVER (ORDER BY amount DESC) AS overall_rank,",
-          "  LAG(amount) OVER (ORDER BY amount DESC) AS prev_amount,",
-          "  ROUND(100.0 * amount / SUM(amount) OVER (), 1) AS pct_of_total",
-          "FROM sales",
-          "ORDER BY region, amount DESC;",
-        ].join("\n"),
-      };
+        setGridOverlay("empty", "Enter a URL above to get started");
+        setFooterStats(0, 0);
+        updateStatus("loading");
 
-      function setExample(id) {
-        if (!editor || !examples[id]) return;
-        editor.setValue(examples[id]);
-        document.querySelectorAll(".examples button").forEach(function (btn) {
-          btn.classList.toggle("active", btn.id === id);
+        loadMonaco()
+          .then((monaco) => {
+            state.monaco = monaco;
+            state.monacoReady = true;
+            ensureEditorsReady();
+            if (state.lastKnownSql) {
+              setSqlText(state.lastKnownSql);
+            }
+          })
+          .catch((err) => {
+            const message = err && err.message ? err.message : String(err);
+            setResponseText(JSON.stringify({ error: `Monaco failed to load: ${message}` }, null, 2));
+          });
+
+        try {
+          await initWorker();
+          await restoreSnapshot();
+          updateStatus("ready");
+          setQueryBusy(false);
+        } catch (err) {
+          const message = err && err.message ? err.message : String(err);
+          updateStatus("error", "init failed");
+          setQueryBusy(true);
+          setGridOverlay("error", `WASM failed to initialize: ${message}`);
+          return;
+        }
+
+        state.dockview?.onDidLayoutFromJSON(() => {
+          state.responseEditor?.layout();
+          state.sqlEditor?.layout();
+        });
+
+        window.addEventListener("beforeunload", () => {
+          saveUiState();
+          saveDockviewLayout();
         });
       }
 
-      require(["vs/editor/editor.main"], function () {
-        monacoReady = true;
-        refreshStatus();
-
-        editor = monaco.editor.create(document.getElementById("editor"), {
-          value: examples["ex-deribit"],
-          language: "sql",
-          theme: "vs-dark",
-          minimap: { enabled: false },
-          automaticLayout: true,
-          fontSize: 14,
-        });
-
-        resultEditor = monaco.editor.create(resultEditorEl, {
-          value: pendingResultText,
-          language: "plaintext",
-          theme: "vs-dark",
-          minimap: { enabled: false },
-          automaticLayout: true,
-          fontSize: 13,
-          readOnly: true,
-          domReadOnly: true,
-          lineNumbers: "off",
-          wordWrap: "on",
-          scrollBeyondLastLine: false,
-        });
-
-        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, runSql);
-        runBtn.addEventListener("click", runSql);
-        exportBtn.addEventListener("click", exportSnapshot);
-        importBtn.addEventListener("click", importSnapshot);
-        resetBtn.addEventListener("click", resetState);
-        document.getElementById("ex-deribit").addEventListener("click", function () { setExample("ex-deribit"); });
-        document.getElementById("ex-orderbook").addEventListener("click", function () { setExample("ex-orderbook"); });
-        document.getElementById("ex-volsurface").addEventListener("click", function () { setExample("ex-volsurface"); });
-        document.getElementById("ex-websocket").addEventListener("click", function () { setExample("ex-websocket"); });
-        document.getElementById("ex-window").addEventListener("click", function () { setExample("ex-window"); });
-      });
+      bootstrap();
     </script>
   </body>
 </html>
