@@ -813,6 +813,8 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "jsonb_exists_all",
     // Table functions
     "json_table",
+    "iceberg_scan",
+    "iceberg_metadata",
     "http_get",
     "http_post",
     "http_put",

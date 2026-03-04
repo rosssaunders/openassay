@@ -111,6 +111,7 @@ pub(super) async fn evaluate_set_returning_function(
         "pg_input_error_info" => eval_pg_input_error_info_set_function(args, &fn_name),
         "json_table" => eval_json_table_function(args, &fn_name).await,
         "iceberg_scan" => eval_iceberg_scan_function(args, &fn_name).await,
+        "iceberg_metadata" => eval_iceberg_metadata_function(args, &fn_name),
         "pg_get_keywords" => eval_pg_get_keywords(),
         "messages" if function.name.len() == 2 && function.name[0].eq_ignore_ascii_case("ws") => {
             execute_ws_messages(args).await
@@ -583,6 +584,114 @@ pub(super) async fn eval_iceberg_scan_function(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub(super) fn eval_iceberg_metadata_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    const OUTPUT_COLUMNS: [&str; 7] = [
+        "table_uuid",
+        "format_version",
+        "last_updated",
+        "current_schema_id",
+        "partition_spec",
+        "snapshot_count",
+        "total_data_files",
+    ];
+
+    if args.len() != 1 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects exactly one argument (table path)"),
+        });
+    }
+    if matches!(args[0], ScalarValue::Null) {
+        return Ok((
+            OUTPUT_COLUMNS.iter().map(std::string::ToString::to_string).collect(),
+            Vec::new(),
+        ));
+    }
+
+    let input_path = match &args[0] {
+        ScalarValue::Text(text) => text.trim().to_string(),
+        other => other.render(),
+    };
+    if input_path.is_empty() {
+        return Err(EngineError {
+            message: format!("{fn_name}() path argument cannot be empty"),
+        });
+    }
+
+    let input = Path::new(&input_path);
+    let metadata_file = resolve_iceberg_metadata_file(input).ok_or_else(|| EngineError {
+        message: format!(
+            "{fn_name}(): could not resolve Iceberg metadata file for {}",
+            input.display()
+        ),
+    })?;
+    let metadata_text = fs::read_to_string(&metadata_file).map_err(|err| EngineError {
+        message: format!(
+            "{fn_name}(): failed to read metadata file {}: {err}",
+            metadata_file.display()
+        ),
+    })?;
+    let metadata_json =
+        serde_json::from_str::<JsonValue>(&metadata_text).map_err(|err| EngineError {
+            message: format!(
+                "{fn_name}(): failed to parse metadata file {}: {err}",
+                metadata_file.display()
+            ),
+        })?;
+
+    let parquet_files = discover_iceberg_parquet_files(input, fn_name)?;
+    let snapshots = metadata_json
+        .get("snapshots")
+        .and_then(JsonValue::as_array)
+        .map_or(0_i64, |items| {
+            i64::try_from(items.len()).unwrap_or(i64::MAX)
+        });
+    let partition_spec = metadata_json
+        .get("partition-specs")
+        .cloned()
+        .unwrap_or_else(|| JsonValue::Array(Vec::new()));
+
+    let row = vec![
+        metadata_json
+            .get("table-uuid")
+            .and_then(JsonValue::as_str)
+            .map_or(ScalarValue::Null, |value| ScalarValue::Text(value.to_string())),
+        metadata_json
+            .get("format-version")
+            .and_then(JsonValue::as_i64)
+            .map_or(ScalarValue::Null, ScalarValue::Int),
+        metadata_json
+            .get("last-updated-ms")
+            .and_then(JsonValue::as_i64)
+            .map_or(ScalarValue::Null, ScalarValue::Int),
+        metadata_json
+            .get("current-schema-id")
+            .and_then(JsonValue::as_i64)
+            .map_or(ScalarValue::Null, ScalarValue::Int),
+        ScalarValue::Text(partition_spec.to_string()),
+        ScalarValue::Int(snapshots),
+        ScalarValue::Int(i64::try_from(parquet_files.len()).unwrap_or(i64::MAX)),
+    ];
+
+    Ok((
+        OUTPUT_COLUMNS.iter().map(std::string::ToString::to_string).collect(),
+        vec![row],
+    ))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) fn eval_iceberg_metadata_function(
+    _args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    Err(EngineError {
+        message: format!("{fn_name}() is not supported on wasm targets"),
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn scan_iceberg_parquet_files(
     parquet_files: &[PathBuf],
     mut columns: Vec<String>,
@@ -699,7 +808,7 @@ pub(super) fn parquet_field_to_scalar(field: &ParquetField) -> ScalarValue {
         ParquetField::Float16(value) => ScalarValue::Float(f64::from(*value)),
         ParquetField::Float(value) => ScalarValue::Float(f64::from(*value)),
         ParquetField::Double(value) => ScalarValue::Float(*value),
-        ParquetField::Decimal(value) => ScalarValue::Text(format!("{value:?}")),
+        ParquetField::Decimal(value) => ScalarValue::Text(parquet_decimal_to_text(value)),
         ParquetField::Str(value) => ScalarValue::Text(value.clone()),
         ParquetField::Bytes(value) => {
             if let Ok(text) = String::from_utf8(value.data().to_vec()) {
@@ -718,6 +827,45 @@ pub(super) fn parquet_field_to_scalar(field: &ParquetField) -> ScalarValue {
             ScalarValue::Text(field.to_string())
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn parquet_decimal_to_text(value: &parquet::data_type::Decimal) -> String {
+    let bytes = value.data();
+    let scale = value.scale();
+    if bytes.len() > 16 {
+        return format!("{value:?}");
+    }
+
+    let sign_extension = if bytes.first().is_some_and(|byte| byte & 0x80 != 0) {
+        0xFF
+    } else {
+        0x00
+    };
+    let mut padded = [sign_extension; 16];
+    let start = 16 - bytes.len();
+    padded[start..].copy_from_slice(bytes);
+    let unscaled = i128::from_be_bytes(padded);
+    format_scaled_i128(unscaled, scale)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn format_scaled_i128(value: i128, scale: i32) -> String {
+    if scale <= 0 {
+        return value.to_string();
+    }
+
+    let sign = if value < 0 { "-" } else { "" };
+    let abs = value.unsigned_abs().to_string();
+    let scale_usize = usize::try_from(scale).unwrap_or(0);
+
+    if abs.len() <= scale_usize {
+        let zeros = "0".repeat(scale_usize.saturating_sub(abs.len()));
+        return format!("{sign}0.{zeros}{abs}");
+    }
+
+    let split = abs.len() - scale_usize;
+    format!("{sign}{}.{}", &abs[..split], &abs[split..])
 }
 
 #[cfg(not(target_arch = "wasm32"))]
