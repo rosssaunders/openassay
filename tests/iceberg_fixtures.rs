@@ -20,6 +20,9 @@ pub struct IcebergFixtureSet {
     pub deribit_ohlcv: PathBuf,
     pub deribit_options: PathBuf,
     pub multi_schema: PathBuf,
+    pub evolved_schema: PathBuf,
+    pub partitioned_trades: PathBuf,
+    pub catalog_browser_root: PathBuf,
 }
 
 impl IcebergFixtureSet {
@@ -34,11 +37,17 @@ impl IcebergFixtureSet {
         let deribit_ohlcv = root.join("deribit_ohlcv");
         let deribit_options = root.join("deribit_options");
         let multi_schema = root.join("multi_schema");
+        let evolved_schema = root.join("evolved_schema");
+        let partitioned_trades = root.join("partitioned_trades");
+        let catalog_browser_root = root.join("catalog_browser_root");
 
         create_trades_table(&deribit_trades, 120, 2)?;
         create_ohlcv_table(&deribit_ohlcv, 60)?;
         create_options_table(&deribit_options, 40)?;
         create_multi_schema_table(&multi_schema)?;
+        create_evolved_schema_table(&evolved_schema)?;
+        create_partitioned_trades_table(&partitioned_trades)?;
+        create_catalog_browser_root(&catalog_browser_root)?;
 
         Ok(Self {
             root,
@@ -46,6 +55,9 @@ impl IcebergFixtureSet {
             deribit_ohlcv,
             deribit_options,
             multi_schema,
+            evolved_schema,
+            partitioned_trades,
+            catalog_browser_root,
         })
     }
 
@@ -456,5 +468,167 @@ fn create_multi_schema_table(table_root: &Path) -> FixtureResult<()> {
         "snapshots": []
     });
     fs::write(metadata_dir.join("v1.metadata.json"), serde_json::to_string_pretty(&metadata)?)?;
+    Ok(())
+}
+
+fn create_evolved_schema_table(table_root: &Path) -> FixtureResult<()> {
+    let (metadata_dir, data_dir) = create_table_dirs(table_root)?;
+
+    let legacy_schema = Arc::new(parse_message_type(
+        "message legacy {
+            REQUIRED INT64 id;
+            REQUIRED INT64 value;
+            REQUIRED BYTE_ARRAY legacy (UTF8);
+        }",
+    )?);
+    let legacy_file = fs::File::create(data_dir.join("v0_0000.parquet"))?;
+    let props = WriterProperties::builder().build();
+    let mut writer = SerializedFileWriter::new(legacy_file, legacy_schema, Arc::new(props.clone()))?;
+    let mut rg = writer.next_row_group()?;
+
+    let ids = vec![1_i64, 2, 3];
+    let values = vec![10_i64, 20, 30];
+    let legacy_values = vec![
+        ByteArray::from("alpha"),
+        ByteArray::from("beta"),
+        ByteArray::from("gamma"),
+    ];
+
+    let mut col = rg.next_column()?.unwrap();
+    col.typed::<Int64Type>().write_batch(&ids, None, None)?;
+    col.close()?;
+
+    let mut col = rg.next_column()?.unwrap();
+    col.typed::<Int64Type>().write_batch(&values, None, None)?;
+    col.close()?;
+
+    let mut col = rg.next_column()?.unwrap();
+    col.typed::<ByteArrayType>().write_batch(&legacy_values, None, None)?;
+    col.close()?;
+
+    rg.close()?;
+    writer.close()?;
+
+    let current_schema = Arc::new(parse_message_type(
+        "message current {
+            REQUIRED INT64 updated_at;
+            REQUIRED INT64 id;
+            REQUIRED DOUBLE amount;
+        }",
+    )?);
+    let current_file = fs::File::create(data_dir.join("v1_0000.parquet"))?;
+    let mut writer = SerializedFileWriter::new(current_file, current_schema, Arc::new(props))?;
+    let mut rg = writer.next_row_group()?;
+
+    let updated_at = vec![BASE_TIMESTAMP_MS + 1_000, BASE_TIMESTAMP_MS + 2_000];
+    let ids = vec![4_i64, 5];
+    let amounts = vec![40.5_f64, 50.5];
+
+    let mut col = rg.next_column()?.unwrap();
+    col.typed::<Int64Type>().write_batch(&updated_at, None, None)?;
+    col.close()?;
+
+    let mut col = rg.next_column()?.unwrap();
+    col.typed::<Int64Type>().write_batch(&ids, None, None)?;
+    col.close()?;
+
+    let mut col = rg.next_column()?.unwrap();
+    col.typed::<DoubleType>().write_batch(&amounts, None, None)?;
+    col.close()?;
+
+    rg.close()?;
+    writer.close()?;
+
+    let metadata = json!({
+        "format-version": 2,
+        "table-uuid": "test-evolved-schema-uuid-001",
+        "current-schema-id": 1,
+        "schemas": [
+            {"schema-id": 0, "fields": [
+                {"id": 1, "name": "id", "type": "long", "required": true},
+                {"id": 2, "name": "value", "type": "long", "required": true},
+                {"id": 4, "name": "legacy", "type": "string", "required": true}
+            ]},
+            {"schema-id": 1, "fields": [
+                {"id": 1, "name": "id", "type": "long", "required": true},
+                {"id": 2, "name": "amount", "type": "double", "required": true},
+                {"id": 3, "name": "updated_at", "type": "long", "required": false}
+            ]}
+        ],
+        "partition-specs": [],
+        "snapshots": []
+    });
+    fs::write(metadata_dir.join("v1.metadata.json"), serde_json::to_string_pretty(&metadata)?)?;
+    Ok(())
+}
+
+fn create_partitioned_trades_table(table_root: &Path) -> FixtureResult<()> {
+    let (metadata_dir, data_dir) = create_table_dirs(table_root)?;
+    for (day, rows, offset) in [
+        ("2024-01-01", vec![(1_i64, 61_000.0_f64), (2, 61_100.0)], 0_i64),
+        ("2024-01-02", vec![(3_i64, 62_000.0_f64), (4, 62_100.0)], 10_000_i64),
+    ] {
+        let partition_dir = data_dir.join(format!("day={day}"));
+        fs::create_dir_all(&partition_dir)?;
+        let schema = Arc::new(parse_message_type(
+            "message partitioned_trades {
+                REQUIRED INT64 trade_id;
+                REQUIRED DOUBLE price;
+                REQUIRED BYTE_ARRAY day (UTF8);
+            }",
+        )?);
+        let file = fs::File::create(partition_dir.join(format!("part-{day}.parquet")))?;
+        let props = WriterProperties::builder().build();
+        let mut writer = SerializedFileWriter::new(file, schema, Arc::new(props))?;
+        let mut rg = writer.next_row_group()?;
+
+        let trade_ids = rows.iter().map(|(trade_id, _)| trade_id + offset).collect::<Vec<_>>();
+        let prices = rows.iter().map(|(_, price)| *price).collect::<Vec<_>>();
+        let days = rows
+            .iter()
+            .map(|_| ByteArray::from(day))
+            .collect::<Vec<_>>();
+
+        let mut col = rg.next_column()?.unwrap();
+        col.typed::<Int64Type>().write_batch(&trade_ids, None, None)?;
+        col.close()?;
+
+        let mut col = rg.next_column()?.unwrap();
+        col.typed::<DoubleType>().write_batch(&prices, None, None)?;
+        col.close()?;
+
+        let mut col = rg.next_column()?.unwrap();
+        col.typed::<ByteArrayType>().write_batch(&days, None, None)?;
+        col.close()?;
+
+        rg.close()?;
+        writer.close()?;
+    }
+
+    let metadata = json!({
+        "format-version": 2,
+        "table-uuid": "test-partitioned-trades-uuid-001",
+        "current-schema-id": 0,
+        "schemas": [{"schema-id": 0, "fields": [
+            {"id": 1, "name": "trade_id", "type": "long", "required": true},
+            {"id": 2, "name": "price", "type": "double", "required": true},
+            {"id": 3, "name": "day", "type": "date", "required": true}
+        ]}],
+        "partition-specs": [{
+            "spec-id": 0,
+            "fields": [
+                {"source-id": 3, "field-id": 1000, "name": "day", "transform": "identity"}
+            ]
+        }],
+        "snapshots": []
+    });
+    fs::write(metadata_dir.join("v1.metadata.json"), serde_json::to_string_pretty(&metadata)?)?;
+    Ok(())
+}
+
+fn create_catalog_browser_root(root: &Path) -> FixtureResult<()> {
+    create_trades_table(&root.join("alpha/crypto/trades"), 12, 1)?;
+    create_options_table(&root.join("alpha/derivatives/options"), 8)?;
+    create_ohlcv_table(&root.join("beta/market/spot/ohlcv"), 6)?;
     Ok(())
 }

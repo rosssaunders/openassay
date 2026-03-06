@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use super::table_functions::evaluate_table_function_with_predicate;
 
 pub async fn execute_query(
     query: &Query,
@@ -525,6 +526,23 @@ async fn execute_select_internal(
                     let remaining_predicate =
                         remaining_predicate_from_applied(&relation_predicates, &applied);
                     (table_eval.rows, remaining_predicate)
+                }
+                TableExpression::Function(function) => {
+                    if let Some(table_eval) = evaluate_table_function_with_predicate(
+                        function,
+                        params,
+                        outer_scope,
+                        select.where_clause.as_ref(),
+                    )
+                    .await?
+                    {
+                        (table_eval.rows, select.where_clause.clone())
+                    } else {
+                        (
+                            evaluate_from_clause(&select.from, params, outer_scope).await?,
+                            select.where_clause.clone(),
+                        )
+                    }
                 }
                 _ => (
                     evaluate_from_clause(&select.from, params, outer_scope).await?,
