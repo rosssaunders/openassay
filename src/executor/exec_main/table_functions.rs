@@ -605,7 +605,10 @@ pub(super) fn eval_iceberg_metadata_function(
     }
     if matches!(args[0], ScalarValue::Null) {
         return Ok((
-            OUTPUT_COLUMNS.iter().map(std::string::ToString::to_string).collect(),
+            OUTPUT_COLUMNS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             Vec::new(),
         ));
     }
@@ -657,7 +660,9 @@ pub(super) fn eval_iceberg_metadata_function(
         metadata_json
             .get("table-uuid")
             .and_then(JsonValue::as_str)
-            .map_or(ScalarValue::Null, |value| ScalarValue::Text(value.to_string())),
+            .map_or(ScalarValue::Null, |value| {
+                ScalarValue::Text(value.to_string())
+            }),
         metadata_json
             .get("format-version")
             .and_then(JsonValue::as_i64)
@@ -676,7 +681,10 @@ pub(super) fn eval_iceberg_metadata_function(
     ];
 
     Ok((
-        OUTPUT_COLUMNS.iter().map(std::string::ToString::to_string).collect(),
+        OUTPUT_COLUMNS
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect(),
         vec![row],
     ))
 }
@@ -1332,8 +1340,9 @@ pub(super) async fn evaluate_relation(
     rel: &TableRef,
     params: &[Option<String>],
     outer_scope: Option<&EvalScope>,
+    projected_columns: Option<Vec<usize>>,
 ) -> Result<TableEval, EngineError> {
-    evaluate_relation_with_predicates(rel, params, outer_scope, &[]).await
+    evaluate_relation_with_predicates(rel, params, outer_scope, &[], projected_columns).await
 }
 
 pub(super) async fn evaluate_relation_with_predicates(
@@ -1341,6 +1350,7 @@ pub(super) async fn evaluate_relation_with_predicates(
     params: &[Option<String>],
     outer_scope: Option<&EvalScope>,
     relation_predicates: &[Expr],
+    projected_columns: Option<Vec<usize>>,
 ) -> Result<TableEval, EngineError> {
     if rel.name.len() == 1
         && let Some(cte) = current_cte_binding(&rel.name[0])
@@ -1443,28 +1453,26 @@ pub(super) async fn evaluate_relation_with_predicates(
         .await?
     };
 
+    let projected_columns = if relation_uses_row_level_security(&table) {
+        None
+    } else {
+        projected_columns
+    };
     let (columns, mut rows) = match table.kind() {
         TableKind::VirtualDual => (Vec::new(), vec![Vec::new()]),
         TableKind::Heap | TableKind::MaterializedView => {
-            let columns = table
+            let all_columns = table
                 .columns()
                 .iter()
                 .map(|column| column.name().to_string())
                 .collect::<Vec<_>>();
+            let columns = projected_column_names(&all_columns, projected_columns.as_deref());
             let rows = with_storage_read(|storage| {
-                let all_rows = storage
-                    .rows_by_table
-                    .get(&table.oid())
-                    .cloned()
-                    .unwrap_or_default();
-                if let Some(offsets) = &index_offsets {
-                    offsets
-                        .iter()
-                        .filter_map(|offset| all_rows.get(*offset).cloned())
-                        .collect::<Vec<_>>()
-                } else {
-                    all_rows
-                }
+                storage.scan_rows(
+                    table.oid(),
+                    index_offsets.as_deref(),
+                    projected_columns.as_deref(),
+                )
             });
             (columns, rows)
         }
@@ -1515,6 +1523,22 @@ pub(super) async fn evaluate_relation_with_predicates(
         columns,
         null_scope,
     })
+}
+
+fn projected_column_names(columns: &[String], projected_columns: Option<&[usize]>) -> Vec<String> {
+    match projected_columns {
+        Some(projected_columns) => projected_columns
+            .iter()
+            .filter_map(|idx| columns.get(*idx).cloned())
+            .collect(),
+        None => columns.to_vec(),
+    }
+}
+
+fn relation_uses_row_level_security(table: &crate::catalog::Table) -> bool {
+    let role = security::current_role();
+    let evaluation = security::rls_evaluation_for_role(&role, table.oid(), RlsCommand::Select);
+    evaluation.enabled && !evaluation.bypass
 }
 
 pub(super) fn relation_lookup_name(parts: &[String]) -> String {

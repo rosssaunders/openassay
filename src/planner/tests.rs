@@ -146,6 +146,26 @@ fn plans_index_scan_for_simple_filter() {
 }
 
 #[test]
+fn plans_empty_projection_for_plain_count_star() {
+    with_isolated_state(|| {
+        run_statement("CREATE TABLE t (id int8, payload text)");
+        let plan = plan_query("SELECT count(*) FROM t");
+        let scan = extract_scan(&plan.physical);
+        assert_eq!(scan.projected_columns, Some(Vec::new()));
+    });
+}
+
+#[test]
+fn plans_only_referenced_columns_for_scan_projection() {
+    with_isolated_state(|| {
+        run_statement("CREATE TABLE t (id int8, payload text, flag bool)");
+        let plan = plan_query("SELECT payload FROM t WHERE flag");
+        let scan = extract_scan(&plan.physical);
+        assert_eq!(scan.projected_columns, Some(vec![1, 2]));
+    });
+}
+
+#[test]
 fn plans_nested_loop_join_for_small_inputs() {
     with_isolated_state(|| {
         run_statement("CREATE TABLE a (id int8)");
