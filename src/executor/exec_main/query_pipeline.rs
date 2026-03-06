@@ -465,8 +465,11 @@ pub(super) async fn execute_select(
         let conjuncts = decompose_and_conjuncts(where_clause);
         evaluate_from_clause_with_pushdown(&select.from, params, outer_scope, &conjuncts).await?
     } else {
-        let source = if select.from.is_empty() {
-            vec![outer_scope.cloned().unwrap_or_default()]
+        if select.from.is_empty() {
+            (
+                vec![outer_scope.cloned().unwrap_or_default()],
+                select.where_clause.clone(),
+            )
         } else if select.from.len() == 1 {
             match &select.from[0] {
                 TableExpression::Relation(rel) => {
@@ -476,22 +479,35 @@ pub(super) async fn execute_select(
                         .map_or_else(Vec::new, decompose_and_conjuncts);
                     let projected_columns =
                         next_scan_projection_hint().and_then(|hint| hint.projected_columns);
-                    evaluate_relation_with_predicates(
+                    let (table_eval, pushed_predicates) = evaluate_relation_with_predicates(
                         rel,
                         params,
                         outer_scope,
                         &relation_predicates,
                         projected_columns,
                     )
-                    .await?
-                    .rows
+                    .await?;
+                    let mut applied = vec![false; relation_predicates.len()];
+                    for idx in pushed_predicates {
+                        if let Some(flag) = applied.get_mut(idx) {
+                            *flag = true;
+                        }
+                    }
+                    let remaining_predicate =
+                        remaining_predicate_from_applied(&relation_predicates, &applied);
+                    (table_eval.rows, remaining_predicate)
                 }
-                _ => evaluate_from_clause(&select.from, params, outer_scope).await?,
+                _ => (
+                    evaluate_from_clause(&select.from, params, outer_scope).await?,
+                    select.where_clause.clone(),
+                ),
             }
         } else {
-            evaluate_from_clause(&select.from, params, outer_scope).await?
-        };
-        (source, select.where_clause.clone())
+            (
+                evaluate_from_clause(&select.from, params, outer_scope).await?,
+                select.where_clause.clone(),
+            )
+        }
     };
 
     if let Some(outer) = outer_scope

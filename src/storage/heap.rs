@@ -1,9 +1,11 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
 use crate::catalog::oid::Oid;
 use crate::storage::btree::{BTreeIndex, CompositeKey};
 use crate::storage::tuple::ScalarValue;
+use crate::utils::adt::misc::compare_values_for_predicate;
 
 pub(crate) const DEFAULT_BTREE_ORDER: usize = 48;
 
@@ -21,6 +23,23 @@ pub(crate) struct StoredIndexDescriptor {
     pub(crate) column_names: Vec<String>,
     pub(crate) column_indexes: Vec<usize>,
     pub(crate) unique: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScanPredicateOp {
+    Eq,
+    NotEq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ScanPredicate {
+    pub(crate) column_index: usize,
+    pub(crate) op: ScanPredicateOp,
+    pub(crate) value: ScalarValue,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -300,6 +319,38 @@ impl InMemoryStorage {
             .map_or_else(Vec::new, |index| index.btree.search(key))
     }
 
+    pub(crate) fn scan_rows_for_table(
+        &self,
+        table_oid: Oid,
+        offsets: Option<&[usize]>,
+        predicates: &[ScanPredicate],
+        projected_columns: Option<&[usize]>,
+    ) -> Result<Vec<Vec<ScalarValue>>, String> {
+        let Some(rows) = self.rows_by_table.get(&table_oid) else {
+            return Ok(Vec::new());
+        };
+        let mut matching_rows = Vec::with_capacity(offsets.map_or(rows.len(), <[usize]>::len));
+
+        if let Some(offsets) = offsets {
+            for offset in offsets {
+                let Some(row) = rows.get(*offset) else {
+                    continue;
+                };
+                if row_matches_scan_predicates(row, predicates)? {
+                    matching_rows.push(project_row(row, projected_columns));
+                }
+            }
+            return Ok(matching_rows);
+        }
+
+        for row in rows {
+            if row_matches_scan_predicates(row, predicates)? {
+                matching_rows.push(project_row(row, projected_columns));
+            }
+        }
+        Ok(matching_rows)
+    }
+
     pub(crate) fn index_for_table(&self, table_oid: Oid, index_name: &str) -> Option<&StoredIndex> {
         self.indexes_by_table
             .get(&(table_oid, index_name.to_ascii_lowercase()))
@@ -393,6 +444,107 @@ fn project_row(row: &[ScalarValue], projected_columns: Option<&[usize]>) -> Vec<
 
 fn composite_key_contains_nulls(key: &[ScalarValue]) -> bool {
     key.iter().any(|value| matches!(value, ScalarValue::Null))
+}
+
+fn row_matches_scan_predicates(
+    row: &[ScalarValue],
+    predicates: &[ScanPredicate],
+) -> Result<bool, String> {
+    for predicate in predicates {
+        let value = row.get(predicate.column_index).ok_or_else(|| {
+            format!(
+                "row does not have predicate column offset {}",
+                predicate.column_index
+            )
+        })?;
+        if !scan_predicate_matches(value, predicate)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn scan_predicate_matches(left: &ScalarValue, predicate: &ScanPredicate) -> Result<bool, String> {
+    if matches!(left, ScalarValue::Null) || matches!(predicate.value, ScalarValue::Null) {
+        return Ok(false);
+    }
+    let ord = compare_values_for_predicate(left, &predicate.value).map_err(|err| err.message)?;
+    Ok(match predicate.op {
+        ScanPredicateOp::Eq => ord == Ordering::Equal,
+        ScanPredicateOp::NotEq => ord != Ordering::Equal,
+        ScanPredicateOp::Lt => ord == Ordering::Less,
+        ScanPredicateOp::Lte => matches!(ord, Ordering::Less | Ordering::Equal),
+        ScanPredicateOp::Gt => ord == Ordering::Greater,
+        ScanPredicateOp::Gte => matches!(ord, Ordering::Greater | Ordering::Equal),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InMemoryStorage, ScanPredicate, ScanPredicateOp};
+    use crate::storage::tuple::ScalarValue;
+
+    #[test]
+    fn scan_rows_for_table_filters_without_cloning_non_matches() {
+        let mut storage = InMemoryStorage::default();
+        storage.rows_by_table.insert(
+            42,
+            vec![
+                vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())],
+                vec![ScalarValue::Int(2), ScalarValue::Text("b".to_string())],
+                vec![ScalarValue::Int(3), ScalarValue::Text("c".to_string())],
+            ],
+        );
+
+        let rows = storage
+            .scan_rows_for_table(
+                42,
+                None,
+                &[ScanPredicate {
+                    column_index: 0,
+                    op: ScanPredicateOp::Gt,
+                    value: ScalarValue::Int(1),
+                }],
+                None,
+            )
+            .expect("scan should succeed");
+
+        assert_eq!(
+            rows,
+            vec![
+                vec![ScalarValue::Int(2), ScalarValue::Text("b".to_string())],
+                vec![ScalarValue::Int(3), ScalarValue::Text("c".to_string())],
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_rows_for_table_honors_offsets() {
+        let mut storage = InMemoryStorage::default();
+        storage.rows_by_table.insert(
+            42,
+            vec![
+                vec![ScalarValue::Int(1)],
+                vec![ScalarValue::Int(2)],
+                vec![ScalarValue::Int(3)],
+            ],
+        );
+
+        let rows = storage
+            .scan_rows_for_table(
+                42,
+                Some(&[2, 0]),
+                &[ScanPredicate {
+                    column_index: 0,
+                    op: ScanPredicateOp::NotEq,
+                    value: ScalarValue::Int(1),
+                }],
+                None,
+            )
+            .expect("scan should succeed");
+
+        assert_eq!(rows, vec![vec![ScalarValue::Int(3)]]);
+    }
 }
 
 static GLOBAL_STORAGE: OnceLock<RwLock<InMemoryStorage>> = OnceLock::new();
