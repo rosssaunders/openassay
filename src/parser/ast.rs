@@ -941,11 +941,13 @@ pub enum Expr {
     ArraySubscript {
         expr: Box<Self>,
         index: Box<Self>,
+        container_type: SubscriptContainerType,
     },
     ArraySlice {
         expr: Box<Self>,
         start: Option<Box<Self>>,
         end: Option<Box<Self>>,
+        container_type: SubscriptContainerType,
     },
     TypedLiteral {
         type_name: String,
@@ -964,6 +966,35 @@ pub enum BooleanTestType {
     True,
     False,
     Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SubscriptContainerType {
+    #[default]
+    Unknown,
+    Other,
+    Array,
+    Jsonb,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SubscriptValueType {
+    #[default]
+    Unknown,
+    Other,
+    Jsonb,
+    Array(Box<Self>),
+}
+
+impl SubscriptValueType {
+    pub fn container_type(&self) -> SubscriptContainerType {
+        match self {
+            Self::Unknown => SubscriptContainerType::Unknown,
+            Self::Other => SubscriptContainerType::Other,
+            Self::Jsonb => SubscriptContainerType::Jsonb,
+            Self::Array(_) => SubscriptContainerType::Array,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

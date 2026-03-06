@@ -2,8 +2,8 @@
 #![allow(dead_code)]
 
 use parquet::data_type::{ByteArray, ByteArrayType, DoubleType, Int64Type};
-use parquet::file::writer::SerializedFileWriter;
 use parquet::file::properties::WriterProperties;
+use parquet::file::writer::SerializedFileWriter;
 use parquet::schema::parser::parse_message_type;
 use serde_json::json;
 use std::fs;
@@ -105,14 +105,24 @@ fn generate_trade_rows(count: usize) -> Vec<TradeRow> {
                     + f64::from((idx * 37 % 5_000) as u32)
                     + f64::from((idx % 11) as u32) * 0.17;
                 let amount = 0.1 + f64::from((idx * 17 % 100) as u32) / 10.0;
-                let iv = if idx % 11 == 0 { None } else { Some(0.5 + f64::from((idx * 7 % 50) as u32) / 100.0) };
+                let iv = if idx % 11 == 0 {
+                    None
+                } else {
+                    Some(0.5 + f64::from((idx * 7 % 50) as u32) / 100.0)
+                };
                 let index_price = 60_000.0 + f64::from((idx * 41 % 4_000) as u32);
                 let trade_id = format!("BTC-PERPETUAL-{}", 12_345 + idx);
                 (price, amount, iv, index_price, trade_id)
             } else {
-                let price = 3_200.0 + f64::from((idx * 13 % 300) as u32) + f64::from((idx % 7) as u32) * 0.09;
+                let price = 3_200.0
+                    + f64::from((idx * 13 % 300) as u32)
+                    + f64::from((idx % 7) as u32) * 0.09;
                 let amount = 1.0 + f64::from((idx * 23 % 990) as u32) / 10.0;
-                let iv = if idx % 7 == 0 { None } else { Some(0.4 + f64::from((idx * 11 % 60) as u32) / 100.0) };
+                let iv = if idx % 7 == 0 {
+                    None
+                } else {
+                    Some(0.4 + f64::from((idx * 11 % 60) as u32) / 100.0)
+                };
                 let index_price = 3_200.0 + f64::from((idx * 19 % 200) as u32);
                 let trade_id = format!("ETH-PERPETUAL-{}", 67_890 + idx);
                 (price, amount, iv, index_price, trade_id)
@@ -120,7 +130,11 @@ fn generate_trade_rows(count: usize) -> Vec<TradeRow> {
 
             TradeRow {
                 timestamp,
-                instrument: if is_btc { "BTC-PERPETUAL".to_string() } else { "ETH-PERPETUAL".to_string() },
+                instrument: if is_btc {
+                    "BTC-PERPETUAL".to_string()
+                } else {
+                    "ETH-PERPETUAL".to_string()
+                },
                 price,
                 amount,
                 direction: direction.to_string(),
@@ -170,8 +184,12 @@ fn create_trades_table(
 
         // instrument
         let mut col = row_group.next_column()?.unwrap();
-        let vals: Vec<ByteArray> = chunk.iter().map(|r| ByteArray::from(r.instrument.as_str())).collect();
-        col.typed::<ByteArrayType>().write_batch(&vals, None, None)?;
+        let vals: Vec<ByteArray> = chunk
+            .iter()
+            .map(|r| ByteArray::from(r.instrument.as_str()))
+            .collect();
+        col.typed::<ByteArrayType>()
+            .write_batch(&vals, None, None)?;
         col.close()?;
 
         // price
@@ -188,15 +206,23 @@ fn create_trades_table(
 
         // direction
         let mut col = row_group.next_column()?.unwrap();
-        let vals: Vec<ByteArray> = chunk.iter().map(|r| ByteArray::from(r.direction.as_str())).collect();
-        col.typed::<ByteArrayType>().write_batch(&vals, None, None)?;
+        let vals: Vec<ByteArray> = chunk
+            .iter()
+            .map(|r| ByteArray::from(r.direction.as_str()))
+            .collect();
+        col.typed::<ByteArrayType>()
+            .write_batch(&vals, None, None)?;
         col.close()?;
 
         // iv (optional)
         let mut col = row_group.next_column()?.unwrap();
         let vals: Vec<f64> = chunk.iter().map(|r| r.iv.unwrap_or(0.0)).collect();
-        let def_levels: Vec<i16> = chunk.iter().map(|r| if r.iv.is_some() { 1 } else { 0 }).collect();
-        col.typed::<DoubleType>().write_batch(&vals, Some(&def_levels), None)?;
+        let def_levels: Vec<i16> = chunk
+            .iter()
+            .map(|r| if r.iv.is_some() { 1 } else { 0 })
+            .collect();
+        col.typed::<DoubleType>()
+            .write_batch(&vals, Some(&def_levels), None)?;
         col.close()?;
 
         // index_price
@@ -207,8 +233,12 @@ fn create_trades_table(
 
         // trade_id
         let mut col = row_group.next_column()?.unwrap();
-        let vals: Vec<ByteArray> = chunk.iter().map(|r| ByteArray::from(r.trade_id.as_str())).collect();
-        col.typed::<ByteArrayType>().write_batch(&vals, None, None)?;
+        let vals: Vec<ByteArray> = chunk
+            .iter()
+            .map(|r| ByteArray::from(r.trade_id.as_str()))
+            .collect();
+        col.typed::<ByteArrayType>()
+            .write_batch(&vals, None, None)?;
         col.close()?;
 
         row_group.close()?;
@@ -261,12 +291,30 @@ fn create_ohlcv_table(table_root: &Path, row_count: usize) -> FixtureResult<()> 
     let mut writer = SerializedFileWriter::new(file, schema, Arc::new(props))?;
     let mut rg = writer.next_row_group()?;
 
-    let ticks: Vec<i64> = (0..row_count).map(|i| BASE_TIMESTAMP_MS + i64::try_from(i).unwrap_or(0) * 3_600_000).collect();
-    let opens: Vec<f64> = (0..row_count).map(|i| 60_000.0 + f64::from((i * 31 % 3_000) as u32)).collect();
-    let highs: Vec<f64> = opens.iter().enumerate().map(|(i, o)| o + f64::from((i * 7 % 500 + 100) as u32)).collect();
-    let lows: Vec<f64> = opens.iter().enumerate().map(|(i, o)| o - f64::from((i * 11 % 400 + 50) as u32)).collect();
-    let closes: Vec<f64> = opens.iter().enumerate().map(|(i, o)| o + f64::from((i * 3 % 200) as u32) - 100.0).collect();
-    let volumes: Vec<f64> = (0..row_count).map(|i| 100.0 + f64::from((i * 53 % 900) as u32)).collect();
+    let ticks: Vec<i64> = (0..row_count)
+        .map(|i| BASE_TIMESTAMP_MS + i64::try_from(i).unwrap_or(0) * 3_600_000)
+        .collect();
+    let opens: Vec<f64> = (0..row_count)
+        .map(|i| 60_000.0 + f64::from((i * 31 % 3_000) as u32))
+        .collect();
+    let highs: Vec<f64> = opens
+        .iter()
+        .enumerate()
+        .map(|(i, o)| o + f64::from((i * 7 % 500 + 100) as u32))
+        .collect();
+    let lows: Vec<f64> = opens
+        .iter()
+        .enumerate()
+        .map(|(i, o)| o - f64::from((i * 11 % 400 + 50) as u32))
+        .collect();
+    let closes: Vec<f64> = opens
+        .iter()
+        .enumerate()
+        .map(|(i, o)| o + f64::from((i * 3 % 200) as u32) - 100.0)
+        .collect();
+    let volumes: Vec<f64> = (0..row_count)
+        .map(|i| 100.0 + f64::from((i * 53 % 900) as u32))
+        .collect();
 
     let mut col = rg.next_column()?.unwrap();
     col.typed::<Int64Type>().write_batch(&ticks, None, None)?;
@@ -296,7 +344,10 @@ fn create_ohlcv_table(table_root: &Path, row_count: usize) -> FixtureResult<()> 
         "partition-specs": [],
         "snapshots": []
     });
-    fs::write(metadata_dir.join("v1.metadata.json"), serde_json::to_string_pretty(&metadata)?)?;
+    fs::write(
+        metadata_dir.join("v1.metadata.json"),
+        serde_json::to_string_pretty(&metadata)?,
+    )?;
     Ok(())
 }
 
@@ -323,40 +374,83 @@ fn create_options_table(table_root: &Path, row_count: usize) -> FixtureResult<()
     let mut writer = SerializedFileWriter::new(file, schema, Arc::new(props))?;
     let mut rg = writer.next_row_group()?;
 
-    let timestamps: Vec<i64> = (0..row_count).map(|i| BASE_TIMESTAMP_MS + i64::try_from(i).unwrap_or(0) * 300_000).collect();
-    let instruments: Vec<ByteArray> = (0..row_count).map(|i| {
-        let strike = 50_000 + (i * 1000 % 20_000);
-        let opt_type = if i % 2 == 0 { "C" } else { "P" };
-        ByteArray::from(format!("BTC-28MAR25-{strike}-{opt_type}").as_str())
-    }).collect();
-    let strikes: Vec<f64> = (0..row_count).map(|i| 50_000.0 + f64::from((i * 1000 % 20_000) as u32)).collect();
-    let option_types: Vec<ByteArray> = (0..row_count).map(|i| ByteArray::from(if i % 2 == 0 { "call" } else { "put" })).collect();
-    let mark_prices: Vec<f64> = (0..row_count).map(|i| 0.05 + f64::from((i * 7 % 20) as u32) / 100.0).collect();
-    let mark_ivs: Vec<f64> = (0..row_count).map(|i| 0.4 + f64::from((i * 11 % 30) as u32) / 100.0).collect();
-    let underlying_prices: Vec<f64> = (0..row_count).map(|i| 60_000.0 + f64::from((i * 41 % 2_000) as u32)).collect();
-    let deltas: Vec<f64> = (0..row_count).map(|i| if i % 2 == 0 { 0.3 + f64::from((i % 5) as u32) / 10.0 } else { -0.3 - f64::from((i % 5) as u32) / 10.0 }).collect();
-    let gammas: Vec<f64> = (0..row_count).map(|i| 0.00001 + f64::from((i % 10) as u32) / 1_000_000.0).collect();
-    let vegas: Vec<f64> = (0..row_count).map(|i| 50.0 + f64::from((i * 13 % 100) as u32)).collect();
-    let thetas: Vec<f64> = (0..row_count).map(|i| -(10.0 + f64::from((i * 7 % 50) as u32))).collect();
-    let open_interests: Vec<f64> = (0..row_count).map(|i| 100.0 + f64::from((i * 37 % 900) as u32)).collect();
+    let timestamps: Vec<i64> = (0..row_count)
+        .map(|i| BASE_TIMESTAMP_MS + i64::try_from(i).unwrap_or(0) * 300_000)
+        .collect();
+    let instruments: Vec<ByteArray> = (0..row_count)
+        .map(|i| {
+            let strike = 50_000 + (i * 1000 % 20_000);
+            let opt_type = if i % 2 == 0 { "C" } else { "P" };
+            ByteArray::from(format!("BTC-28MAR25-{strike}-{opt_type}").as_str())
+        })
+        .collect();
+    let strikes: Vec<f64> = (0..row_count)
+        .map(|i| 50_000.0 + f64::from((i * 1000 % 20_000) as u32))
+        .collect();
+    let option_types: Vec<ByteArray> = (0..row_count)
+        .map(|i| ByteArray::from(if i % 2 == 0 { "call" } else { "put" }))
+        .collect();
+    let mark_prices: Vec<f64> = (0..row_count)
+        .map(|i| 0.05 + f64::from((i * 7 % 20) as u32) / 100.0)
+        .collect();
+    let mark_ivs: Vec<f64> = (0..row_count)
+        .map(|i| 0.4 + f64::from((i * 11 % 30) as u32) / 100.0)
+        .collect();
+    let underlying_prices: Vec<f64> = (0..row_count)
+        .map(|i| 60_000.0 + f64::from((i * 41 % 2_000) as u32))
+        .collect();
+    let deltas: Vec<f64> = (0..row_count)
+        .map(|i| {
+            if i % 2 == 0 {
+                0.3 + f64::from((i % 5) as u32) / 10.0
+            } else {
+                -0.3 - f64::from((i % 5) as u32) / 10.0
+            }
+        })
+        .collect();
+    let gammas: Vec<f64> = (0..row_count)
+        .map(|i| 0.00001 + f64::from((i % 10) as u32) / 1_000_000.0)
+        .collect();
+    let vegas: Vec<f64> = (0..row_count)
+        .map(|i| 50.0 + f64::from((i * 13 % 100) as u32))
+        .collect();
+    let thetas: Vec<f64> = (0..row_count)
+        .map(|i| -(10.0 + f64::from((i * 7 % 50) as u32)))
+        .collect();
+    let open_interests: Vec<f64> = (0..row_count)
+        .map(|i| 100.0 + f64::from((i * 37 % 900) as u32))
+        .collect();
 
     let mut col = rg.next_column()?.unwrap();
-    col.typed::<Int64Type>().write_batch(&timestamps, None, None)?;
+    col.typed::<Int64Type>()
+        .write_batch(&timestamps, None, None)?;
     col.close()?;
 
     let mut col = rg.next_column()?.unwrap();
-    col.typed::<ByteArrayType>().write_batch(&instruments, None, None)?;
+    col.typed::<ByteArrayType>()
+        .write_batch(&instruments, None, None)?;
     col.close()?;
 
     let mut col = rg.next_column()?.unwrap();
-    col.typed::<DoubleType>().write_batch(&strikes, None, None)?;
+    col.typed::<DoubleType>()
+        .write_batch(&strikes, None, None)?;
     col.close()?;
 
     let mut col = rg.next_column()?.unwrap();
-    col.typed::<ByteArrayType>().write_batch(&option_types, None, None)?;
+    col.typed::<ByteArrayType>()
+        .write_batch(&option_types, None, None)?;
     col.close()?;
 
-    for vals in [&mark_prices, &mark_ivs, &underlying_prices, &deltas, &gammas, &vegas, &thetas, &open_interests] {
+    for vals in [
+        &mark_prices,
+        &mark_ivs,
+        &underlying_prices,
+        &deltas,
+        &gammas,
+        &vegas,
+        &thetas,
+        &open_interests,
+    ] {
         let mut col = rg.next_column()?.unwrap();
         col.typed::<DoubleType>().write_batch(vals, None, None)?;
         col.close()?;
@@ -386,7 +480,10 @@ fn create_options_table(table_root: &Path, row_count: usize) -> FixtureResult<()
         "partition-specs": [],
         "snapshots": []
     });
-    fs::write(metadata_dir.join("v1.metadata.json"), serde_json::to_string_pretty(&metadata)?)?;
+    fs::write(
+        metadata_dir.join("v1.metadata.json"),
+        serde_json::to_string_pretty(&metadata)?,
+    )?;
     Ok(())
 }
 
@@ -432,7 +529,11 @@ fn create_multi_schema_table(table_root: &Path) -> FixtureResult<()> {
 
     let ids: Vec<i64> = vec![6, 7, 8];
     let values: Vec<i64> = vec![60, 70, 80];
-    let updated_at: Vec<i64> = vec![BASE_TIMESTAMP_MS, BASE_TIMESTAMP_MS + 1000, BASE_TIMESTAMP_MS + 2000];
+    let updated_at: Vec<i64> = vec![
+        BASE_TIMESTAMP_MS,
+        BASE_TIMESTAMP_MS + 1000,
+        BASE_TIMESTAMP_MS + 2000,
+    ];
 
     let mut col = rg.next_column()?.unwrap();
     col.typed::<Int64Type>().write_batch(&ids, None, None)?;
@@ -443,7 +544,8 @@ fn create_multi_schema_table(table_root: &Path) -> FixtureResult<()> {
     col.close()?;
 
     let mut col = rg.next_column()?.unwrap();
-    col.typed::<Int64Type>().write_batch(&updated_at, None, None)?;
+    col.typed::<Int64Type>()
+        .write_batch(&updated_at, None, None)?;
     col.close()?;
 
     rg.close()?;
@@ -467,7 +569,10 @@ fn create_multi_schema_table(table_root: &Path) -> FixtureResult<()> {
         "partition-specs": [],
         "snapshots": []
     });
-    fs::write(metadata_dir.join("v1.metadata.json"), serde_json::to_string_pretty(&metadata)?)?;
+    fs::write(
+        metadata_dir.join("v1.metadata.json"),
+        serde_json::to_string_pretty(&metadata)?,
+    )?;
     Ok(())
 }
 
@@ -483,7 +588,8 @@ fn create_evolved_schema_table(table_root: &Path) -> FixtureResult<()> {
     )?);
     let legacy_file = fs::File::create(data_dir.join("v0_0000.parquet"))?;
     let props = WriterProperties::builder().build();
-    let mut writer = SerializedFileWriter::new(legacy_file, legacy_schema, Arc::new(props.clone()))?;
+    let mut writer =
+        SerializedFileWriter::new(legacy_file, legacy_schema, Arc::new(props.clone()))?;
     let mut rg = writer.next_row_group()?;
 
     let ids = vec![1_i64, 2, 3];
@@ -503,7 +609,8 @@ fn create_evolved_schema_table(table_root: &Path) -> FixtureResult<()> {
     col.close()?;
 
     let mut col = rg.next_column()?.unwrap();
-    col.typed::<ByteArrayType>().write_batch(&legacy_values, None, None)?;
+    col.typed::<ByteArrayType>()
+        .write_batch(&legacy_values, None, None)?;
     col.close()?;
 
     rg.close()?;
@@ -525,7 +632,8 @@ fn create_evolved_schema_table(table_root: &Path) -> FixtureResult<()> {
     let amounts = vec![40.5_f64, 50.5];
 
     let mut col = rg.next_column()?.unwrap();
-    col.typed::<Int64Type>().write_batch(&updated_at, None, None)?;
+    col.typed::<Int64Type>()
+        .write_batch(&updated_at, None, None)?;
     col.close()?;
 
     let mut col = rg.next_column()?.unwrap();
@@ -533,7 +641,8 @@ fn create_evolved_schema_table(table_root: &Path) -> FixtureResult<()> {
     col.close()?;
 
     let mut col = rg.next_column()?.unwrap();
-    col.typed::<DoubleType>().write_batch(&amounts, None, None)?;
+    col.typed::<DoubleType>()
+        .write_batch(&amounts, None, None)?;
     col.close()?;
 
     rg.close()?;
@@ -558,15 +667,26 @@ fn create_evolved_schema_table(table_root: &Path) -> FixtureResult<()> {
         "partition-specs": [],
         "snapshots": []
     });
-    fs::write(metadata_dir.join("v1.metadata.json"), serde_json::to_string_pretty(&metadata)?)?;
+    fs::write(
+        metadata_dir.join("v1.metadata.json"),
+        serde_json::to_string_pretty(&metadata)?,
+    )?;
     Ok(())
 }
 
 fn create_partitioned_trades_table(table_root: &Path) -> FixtureResult<()> {
     let (metadata_dir, data_dir) = create_table_dirs(table_root)?;
     for (day, rows, offset) in [
-        ("2024-01-01", vec![(1_i64, 61_000.0_f64), (2, 61_100.0)], 0_i64),
-        ("2024-01-02", vec![(3_i64, 62_000.0_f64), (4, 62_100.0)], 10_000_i64),
+        (
+            "2024-01-01",
+            vec![(1_i64, 61_000.0_f64), (2, 61_100.0)],
+            0_i64,
+        ),
+        (
+            "2024-01-02",
+            vec![(3_i64, 62_000.0_f64), (4, 62_100.0)],
+            10_000_i64,
+        ),
     ] {
         let partition_dir = data_dir.join(format!("day={day}"));
         fs::create_dir_all(&partition_dir)?;
@@ -582,7 +702,10 @@ fn create_partitioned_trades_table(table_root: &Path) -> FixtureResult<()> {
         let mut writer = SerializedFileWriter::new(file, schema, Arc::new(props))?;
         let mut rg = writer.next_row_group()?;
 
-        let trade_ids = rows.iter().map(|(trade_id, _)| trade_id + offset).collect::<Vec<_>>();
+        let trade_ids = rows
+            .iter()
+            .map(|(trade_id, _)| trade_id + offset)
+            .collect::<Vec<_>>();
         let prices = rows.iter().map(|(_, price)| *price).collect::<Vec<_>>();
         let days = rows
             .iter()
@@ -590,7 +713,8 @@ fn create_partitioned_trades_table(table_root: &Path) -> FixtureResult<()> {
             .collect::<Vec<_>>();
 
         let mut col = rg.next_column()?.unwrap();
-        col.typed::<Int64Type>().write_batch(&trade_ids, None, None)?;
+        col.typed::<Int64Type>()
+            .write_batch(&trade_ids, None, None)?;
         col.close()?;
 
         let mut col = rg.next_column()?.unwrap();
@@ -598,7 +722,8 @@ fn create_partitioned_trades_table(table_root: &Path) -> FixtureResult<()> {
         col.close()?;
 
         let mut col = rg.next_column()?.unwrap();
-        col.typed::<ByteArrayType>().write_batch(&days, None, None)?;
+        col.typed::<ByteArrayType>()
+            .write_batch(&days, None, None)?;
         col.close()?;
 
         rg.close()?;
@@ -622,7 +747,10 @@ fn create_partitioned_trades_table(table_root: &Path) -> FixtureResult<()> {
         }],
         "snapshots": []
     });
-    fs::write(metadata_dir.join("v1.metadata.json"), serde_json::to_string_pretty(&metadata)?)?;
+    fs::write(
+        metadata_dir.join("v1.metadata.json"),
+        serde_json::to_string_pretty(&metadata)?,
+    )?;
     Ok(())
 }
 

@@ -1030,11 +1030,13 @@ fn mark_window_columns_from_expr(
                 mark_window_columns_from_expr(value, relations, select_aliases);
             }
         }
-        Expr::ArraySubscript { expr, index } => {
+        Expr::ArraySubscript { expr, index, .. } => {
             mark_window_columns_from_expr(expr, relations, select_aliases);
             mark_window_columns_from_expr(index, relations, select_aliases);
         }
-        Expr::ArraySlice { expr, start, end } => {
+        Expr::ArraySlice {
+            expr, start, end, ..
+        } => {
             mark_window_columns_from_expr(expr, relations, select_aliases);
             if let Some(start) = start {
                 mark_window_columns_from_expr(start, relations, select_aliases);
@@ -1251,11 +1253,13 @@ fn mark_expr_columns(
                 mark_expr_columns(value, relations, select_aliases, false);
             }
         }
-        Expr::ArraySubscript { expr, index } => {
+        Expr::ArraySubscript { expr, index, .. } => {
             mark_expr_columns(expr, relations, select_aliases, false);
             mark_expr_columns(index, relations, select_aliases, false);
         }
-        Expr::ArraySlice { expr, start, end } => {
+        Expr::ArraySlice {
+            expr, start, end, ..
+        } => {
             mark_expr_columns(expr, relations, select_aliases, false);
             if let Some(start) = start {
                 mark_expr_columns(start, relations, select_aliases, false);
@@ -1515,11 +1519,13 @@ fn mark_outer_relation_columns_in_expr(expr: &Expr, relations: &mut [ScanProject
                 mark_outer_relation_columns_in_expr(value, relations);
             }
         }
-        Expr::ArraySubscript { expr, index } => {
+        Expr::ArraySubscript { expr, index, .. } => {
             mark_outer_relation_columns_in_expr(expr, relations);
             mark_outer_relation_columns_in_expr(index, relations);
         }
-        Expr::ArraySlice { expr, start, end } => {
+        Expr::ArraySlice {
+            expr, start, end, ..
+        } => {
             mark_outer_relation_columns_in_expr(expr, relations);
             if let Some(start) = start {
                 mark_outer_relation_columns_in_expr(start, relations);

@@ -1,6 +1,8 @@
 use crate::catalog::{ColumnSpec, TableKind, TypeSignature, with_catalog_write};
 use crate::commands::sequence::{SequenceState, with_sequences_read, with_sequences_write};
-use crate::parser::ast::{CreateTableStatement, Expr, TableConstraint, TypeName};
+use crate::parser::ast::{
+    CreateTableStatement, Expr, SubscriptValueType, TableConstraint, TypeName,
+};
 use crate::security;
 use crate::tcop::engine::{EngineError, QueryResult, with_storage_write};
 
@@ -186,6 +188,7 @@ pub(crate) fn column_spec_from_ast(
     Ok(ColumnSpec {
         name: column.name.to_ascii_lowercase(),
         type_signature: type_signature_from_ast(column.data_type.clone()),
+        subscript_value_type: subscript_value_type_from_ast(&column.data_type),
         nullable: column.nullable && !column.primary_key,
         unique: column.unique || column.primary_key,
         primary_key: column.primary_key,
@@ -320,6 +323,16 @@ pub(crate) fn type_signature_from_ast(ty: TypeName) -> TypeSignature {
     }
 }
 
+pub(crate) fn subscript_value_type_from_ast(ty: &TypeName) -> SubscriptValueType {
+    match ty {
+        TypeName::Jsonb => SubscriptValueType::Jsonb,
+        TypeName::Array(inner) => {
+            SubscriptValueType::Array(Box::new(subscript_value_type_from_ast(inner)))
+        }
+        _ => SubscriptValueType::Other,
+    }
+}
+
 async fn execute_create_table_as_select(
     create: &CreateTableStatement,
     query: &crate::parser::ast::Query,
@@ -349,6 +362,7 @@ async fn execute_create_table_as_select(
             ColumnSpec {
                 name: col.name.clone(),
                 type_signature,
+                subscript_value_type: col.subscript_value_type.clone(),
                 nullable: true,
                 unique: false,
                 primary_key: false,

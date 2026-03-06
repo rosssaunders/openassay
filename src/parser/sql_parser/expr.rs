@@ -59,6 +59,7 @@ impl Parser {
                         expr: Box::new(lhs),
                         start: None,
                         end: end_expr,
+                        container_type: crate::parser::ast::SubscriptContainerType::Unknown,
                     };
                 } else {
                     // Parse first expression
@@ -85,6 +86,7 @@ impl Parser {
                                 expr: Box::new(lhs),
                                 start: Some(Box::new(first_expr)),
                                 end: None,
+                                container_type: crate::parser::ast::SubscriptContainerType::Unknown,
                             };
                         } else {
                             // arr[start:end]
@@ -97,6 +99,7 @@ impl Parser {
                                 expr: Box::new(lhs),
                                 start: Some(Box::new(first_expr)),
                                 end: Some(Box::new(end_expr)),
+                                container_type: crate::parser::ast::SubscriptContainerType::Unknown,
                             };
                         }
                     } else {
@@ -108,6 +111,7 @@ impl Parser {
                         lhs = Expr::ArraySubscript {
                             expr: Box::new(lhs),
                             index: Box::new(first_expr),
+                            container_type: crate::parser::ast::SubscriptContainerType::Unknown,
                         };
                     }
                 }

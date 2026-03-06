@@ -5849,6 +5849,12 @@ fn test_jsonb_subscript_reads() {
     let result = run("SELECT ('{\"a\":1}'::jsonb)['missing'] IS NULL AS is_null");
     assert_eq!(result.rows, vec![vec![ScalarValue::Bool(true)]]);
 
+    let result = run("SELECT (ARRAY['{\"a\":1}', '{\"b\":2}'])[1] AS elem");
+    assert_eq!(
+        result.rows,
+        vec![vec![ScalarValue::Text("{\"a\":1}".to_string())]]
+    );
+
     with_isolated_state(|| {
         let statement =
             parse_statement("SELECT ('{\"a\":1}'::text)['a']").expect("parse should succeed");

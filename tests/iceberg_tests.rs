@@ -71,7 +71,11 @@ fn iceberg_scan_trades_returns_rows() {
             sql_path_literal(&guard.fixtures.deribit_trades)
         );
         let result = run_statement(&sql);
-        assert!(result.rows.len() >= 100, "expected 100+ trade rows, got {}", result.rows.len());
+        assert!(
+            result.rows.len() >= 100,
+            "expected 100+ trade rows, got {}",
+            result.rows.len()
+        );
         assert_eq!(result.columns.len(), 8); // timestamp, instrument, price, amount, direction, iv, index_price, trade_id
     });
 }
@@ -137,8 +141,14 @@ fn iceberg_scan_with_order_by_limit() {
         assert_eq!(result.rows.len(), 5);
         // Verify descending order
         for i in 0..4 {
-            let a = match &result.rows[i][0] { ScalarValue::Float(v) => *v, _ => panic!("expected float") };
-            let b = match &result.rows[i + 1][0] { ScalarValue::Float(v) => *v, _ => panic!("expected float") };
+            let a = match &result.rows[i][0] {
+                ScalarValue::Float(v) => *v,
+                _ => panic!("expected float"),
+            };
+            let b = match &result.rows[i + 1][0] {
+                ScalarValue::Float(v) => *v,
+                _ => panic!("expected float"),
+            };
             assert!(a >= b, "expected descending order: {a} >= {b}");
         }
     });
@@ -172,8 +182,14 @@ fn iceberg_scan_with_group_by() {
         );
         let result = run_statement(&sql);
         assert_eq!(result.rows.len(), 2); // BTC-PERPETUAL, ETH-PERPETUAL
-        assert_eq!(result.rows[0][0], ScalarValue::Text("BTC-PERPETUAL".to_string()));
-        assert_eq!(result.rows[1][0], ScalarValue::Text("ETH-PERPETUAL".to_string()));
+        assert_eq!(
+            result.rows[0][0],
+            ScalarValue::Text("BTC-PERPETUAL".to_string())
+        );
+        assert_eq!(
+            result.rows[1][0],
+            ScalarValue::Text("ETH-PERPETUAL".to_string())
+        );
     });
 }
 
@@ -189,7 +205,10 @@ fn iceberg_scan_vwap() {
         assert_eq!(result.rows.len(), 2);
         // BTC VWAP should be in 60k range
         if let ScalarValue::Float(vwap) = &result.rows[0][1] {
-            assert!(*vwap > 55_000.0 && *vwap < 70_000.0, "BTC VWAP out of range: {vwap}");
+            assert!(
+                *vwap > 55_000.0 && *vwap < 70_000.0,
+                "BTC VWAP out of range: {vwap}"
+            );
         }
     });
 }
@@ -292,12 +311,14 @@ fn iceberg_partition_pruning_reduces_scanned_files() {
             },
             other => panic!("expected query statement, got {other:?}"),
         };
-        let plan = block_on(openassay::catalog::iceberg::scan_iceberg_table_with_predicate(
-            &sql_path_literal(&guard.fixtures.partitioned_trades),
-            Some(&predicate),
-            &["iceberg_scan".to_string()],
-            &[],
-        ))
+        let plan = block_on(
+            openassay::catalog::iceberg::scan_iceberg_table_with_predicate(
+                &sql_path_literal(&guard.fixtures.partitioned_trades),
+                Some(&predicate),
+                &["iceberg_scan".to_string()],
+                &[],
+            ),
+        )
         .expect("partitioned scan should succeed");
         assert_eq!(plan.scanned_files, 1);
         assert_eq!(plan.pruned_files, 1);
@@ -309,12 +330,14 @@ fn iceberg_partition_pruning_reduces_scanned_files() {
 fn browser_catalog_browse_lists_iceberg_catalogs_and_tables() {
     with_isolated_state(|| {
         let guard = FixtureGuard::create();
-        let payload = block_on(openassay::browser::browse_catalog_json(
-            &sql_path_literal(&guard.fixtures.catalog_browser_root),
-        ));
+        let payload = block_on(openassay::browser::browse_catalog_json(&sql_path_literal(
+            &guard.fixtures.catalog_browser_root,
+        )));
         let json: JsonValue = serde_json::from_str(&payload).expect("browse payload should parse");
         assert_eq!(json.get("ok"), Some(&JsonValue::Bool(true)));
-        let catalogs = json["catalogs"].as_array().expect("catalogs array expected");
+        let catalogs = json["catalogs"]
+            .as_array()
+            .expect("catalogs array expected");
         assert_eq!(catalogs.len(), 2);
         assert_eq!(catalogs[0]["name"], JsonValue::String("alpha".to_string()));
         assert_eq!(catalogs[1]["name"], JsonValue::String("beta".to_string()));
@@ -323,22 +346,18 @@ fn browser_catalog_browse_lists_iceberg_catalogs_and_tables() {
             .as_array()
             .expect("alpha namespaces expected");
         assert!(alpha_namespaces.iter().any(|namespace| {
-            namespace["tables"]
-                .as_array()
-                .is_some_and(|tables| {
-                    tables
-                        .iter()
-                        .any(|table| table["name"] == JsonValue::String("trades".to_string()))
-                })
+            namespace["tables"].as_array().is_some_and(|tables| {
+                tables
+                    .iter()
+                    .any(|table| table["name"] == JsonValue::String("trades".to_string()))
+            })
         }));
         assert!(alpha_namespaces.iter().any(|namespace| {
-            namespace["tables"]
-                .as_array()
-                .is_some_and(|tables| {
-                    tables
-                        .iter()
-                        .any(|table| table["name"] == JsonValue::String("options".to_string()))
-                })
+            namespace["tables"].as_array().is_some_and(|tables| {
+                tables
+                    .iter()
+                    .any(|table| table["name"] == JsonValue::String("options".to_string()))
+            })
         }));
     });
 }
@@ -368,10 +387,8 @@ fn iceberg_scan_nonexistent_path_errors() {
 #[test]
 fn iceberg_scan_empty_directory_errors() {
     with_isolated_state(|| {
-        let empty_dir = std::env::temp_dir().join(format!(
-            "openassay-empty-iceberg-{}",
-            std::process::id()
-        ));
+        let empty_dir =
+            std::env::temp_dir().join(format!("openassay-empty-iceberg-{}", std::process::id()));
         if empty_dir.exists() {
             std::fs::remove_dir_all(&empty_dir).ok();
         }
@@ -443,7 +460,10 @@ fn iceberg_metadata_returns_table_info() {
 fn iceberg_metadata_from_metadata_file() {
     with_isolated_state(|| {
         let guard = FixtureGuard::create();
-        let metadata_file = guard.fixtures.deribit_trades.join("metadata/v1.metadata.json");
+        let metadata_file = guard
+            .fixtures
+            .deribit_trades
+            .join("metadata/v1.metadata.json");
         let sql = format!(
             "SELECT format_version, total_data_files FROM iceberg_metadata('{}')",
             sql_path_literal(&metadata_file)

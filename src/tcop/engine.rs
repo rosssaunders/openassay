@@ -92,8 +92,10 @@ impl PlannedQuery {
 
 pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError> {
     // Run semantic analysis before planning
+    let mut statement = statement;
     let search_path = crate::catalog::SearchPath::default();
     crate::analyzer::analyze(&statement, &search_path)?;
+    crate::tcop::pquery::annotate_statement_subscript_types(&mut statement)?;
     let plan = planner::plan(&statement);
 
     let (columns, column_type_oids, returns_data, command_tag) = match &statement {
@@ -3520,6 +3522,7 @@ pub(crate) fn coerce_value_for_column_spec(
         0,
         spec.name.clone(),
         spec.type_signature,
+        spec.subscript_value_type.clone(),
         0,
         spec.nullable,
         spec.unique,

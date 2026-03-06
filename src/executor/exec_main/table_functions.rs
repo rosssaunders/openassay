@@ -112,7 +112,12 @@ pub(super) async fn evaluate_table_function_with_predicate(
         return Ok(Some(TableEval {
             rows: Vec::new(),
             columns: vec!["value".to_string()],
-            null_scope: scope_from_row(&["value".to_string()], &[ScalarValue::Null], &[], &["value".to_string()]),
+            null_scope: scope_from_row(
+                &["value".to_string()],
+                &[ScalarValue::Null],
+                &[],
+                &["value".to_string()],
+            ),
         }));
     }
 
@@ -159,7 +164,12 @@ pub(super) async fn evaluate_table_function_with_predicate(
     let projection_names = columns.clone();
     let mut scoped_rows = Vec::with_capacity(scan_plan.rows.len());
     for row in &scan_plan.rows {
-        scoped_rows.push(scope_from_row(&columns, row, &qualifiers, &projection_names));
+        scoped_rows.push(scope_from_row(
+            &columns,
+            row,
+            &qualifiers,
+            &projection_names,
+        ));
     }
     let null_values = vec![ScalarValue::Null; columns.len()];
     let null_scope = scope_from_row(&columns, &null_values, &qualifiers, &projection_names);
@@ -724,12 +734,11 @@ pub(super) async fn eval_iceberg_metadata_function(
         });
     }
 
-    let metadata =
-        crate::catalog::iceberg::read_iceberg_metadata(&input_path)
-            .await
-            .map_err(|error| EngineError {
-                message: format!("{fn_name}(): {}", error.message),
-            })?;
+    let metadata = crate::catalog::iceberg::read_iceberg_metadata(&input_path)
+        .await
+        .map_err(|error| EngineError {
+            message: format!("{fn_name}(): {}", error.message),
+        })?;
 
     let row = vec![
         metadata
