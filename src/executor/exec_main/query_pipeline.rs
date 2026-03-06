@@ -78,10 +78,13 @@ pub fn execute_query_with_outer<'a>(
                 offset: None,
             };
             let mut result = with_scan_projection_hints(&execution_query, async {
-                execute_query_expr_with_outer(&body, params, outer_scope).await
+                if let QueryExpr::Select(select) = &body {
+                    execute_select_with_query(select, query, params, outer_scope).await
+                } else {
+                    execute_query_expr_with_outer(&body, params, outer_scope).await
+                }
             })
             .await?;
-            apply_order_by(&mut result, query, params).await?;
 
             // Strip hidden ORDER BY columns
             if num_hidden > 0 {
@@ -92,7 +95,10 @@ pub fn execute_query_with_outer<'a>(
                 }
             }
 
-            apply_offset_limit(&mut result, query, params).await?;
+            if !matches!(body, QueryExpr::Select(_)) {
+                apply_order_by(&mut result, query, params).await?;
+                apply_offset_limit(&mut result, query, params).await?;
+            }
             Ok(result)
         })
         .await
@@ -329,6 +335,24 @@ pub(super) async fn execute_select(
     params: &[Option<String>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<QueryResult, EngineError> {
+    execute_select_internal(select, None, params, outer_scope).await
+}
+
+async fn execute_select_with_query(
+    select: &SelectStatement,
+    query: &Query,
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+) -> Result<QueryResult, EngineError> {
+    execute_select_internal(select, Some(query), params, outer_scope).await
+}
+
+async fn execute_select_internal(
+    select: &SelectStatement,
+    query: Option<&Query>,
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+) -> Result<QueryResult, EngineError> {
     let cte_columns = active_cte_context()
         .into_iter()
         .map(|(name, binding)| (name, binding.columns))
@@ -347,6 +371,11 @@ pub(super) async fn execute_select(
         Vec::new()
     } else {
         derive_select_columns(select, &cte_columns)?
+    };
+    let mut row_collector = if let Some(query) = query {
+        Some(QueryRowCollector::new(query, params).await?)
+    } else {
+        None
     };
     let mut rows = Vec::new();
 
@@ -518,6 +547,41 @@ pub(super) async fn execute_select(
         }
     }
 
+    let supports_direct_streaming =
+        row_collector.is_some() && !has_aggregate && !has_window && select.quantifier.is_none();
+    let emit_directly_to_collector = row_collector.is_some() && select.quantifier.is_none();
+    if supports_direct_streaming {
+        for scope in source_rows {
+            if let Some(predicate) = &remaining_predicate
+                && !truthy(&eval_expr(predicate, &scope, params).await?)
+            {
+                continue;
+            }
+            let row =
+                project_select_row(&select.targets, &scope, params, wildcard_columns.as_deref())
+                    .await?;
+            if !row_collector
+                .as_mut()
+                .expect("streaming collector must be initialized")
+                .push_row(&columns, row, params)
+                .await?
+            {
+                break;
+            }
+        }
+
+        let rows = row_collector
+            .take()
+            .expect("streaming collector must be present")
+            .finish();
+        return Ok(QueryResult {
+            columns,
+            rows_affected: rows.len() as u64,
+            rows,
+            command_tag: "SELECT".to_string(),
+        });
+    }
+
     let filtered_rows = if let Some(predicate) = &remaining_predicate {
         let mut rows = Vec::with_capacity(source_rows.len());
         for scope in source_rows {
@@ -643,7 +707,18 @@ pub(super) async fn execute_select(
                         .await?,
                     );
                 }
-                rows.push(row);
+                if emit_directly_to_collector {
+                    if !row_collector
+                        .as_mut()
+                        .expect("collector must be present when emitting directly")
+                        .push_row(&columns, row, params)
+                        .await?
+                    {
+                        break;
+                    }
+                } else {
+                    rows.push(row);
+                }
             }
         }
     } else if has_window {
@@ -658,14 +733,36 @@ pub(super) async fn execute_select(
                 wildcard_columns.as_deref(),
             )
             .await?;
-            rows.push(row);
+            if emit_directly_to_collector {
+                if !row_collector
+                    .as_mut()
+                    .expect("collector must be present when emitting directly")
+                    .push_row(&columns, row, params)
+                    .await?
+                {
+                    break;
+                }
+            } else {
+                rows.push(row);
+            }
         }
     } else {
         for scope in filtered_rows {
             let row =
                 project_select_row(&select.targets, &scope, params, wildcard_columns.as_deref())
                     .await?;
-            rows.push(row);
+            if emit_directly_to_collector {
+                if !row_collector
+                    .as_mut()
+                    .expect("collector must be present when emitting directly")
+                    .push_row(&columns, row, params)
+                    .await?
+                {
+                    break;
+                }
+            } else {
+                rows.push(row);
+            }
         }
     }
 
@@ -691,6 +788,21 @@ pub(super) async fn execute_select(
         } else {
             rows = dedupe_rows(rows);
         }
+    }
+
+    if let Some(mut collector) = row_collector {
+        for row in rows {
+            if !collector.push_row(&columns, row, params).await? {
+                break;
+            }
+        }
+        let rows = collector.finish();
+        return Ok(QueryResult {
+            columns,
+            rows_affected: rows.len() as u64,
+            rows,
+            command_tag: "SELECT".to_string(),
+        });
     }
 
     Ok(QueryResult {

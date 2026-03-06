@@ -58,7 +58,11 @@ fn try_query(session: &mut PostgresSession, label: &str, sql: &str) -> bool {
 
 #[test]
 fn clickbench_query_suite() {
+    let _guard = super::benchmark_lock()
+        .lock()
+        .expect("benchmark lock should not be poisoned");
     let mut session = PostgresSession::new();
+    exec(&mut session, "DROP TABLE IF EXISTS hits");
     exec(&mut session, include_str!("clickbench_schema.sql"));
     exec(&mut session, include_str!("clickbench_data.sql"));
 

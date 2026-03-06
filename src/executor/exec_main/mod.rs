@@ -84,7 +84,7 @@ use from_clause::{
     relation_index_offsets_for_predicates, remaining_predicate_from_applied,
 };
 use order_limit::{
-    apply_offset_limit, apply_order_by, augment_select_for_order_by,
+    QueryRowCollector, apply_offset_limit, apply_order_by, augment_select_for_order_by,
     collect_extra_order_by_columns, scalar_cmp,
 };
 use query_pipeline::execute_query_expr_with_outer;

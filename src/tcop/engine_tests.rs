@@ -137,6 +137,37 @@ fn executes_set_operations_and_order_limit() {
 }
 
 #[test]
+fn executes_multi_column_order_limit_with_mixed_directions_and_nulls() {
+    let results = run_batch(&[
+        "CREATE TABLE t (a int8, b int8)",
+        "INSERT INTO t VALUES (1, NULL), (1, 2), (1, 1), (2, NULL), (2, 3), (2, 1)",
+        "SELECT a, b FROM t ORDER BY a DESC, b ASC LIMIT 4",
+    ]);
+    assert_eq!(
+        results[2].rows,
+        vec![
+            vec![ScalarValue::Int(2), ScalarValue::Null],
+            vec![ScalarValue::Int(2), ScalarValue::Int(1)],
+            vec![ScalarValue::Int(2), ScalarValue::Int(3)],
+            vec![ScalarValue::Int(1), ScalarValue::Null],
+        ]
+    );
+}
+
+#[test]
+fn order_limit_with_offset_preserves_input_order_for_equal_keys() {
+    let results = run_batch(&[
+        "CREATE TABLE t (id int8, grp int8)",
+        "INSERT INTO t VALUES (10, 1), (20, 1), (30, 1), (40, 2)",
+        "SELECT id FROM t ORDER BY grp LIMIT 2 OFFSET 1",
+    ]);
+    assert_eq!(
+        results[2].rows,
+        vec![vec![ScalarValue::Int(20)], vec![ScalarValue::Int(30)]]
+    );
+}
+
+#[test]
 fn executes_parameterized_expression() {
     let result = with_isolated_state(|| run_statement("SELECT $1 + 5", &[Some("7".to_string())]));
     assert_eq!(result.rows[0], vec![ScalarValue::Int(12)]);
