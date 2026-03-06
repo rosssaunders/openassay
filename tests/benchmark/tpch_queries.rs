@@ -62,6 +62,9 @@ fn try_query(session: &mut PostgresSession, label: &str, sql: &str) -> bool {
 
 #[test]
 fn tpch_query_suite() {
+    let _guard = super::benchmark_lock()
+        .lock()
+        .expect("benchmark lock should not be poisoned");
     let mut session = PostgresSession::new();
     exec(&mut session, include_str!("tpch_schema.sql"));
     exec(&mut session, include_str!("tpch_data.sql"));
