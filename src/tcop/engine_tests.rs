@@ -2112,6 +2112,24 @@ fn non_self_referencing_cte_in_recursive_with_executes() {
 }
 
 #[test]
+fn recursive_cte_text_output_subscript_is_not_treated_as_jsonb() {
+    with_isolated_state(|| {
+        let statement = parse_statement(
+            "WITH RECURSIVE t(v) AS (SELECT '{\"a\":1}'::text UNION ALL SELECT v FROM t WHERE false) SELECT v['a'] FROM t",
+        )
+        .expect("statement should parse");
+        let planned = plan_statement(statement).expect("statement should plan");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("text output should not be treated as jsonb");
+        assert!(
+            err.message.contains("array"),
+            "expected array-related error, got: {}",
+            err.message
+        );
+    });
+}
+
+#[test]
 fn create_view_reads_live_underlying_rows() {
     let results = run_batch(&[
         "CREATE TABLE users (id int8 PRIMARY KEY, name text)",
@@ -4051,8 +4069,12 @@ fn drop_table_removes_relation() {
         run_statement("DROP TABLE users", &[]);
 
         let statement = parse_statement("SELECT id FROM users").expect("statement should parse");
-        let planned = plan_statement(statement).expect("statement should plan");
-        let err = block_on(execute_planned_query(&planned, &[])).expect_err("select should fail");
+        let err = match plan_statement(statement) {
+            Ok(planned) => {
+                block_on(execute_planned_query(&planned, &[])).expect_err("select should fail")
+            }
+            Err(err) => err,
+        };
         assert!(err.message.contains("does not exist"));
     });
 }

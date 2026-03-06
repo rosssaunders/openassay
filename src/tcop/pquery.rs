@@ -764,6 +764,48 @@ fn annotate_query_expr_subscript_types(
     }
 }
 
+fn annotate_recursive_cte_subscript_types(
+    cte: &mut crate::parser::ast::CommonTableExpr,
+    ctes: &mut HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    let cte_name = cte.name.to_ascii_lowercase();
+    let QueryExpr::SetOperation {
+        left,
+        op,
+        quantifier: _,
+        right,
+    } = &mut cte.query.body
+    else {
+        return Err(EngineError {
+            message: format!(
+                "recursive query \"{}\" must be of the form non-recursive-term UNION [ALL] recursive-term",
+                cte.name
+            ),
+        });
+    };
+    if *op != SetOperator::Union {
+        return Err(EngineError {
+            message: format!(
+                "recursive query \"{}\" must use UNION or UNION ALL",
+                cte.name
+            ),
+        });
+    }
+    validate_recursive_cte_terms(&cte.name, &cte_name, left, right)?;
+
+    annotate_query_expr_subscript_types(left, ctes)?;
+    let mut left_cols = derive_query_expr_output_columns(left, ctes)?;
+    if !cte.column_names.is_empty() {
+        for (idx, name) in cte.column_names.iter().take(left_cols.len()).enumerate() {
+            left_cols[idx].name = name.clone();
+        }
+    }
+
+    let mut recursive_ctes = ctes.clone();
+    recursive_ctes.insert(cte_name, left_cols);
+    annotate_query_expr_subscript_types(right, &mut recursive_ctes)
+}
+
 fn annotate_query_subscript_types_with_ctes(
     query: &mut Query,
     ctes: &mut HashMap<String, Vec<PlannedOutputColumn>>,
@@ -771,7 +813,14 @@ fn annotate_query_subscript_types_with_ctes(
     let mut local_ctes = ctes.clone();
     if let Some(with) = &mut query.with {
         for cte in &mut with.ctes {
-            annotate_query_subscript_types_with_ctes(&mut cte.query, &mut local_ctes)?;
+            if with.recursive
+                && query_references_relation(&cte.query, &cte.name)
+                && is_recursive_union_expr(&cte.query.body)
+            {
+                annotate_recursive_cte_subscript_types(cte, &mut local_ctes)?;
+            } else {
+                annotate_query_subscript_types_with_ctes(&mut cte.query, &mut local_ctes)?;
+            }
             let mut cols = derive_query_output_columns_with_ctes(&cte.query, &mut local_ctes)?;
             if !cte.column_names.is_empty() {
                 for (idx, name) in cte.column_names.iter().take(cols.len()).enumerate() {
@@ -2129,14 +2178,14 @@ fn expand_table_expression_columns(
                     })
                     .collect());
             }
-            let table = with_catalog_read(|catalog| {
+            let Some(table) = with_catalog_read(|catalog| {
                 catalog
                     .resolve_table(&rel.name, &SearchPath::default())
+                    .ok()
                     .cloned()
-            })
-            .map_err(|err| EngineError {
-                message: err.message,
-            })?;
+            }) else {
+                return Ok(Vec::new());
+            };
             let qualifier = rel
                 .alias
                 .as_ref()
