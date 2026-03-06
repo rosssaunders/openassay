@@ -8,6 +8,8 @@ use std::sync::Mutex;
 use std::sync::{OnceLock, RwLock};
 
 pub mod dependency;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod iceberg;
 pub mod oid;
 pub mod schema;
 pub mod search_path;

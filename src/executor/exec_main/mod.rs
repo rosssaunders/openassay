@@ -3,9 +3,7 @@ use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 #[cfg(not(target_arch = "wasm32"))]
-use std::fs::{self, File};
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::{
@@ -48,10 +46,6 @@ use crate::utils::adt::misc::{
     parse_f64_numeric_scalar, render_expr_to_sql, truthy,
 };
 use crate::utils::fmgr::eval_scalar_function;
-#[cfg(not(target_arch = "wasm32"))]
-use parquet::file::reader::{FileReader, SerializedFileReader};
-#[cfg(not(target_arch = "wasm32"))]
-use parquet::record::Field as ParquetField;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 mod aggregation;

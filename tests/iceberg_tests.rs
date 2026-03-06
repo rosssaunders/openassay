@@ -3,9 +3,11 @@
 mod iceberg_fixtures;
 
 use iceberg_fixtures::IcebergFixtureSet;
+use openassay::parser::ast::{QueryExpr, Statement};
 use openassay::parser::sql_parser::parse_statement;
 use openassay::storage::tuple::ScalarValue;
 use openassay::tcop::engine::{EngineError, QueryResult, execute_planned_query, plan_statement};
+use serde_json::Value as JsonValue;
 use std::future::Future;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -252,6 +254,92 @@ fn iceberg_scan_multi_schema_column_union() {
         // First row should have id=1
         assert_eq!(result.rows[0][0], ScalarValue::Int(1));
         assert_eq!(result.rows[0][1], ScalarValue::Int(10));
+    });
+}
+
+#[test]
+fn iceberg_scan_evolved_schema_uses_current_column_mapping() {
+    with_isolated_state(|| {
+        let guard = FixtureGuard::create();
+        let sql = format!(
+            "SELECT * FROM iceberg_scan('{}') ORDER BY id",
+            sql_path_literal(&guard.fixtures.evolved_schema)
+        );
+        let result = run_statement(&sql);
+        assert_eq!(result.columns, vec!["id", "amount", "updated_at"]);
+        assert_eq!(result.rows.len(), 5);
+        assert_eq!(result.rows[0][0], ScalarValue::Int(1));
+        assert_eq!(result.rows[0][1], ScalarValue::Float(10.0));
+        assert_eq!(result.rows[0][2], ScalarValue::Null);
+        assert_eq!(result.rows[3][0], ScalarValue::Int(4));
+        assert_eq!(result.rows[3][1], ScalarValue::Float(40.5));
+        assert_eq!(result.rows[3][2], ScalarValue::Int(1_700_000_001_000));
+    });
+}
+
+#[test]
+fn iceberg_partition_pruning_reduces_scanned_files() {
+    with_isolated_state(|| {
+        let guard = FixtureGuard::create();
+        let predicate = match parse_statement("SELECT 1 WHERE day = '2024-01-02'")
+            .expect("predicate statement should parse")
+        {
+            Statement::Query(query) => match query.body {
+                QueryExpr::Select(select) => {
+                    select.where_clause.expect("where clause should exist")
+                }
+                other => panic!("expected select query, got {other:?}"),
+            },
+            other => panic!("expected query statement, got {other:?}"),
+        };
+        let plan = block_on(openassay::catalog::iceberg::scan_iceberg_table_with_predicate(
+            &sql_path_literal(&guard.fixtures.partitioned_trades),
+            Some(&predicate),
+            &["iceberg_scan".to_string()],
+            &[],
+        ))
+        .expect("partitioned scan should succeed");
+        assert_eq!(plan.scanned_files, 1);
+        assert_eq!(plan.pruned_files, 1);
+        assert_eq!(plan.rows.len(), 2);
+    });
+}
+
+#[test]
+fn browser_catalog_browse_lists_iceberg_catalogs_and_tables() {
+    with_isolated_state(|| {
+        let guard = FixtureGuard::create();
+        let payload = block_on(openassay::browser::browse_catalog_json(
+            &sql_path_literal(&guard.fixtures.catalog_browser_root),
+        ));
+        let json: JsonValue = serde_json::from_str(&payload).expect("browse payload should parse");
+        assert_eq!(json.get("ok"), Some(&JsonValue::Bool(true)));
+        let catalogs = json["catalogs"].as_array().expect("catalogs array expected");
+        assert_eq!(catalogs.len(), 2);
+        assert_eq!(catalogs[0]["name"], JsonValue::String("alpha".to_string()));
+        assert_eq!(catalogs[1]["name"], JsonValue::String("beta".to_string()));
+
+        let alpha_namespaces = catalogs[0]["namespaces"]
+            .as_array()
+            .expect("alpha namespaces expected");
+        assert!(alpha_namespaces.iter().any(|namespace| {
+            namespace["tables"]
+                .as_array()
+                .is_some_and(|tables| {
+                    tables
+                        .iter()
+                        .any(|table| table["name"] == JsonValue::String("trades".to_string()))
+                })
+        }));
+        assert!(alpha_namespaces.iter().any(|namespace| {
+            namespace["tables"]
+                .as_array()
+                .is_some_and(|tables| {
+                    tables
+                        .iter()
+                        .any(|table| table["name"] == JsonValue::String("options".to_string()))
+                })
+        }));
     });
 }
 

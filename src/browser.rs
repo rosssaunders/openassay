@@ -32,6 +32,16 @@ struct BrowserQueryResult {
     rows_affected: u64,
 }
 
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = browse_catalog_json))]
+pub async fn browse_catalog_json(path: &str) -> String {
+    browse_catalog_json_internal(path).await
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen(js_name = browse_catalog))]
+pub async fn browse_catalog(path: &str) -> String {
+    browse_catalog_json(path).await
+}
+
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub async fn execute_sql(sql: &str) -> String {
     execute_sql_internal(sql, true).await
@@ -403,6 +413,93 @@ fn render_results_json_payload(results: &[BrowserQueryResult]) -> String {
         "results": result_rows,
     })
     .to_string()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn browse_catalog_json_internal(path: &str) -> String {
+    match crate::catalog::iceberg::browse_iceberg_catalogs(path).await {
+        Ok(catalogs) => {
+            let payload = catalogs
+                .into_iter()
+                .map(|catalog| {
+                    json!({
+                        "name": catalog.name,
+                        "kind": "iceberg",
+                        "location": catalog.location,
+                        "namespaces": catalog.namespaces.into_iter().map(|namespace| {
+                            json!({
+                                "name": namespace.schema.name(),
+                                "namespace_path": namespace.namespace_path,
+                                "tables": namespace.tables.into_iter().map(|table| {
+                                    json!({
+                                        "name": table.table.name(),
+                                        "schema_name": table.table.schema_name(),
+                                        "kind": "BASE TABLE",
+                                        "location": table.location,
+                                        "columns": table.table.columns().iter().map(|column| {
+                                            json!({
+                                                "name": column.name(),
+                                                "ordinal": column.ordinal() + 1,
+                                                "nullable": column.nullable(),
+                                                "data_type": browser_type_name(column.type_signature()),
+                                            })
+                                        }).collect::<Vec<_>>(),
+                                        "metadata": {
+                                            "table_root": table.metadata.table_root,
+                                            "metadata_file": table.metadata.metadata_file,
+                                            "table_uuid": table.metadata.table_uuid,
+                                            "format_version": table.metadata.format_version,
+                                            "last_updated_ms": table.metadata.last_updated_ms,
+                                            "current_schema_id": table.metadata.current_schema_id,
+                                            "partition_spec": table.metadata.partition_spec_json,
+                                            "snapshot_count": table.metadata.snapshot_count,
+                                            "total_data_files": table.metadata.total_data_files,
+                                            "partition_columns": table.metadata.partition_columns,
+                                            "column_aliases": table.metadata.column_aliases,
+                                        }
+                                    })
+                                }).collect::<Vec<_>>(),
+                            })
+                        }).collect::<Vec<_>>(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "ok": true,
+                "catalogs": payload,
+            })
+            .to_string()
+        }
+        Err(error) => json!({
+            "ok": false,
+            "error": error.message,
+            "catalogs": [],
+        })
+        .to_string(),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn browse_catalog_json_internal(_path: &str) -> String {
+    json!({
+        "ok": false,
+        "error": "catalog browsing is not supported on wasm targets",
+        "catalogs": [],
+    })
+    .to_string()
+}
+
+fn browser_type_name(signature: crate::catalog::TypeSignature) -> &'static str {
+    match signature {
+        crate::catalog::TypeSignature::Bool => "boolean",
+        crate::catalog::TypeSignature::Int8 => "bigint",
+        crate::catalog::TypeSignature::Float8 => "double precision",
+        crate::catalog::TypeSignature::Numeric => "numeric",
+        crate::catalog::TypeSignature::Text => "text",
+        crate::catalog::TypeSignature::Date => "date",
+        crate::catalog::TypeSignature::Timestamp => "timestamp without time zone",
+        crate::catalog::TypeSignature::Vector(_) => "vector",
+    }
 }
 
 #[cfg(test)]
