@@ -1,5 +1,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::parser::ast::{BinaryOp, UnaryOp};
+use crate::storage::heap::{ScanPredicate, ScanPredicateOp};
 
 #[derive(Debug, Clone)]
 pub struct TableEval {
@@ -322,6 +324,119 @@ pub(super) fn expr_is_index_lookup_constant(expr: &Expr) -> bool {
     referenced.is_empty()
 }
 
+pub(super) fn expr_is_scan_predicate_constant(expr: &Expr) -> bool {
+    match expr {
+        Expr::String(_)
+        | Expr::Integer(_)
+        | Expr::Float(_)
+        | Expr::Boolean(_)
+        | Expr::Null
+        | Expr::Parameter(_)
+        | Expr::TypedLiteral { .. } => true,
+        Expr::Cast { expr, .. } => expr_is_scan_predicate_constant(expr),
+        Expr::Unary {
+            op: UnaryOp::Plus | UnaryOp::Minus,
+            expr,
+        } => expr_is_scan_predicate_constant(expr),
+        _ => false,
+    }
+}
+
+pub(super) async fn extract_relation_scan_predicate(
+    predicate: &Expr,
+    qualifiers: &[String],
+    table_columns: &HashSet<String>,
+    column_indexes: &HashMap<String, usize>,
+    params: &[Option<String>],
+) -> Result<Option<ScanPredicate>, EngineError> {
+    let Expr::Binary { left, op, right } = predicate else {
+        return Ok(None);
+    };
+    let Some(scan_op) = scan_predicate_op(op) else {
+        return Ok(None);
+    };
+
+    if let Some(column_name) = relation_column_from_identifier(left, qualifiers, table_columns) {
+        if !expr_is_scan_predicate_constant(right) {
+            return Ok(None);
+        }
+        let value = eval_expr(right, &EvalScope::default(), params).await?;
+        return Ok(Some(ScanPredicate {
+            column_index: *column_indexes
+                .get(&column_name)
+                .ok_or_else(|| EngineError {
+                    message: format!("column index for \"{column_name}\" is missing"),
+                })?,
+            op: scan_op,
+            value,
+        }));
+    }
+    if let Some(column_name) = relation_column_from_identifier(right, qualifiers, table_columns) {
+        if !expr_is_scan_predicate_constant(left) {
+            return Ok(None);
+        }
+        let value = eval_expr(left, &EvalScope::default(), params).await?;
+        return Ok(Some(ScanPredicate {
+            column_index: *column_indexes
+                .get(&column_name)
+                .ok_or_else(|| EngineError {
+                    message: format!("column index for \"{column_name}\" is missing"),
+                })?,
+            op: reverse_scan_predicate_op(scan_op),
+            value,
+        }));
+    }
+    Ok(None)
+}
+
+fn scan_predicate_op(op: &BinaryOp) -> Option<ScanPredicateOp> {
+    match op {
+        BinaryOp::Eq => Some(ScanPredicateOp::Eq),
+        BinaryOp::NotEq => Some(ScanPredicateOp::NotEq),
+        BinaryOp::Lt => Some(ScanPredicateOp::Lt),
+        BinaryOp::Lte => Some(ScanPredicateOp::Lte),
+        BinaryOp::Gt => Some(ScanPredicateOp::Gt),
+        BinaryOp::Gte => Some(ScanPredicateOp::Gte),
+        _ => None,
+    }
+}
+
+fn reverse_scan_predicate_op(op: ScanPredicateOp) -> ScanPredicateOp {
+    match op {
+        ScanPredicateOp::Eq => ScanPredicateOp::Eq,
+        ScanPredicateOp::NotEq => ScanPredicateOp::NotEq,
+        ScanPredicateOp::Lt => ScanPredicateOp::Gt,
+        ScanPredicateOp::Lte => ScanPredicateOp::Gte,
+        ScanPredicateOp::Gt => ScanPredicateOp::Lt,
+        ScanPredicateOp::Gte => ScanPredicateOp::Lte,
+    }
+}
+
+pub(super) fn remaining_predicate_from_applied(
+    conjuncts: &[Expr],
+    applied: &[bool],
+) -> Option<Expr> {
+    let remaining: Vec<&Expr> = conjuncts
+        .iter()
+        .zip(applied.iter())
+        .filter_map(|(conjunct, &used)| if used { None } else { Some(conjunct) })
+        .collect();
+
+    if remaining.is_empty() {
+        return None;
+    }
+
+    let mut expr = remaining[0].clone();
+    for conjunct in &remaining[1..] {
+        expr = Expr::Binary {
+            op: BinaryOp::And,
+            left: Box::new(expr),
+            right: Box::new((*conjunct).clone()),
+        };
+    }
+    Some(expr)
+}
+
 /// Evaluate the FROM clause with predicate pushdown.
 ///
 /// For each table in the FROM list, after computing the cross product with all
@@ -357,7 +472,40 @@ pub(super) async fn evaluate_from_clause_with_pushdown(
                 }
             }
             _ => {
-                let rhs = evaluate_table_expression(item, params, outer_scope).await?;
+                let (rhs, pushed_relation_predicates) = if let TableExpression::Relation(rel) = item
+                {
+                    let candidate_indices = applied
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, used)| if *used { None } else { Some(idx) })
+                        .collect::<Vec<_>>();
+                    let relation_predicates = candidate_indices
+                        .iter()
+                        .map(|idx| conjuncts[*idx].clone())
+                        .collect::<Vec<_>>();
+                    let (table_eval, pushed_relation_predicates) =
+                        evaluate_relation_with_predicates(
+                            rel,
+                            params,
+                            outer_scope,
+                            &relation_predicates,
+                            None,
+                        )
+                        .await?;
+                    let pushed_relation_predicates = pushed_relation_predicates
+                        .into_iter()
+                        .filter_map(|idx| candidate_indices.get(idx).copied())
+                        .collect::<Vec<_>>();
+                    (table_eval, pushed_relation_predicates)
+                } else {
+                    (
+                        evaluate_table_expression(item, params, outer_scope).await?,
+                        Vec::new(),
+                    )
+                };
+                for idx in pushed_relation_predicates {
+                    applied[idx] = true;
+                }
                 for lhs_scope in &current {
                     for rhs_scope in &rhs.rows {
                         next.push(combine_scopes(lhs_scope, rhs_scope, &HashSet::new()));
@@ -390,28 +538,154 @@ pub(super) async fn evaluate_from_clause_with_pushdown(
         current = next;
     }
 
-    // Build remaining predicate from conjuncts that couldn't be pushed down
-    let remaining: Vec<&Expr> = conjuncts
-        .iter()
-        .zip(applied.iter())
-        .filter_map(|(c, &used)| if used { None } else { Some(c) })
-        .collect();
-
-    let remaining_predicate = if remaining.is_empty() {
-        None
-    } else {
-        let mut expr = remaining[0].clone();
-        for conjunct in &remaining[1..] {
-            expr = Expr::Binary {
-                op: crate::parser::ast::BinaryOp::And,
-                left: Box::new(expr),
-                right: Box::new((*conjunct).clone()),
-            };
-        }
-        Some(expr)
-    };
+    let remaining_predicate = remaining_predicate_from_applied(conjuncts, &applied);
 
     Ok((current, remaining_predicate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_relation_scan_predicate;
+    use crate::parser::ast::{BinaryOp, Expr, UnaryOp};
+    use crate::storage::heap::{ScanPredicate, ScanPredicateOp};
+    use crate::storage::tuple::ScalarValue;
+    use std::collections::{HashMap, HashSet};
+
+    fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime should start")
+            .block_on(future)
+    }
+
+    fn table_columns() -> (HashSet<String>, HashMap<String, usize>) {
+        (
+            ["id".to_string(), "name".to_string()].into_iter().collect(),
+            [("id".to_string(), 0_usize), ("name".to_string(), 1_usize)]
+                .into_iter()
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn extracts_simple_relation_scan_predicate() {
+        let (table_columns, column_indexes) = table_columns();
+        let predicate = Expr::Binary {
+            left: Box::new(Expr::Identifier(vec!["hits".to_string(), "id".to_string()])),
+            op: BinaryOp::Gte,
+            right: Box::new(Expr::Integer(10)),
+        };
+
+        let extracted = block_on(extract_relation_scan_predicate(
+            &predicate,
+            &["hits".to_string()],
+            &table_columns,
+            &column_indexes,
+            &[],
+        ))
+        .expect("predicate extraction should succeed");
+
+        assert_eq!(
+            extracted,
+            Some(ScanPredicate {
+                column_index: 0,
+                op: ScanPredicateOp::Gte,
+                value: ScalarValue::Int(10),
+            })
+        );
+    }
+
+    #[test]
+    fn extracts_reversed_relation_scan_predicate() {
+        let (table_columns, column_indexes) = table_columns();
+        let predicate = Expr::Binary {
+            left: Box::new(Expr::Integer(10)),
+            op: BinaryOp::Lt,
+            right: Box::new(Expr::Identifier(vec!["id".to_string()])),
+        };
+
+        let extracted = block_on(extract_relation_scan_predicate(
+            &predicate,
+            &["hits".to_string()],
+            &table_columns,
+            &column_indexes,
+            &[],
+        ))
+        .expect("predicate extraction should succeed");
+
+        assert_eq!(
+            extracted,
+            Some(ScanPredicate {
+                column_index: 0,
+                op: ScanPredicateOp::Gt,
+                value: ScalarValue::Int(10),
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_non_constant_relation_scan_predicate() {
+        let (table_columns, column_indexes) = table_columns();
+        let predicate = Expr::Binary {
+            left: Box::new(Expr::Identifier(vec!["id".to_string()])),
+            op: BinaryOp::Eq,
+            right: Box::new(Expr::FunctionCall {
+                name: vec!["random".to_string()],
+                args: Vec::new(),
+                distinct: false,
+                order_by: Vec::new(),
+                within_group: Vec::new(),
+                filter: None,
+                over: None,
+            }),
+        };
+
+        let extracted = block_on(extract_relation_scan_predicate(
+            &predicate,
+            &["hits".to_string()],
+            &table_columns,
+            &column_indexes,
+            &[],
+        ))
+        .expect("predicate extraction should succeed");
+
+        assert!(extracted.is_none());
+    }
+
+    #[test]
+    fn accepts_casted_parameter_relation_scan_predicate() {
+        let (table_columns, column_indexes) = table_columns();
+        let predicate = Expr::Binary {
+            left: Box::new(Expr::Identifier(vec!["id".to_string()])),
+            op: BinaryOp::Eq,
+            right: Box::new(Expr::Cast {
+                expr: Box::new(Expr::Unary {
+                    op: UnaryOp::Minus,
+                    expr: Box::new(Expr::Parameter(1)),
+                }),
+                type_name: "int8".to_string(),
+            }),
+        };
+
+        let extracted = block_on(extract_relation_scan_predicate(
+            &predicate,
+            &["hits".to_string()],
+            &table_columns,
+            &column_indexes,
+            &[Some("7".to_string())],
+        ))
+        .expect("predicate extraction should succeed");
+
+        assert_eq!(
+            extracted,
+            Some(ScanPredicate {
+                column_index: 0,
+                op: ScanPredicateOp::Eq,
+                value: ScalarValue::Int(-7),
+            })
+        );
+    }
 }
 
 pub fn evaluate_table_expression<'a>(

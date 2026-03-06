@@ -1342,7 +1342,9 @@ pub(super) async fn evaluate_relation(
     outer_scope: Option<&EvalScope>,
     projected_columns: Option<Vec<usize>>,
 ) -> Result<TableEval, EngineError> {
-    evaluate_relation_with_predicates(rel, params, outer_scope, &[], projected_columns).await
+    evaluate_relation_with_predicates(rel, params, outer_scope, &[], projected_columns)
+        .await
+        .map(|(table_eval, _)| table_eval)
 }
 
 pub(super) async fn evaluate_relation_with_predicates(
@@ -1351,7 +1353,7 @@ pub(super) async fn evaluate_relation_with_predicates(
     outer_scope: Option<&EvalScope>,
     relation_predicates: &[Expr],
     projected_columns: Option<Vec<usize>>,
-) -> Result<TableEval, EngineError> {
+) -> Result<(TableEval, Vec<usize>), EngineError> {
     if rel.name.len() == 1
         && let Some(cte) = current_cte_binding(&rel.name[0])
     {
@@ -1368,11 +1370,14 @@ pub(super) async fn evaluate_relation_with_predicates(
         let null_values = vec![ScalarValue::Null; cte.columns.len()];
         let null_scope = scope_from_row(&cte.columns, &null_values, &qualifiers, &cte.columns);
 
-        return Ok(TableEval {
-            rows: scoped_rows,
-            columns: cte.columns,
-            null_scope,
-        });
+        return Ok((
+            TableEval {
+                rows: scoped_rows,
+                columns: cte.columns,
+                null_scope,
+            },
+            Vec::new(),
+        ));
     }
 
     if let Some((schema_name, relation_name, columns)) = lookup_virtual_relation(&rel.name) {
@@ -1400,11 +1405,14 @@ pub(super) async fn evaluate_relation_with_predicates(
         }
         let null_values = vec![ScalarValue::Null; column_names.len()];
         let null_scope = scope_from_row(&column_names, &null_values, &qualifiers, &column_names);
-        return Ok(TableEval {
-            rows: scoped_rows,
-            columns: column_names,
-            null_scope,
-        });
+        return Ok((
+            TableEval {
+                rows: scoped_rows,
+                columns: column_names,
+                null_scope,
+            },
+            Vec::new(),
+        ));
     }
 
     let resolved_table = with_catalog_read(|catalog| {
@@ -1423,11 +1431,14 @@ pub(super) async fn evaluate_relation_with_predicates(
                 };
                 let null_values = vec![ScalarValue::Null; columns.len()];
                 let null_scope = scope_from_row(&columns, &null_values, &qualifiers, &columns);
-                return Ok(TableEval {
-                    rows: Vec::new(),
-                    columns,
-                    null_scope,
-                });
+                return Ok((
+                    TableEval {
+                        rows: Vec::new(),
+                        columns,
+                        null_scope,
+                    },
+                    Vec::new(),
+                ));
             }
             return Err(EngineError {
                 message: err.message,
@@ -1440,6 +1451,29 @@ pub(super) async fn evaluate_relation_with_predicates(
     } else {
         vec![table.name().to_string(), table.qualified_name()]
     };
+    let column_indexes = table
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(idx, column)| (column.name().to_string(), idx))
+        .collect::<HashMap<_, _>>();
+    let table_columns = column_indexes.keys().cloned().collect::<HashSet<_>>();
+    let mut scan_predicates = Vec::new();
+    let mut pushed_predicate_indexes = Vec::new();
+    for (idx, predicate) in relation_predicates.iter().enumerate() {
+        if let Some(scan_predicate) = extract_relation_scan_predicate(
+            predicate,
+            &qualifiers,
+            &table_columns,
+            &column_indexes,
+            params,
+        )
+        .await?
+        {
+            scan_predicates.push(scan_predicate);
+            pushed_predicate_indexes.push(idx);
+        }
+    }
     let index_offsets = if relation_predicates.is_empty() {
         None
     } else {
@@ -1468,12 +1502,14 @@ pub(super) async fn evaluate_relation_with_predicates(
                 .collect::<Vec<_>>();
             let columns = projected_column_names(&all_columns, projected_columns.as_deref());
             let rows = with_storage_read(|storage| {
-                storage.scan_rows(
+                storage.scan_rows_for_table(
                     table.oid(),
                     index_offsets.as_deref(),
+                    &scan_predicates,
                     projected_columns.as_deref(),
                 )
-            });
+            })
+            .map_err(|message| EngineError { message })?;
             (columns, rows)
         }
         TableKind::View => {
@@ -1518,11 +1554,14 @@ pub(super) async fn evaluate_relation_with_predicates(
     let null_values = vec![ScalarValue::Null; columns.len()];
     let null_scope = scope_from_row(&columns, &null_values, &qualifiers, &columns);
 
-    Ok(TableEval {
-        rows: scoped_rows,
-        columns,
-        null_scope,
-    })
+    Ok((
+        TableEval {
+            rows: scoped_rows,
+            columns,
+            null_scope,
+        },
+        pushed_predicate_indexes,
+    ))
 }
 
 fn projected_column_names(columns: &[String], projected_columns: Option<&[usize]>) -> Vec<String> {
