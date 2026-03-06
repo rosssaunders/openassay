@@ -8,7 +8,8 @@ use crate::executor::exec_expr::{EvalScope, eval_expr};
 use crate::executor::exec_main::{scope_for_table_row, scope_for_table_row_with_qualifiers};
 use crate::parser::ast::{
     BinaryOp, Expr, GroupByExpr, JoinCondition, OrderByExpr, Query, QueryExpr, SelectItem,
-    SelectStatement, SetOperator, TableExpression, TableFunctionRef, UnaryOp,
+    SelectStatement, SetOperator, Statement, SubscriptContainerType, SubscriptValueType,
+    TableExpression, TableFunctionRef, UnaryOp,
 };
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::EngineError;
@@ -52,17 +53,40 @@ pub fn type_oid_size(type_oid: u32) -> i16 {
 pub(crate) struct PlannedOutputColumn {
     pub(crate) name: String,
     pub(crate) type_oid: u32,
+    pub(crate) subscript_value_type: SubscriptValueType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedExprType {
+    type_oid: u32,
+    subscript_value_type: SubscriptValueType,
+}
+
+impl ResolvedExprType {
+    fn new(type_oid: u32, value_type: &SubscriptValueType) -> Self {
+        Self {
+            type_oid,
+            subscript_value_type: value_type.clone(),
+        }
+    }
+
+    fn scalar(type_oid: u32) -> Self {
+        Self {
+            type_oid,
+            subscript_value_type: SubscriptValueType::Other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 struct TypeScope {
-    unqualified: HashMap<String, u32>,
-    qualified: HashMap<String, u32>,
+    unqualified: HashMap<String, ResolvedExprType>,
+    qualified: HashMap<String, ResolvedExprType>,
     ambiguous: HashSet<String>,
 }
 
 impl TypeScope {
-    fn insert_unqualified(&mut self, key: &str, type_oid: u32) {
+    fn insert_unqualified(&mut self, key: &str, resolved: ResolvedExprType) {
         let key = key.to_ascii_lowercase();
         if self.ambiguous.contains(&key) {
             return;
@@ -72,20 +96,20 @@ impl TypeScope {
             self.unqualified.remove(&key);
             self.ambiguous.insert(key);
         } else {
-            self.unqualified.insert(key, type_oid);
+            self.unqualified.insert(key, resolved);
         }
     }
 
-    fn insert_qualified(&mut self, parts: &[String], type_oid: u32) {
+    fn insert_qualified(&mut self, parts: &[String], resolved: ResolvedExprType) {
         let key = parts
             .iter()
             .map(|part| part.to_ascii_lowercase())
             .collect::<Vec<_>>()
             .join(".");
-        self.qualified.insert(key, type_oid);
+        self.qualified.insert(key, resolved);
     }
 
-    fn lookup_identifier(&self, parts: &[String]) -> Option<u32> {
+    fn lookup_identifier(&self, parts: &[String]) -> Option<ResolvedExprType> {
         if parts.is_empty() {
             return None;
         }
@@ -95,7 +119,7 @@ impl TypeScope {
             if self.ambiguous.contains(&key) {
                 return None;
             }
-            return self.unqualified.get(&key).copied();
+            return self.unqualified.get(&key).cloned();
         }
 
         let key = parts
@@ -103,7 +127,7 @@ impl TypeScope {
             .map(|part| part.to_ascii_lowercase())
             .collect::<Vec<_>>()
             .join(".");
-        self.qualified.get(&key).copied()
+        self.qualified.get(&key).cloned()
     }
 }
 
@@ -112,6 +136,48 @@ struct ExpandedFromTypeColumn {
     label: String,
     lookup_parts: Vec<String>,
     type_oid: u32,
+    subscript_value_type: SubscriptValueType,
+}
+
+fn array_type(inner: SubscriptValueType) -> SubscriptValueType {
+    SubscriptValueType::Array(Box::new(inner))
+}
+
+fn type_name_subscript_value_type(type_name: &str) -> SubscriptValueType {
+    let normalized = type_name.trim().to_ascii_lowercase();
+    if normalized == "jsonb" {
+        return SubscriptValueType::Jsonb;
+    }
+    if let Some(inner) = normalized.strip_suffix("[]") {
+        return array_type(type_name_subscript_value_type(inner));
+    }
+    SubscriptValueType::Other
+}
+
+fn common_array_element_subscript_type(
+    exprs: &[Expr],
+    scope: &TypeScope,
+    ctes: &HashMap<String, Vec<PlannedOutputColumn>>,
+) -> SubscriptValueType {
+    let mut current = SubscriptValueType::Unknown;
+    for expr in exprs {
+        let next = infer_expr_type(expr, scope, ctes).subscript_value_type;
+        if matches!(next, SubscriptValueType::Unknown) {
+            continue;
+        }
+        if matches!(current, SubscriptValueType::Unknown) {
+            current = next;
+            continue;
+        }
+        if current != next {
+            return SubscriptValueType::Other;
+        }
+    }
+    if matches!(current, SubscriptValueType::Unknown) {
+        SubscriptValueType::Other
+    } else {
+        current
+    }
 }
 
 fn cast_type_name_to_oid(type_name: &str) -> u32 {
@@ -141,7 +207,7 @@ fn infer_common_type_oid(
 ) -> u32 {
     let mut oid = PG_TEXT_OID;
     for expr in exprs {
-        let next = infer_expr_type_oid(expr, scope, ctes);
+        let next = infer_expr_type(expr, scope, ctes).type_oid;
         if next == PG_TEXT_OID {
             continue;
         }
@@ -163,18 +229,18 @@ fn infer_common_type_oid(
     oid
 }
 
-fn infer_function_return_oid(
+fn infer_function_return_type(
     name: &[String],
     args: &[Expr],
     within_group: &[OrderByExpr],
     scope: &TypeScope,
     ctes: &HashMap<String, Vec<PlannedOutputColumn>>,
-) -> u32 {
+) -> ResolvedExprType {
     let fn_name = name
         .last()
         .map(|part| part.to_ascii_lowercase())
         .unwrap_or_default();
-    match fn_name.as_str() {
+    let type_oid = match fn_name.as_str() {
         "count" | "char_length" | "length" | "nextval" | "currval" | "setval" | "strpos"
         | "position" | "ascii" | "pg_backend_pid" | "width_bucket" | "scale" | "factorial"
         | "num_nulls" | "num_nonnulls" => PG_INT8_OID,
@@ -182,7 +248,7 @@ fn infer_function_return_oid(
         "avg" => args
             .first()
             .map(|expr| {
-                if infer_expr_type_oid(expr, scope, ctes) == PG_VECTOR_OID {
+                if infer_expr_type(expr, scope, ctes).type_oid == PG_VECTOR_OID {
                     PG_VECTOR_OID
                 } else {
                     PG_FLOAT8_OID
@@ -206,7 +272,7 @@ fn infer_function_return_oid(
         | "isfinite" => PG_BOOL_OID,
         "abs" | "ceil" | "ceiling" | "floor" | "round" | "trunc" | "sign" | "mod" => args
             .first()
-            .map(|expr| infer_expr_type_oid(expr, scope, ctes))
+            .map(|expr| infer_expr_type(expr, scope, ctes).type_oid)
             .unwrap_or(PG_FLOAT8_OID),
         "power" | "pow" | "sqrt" | "cbrt" | "exp" | "ln" | "log" | "log10" | "sin" | "cos"
         | "tan" | "asin" | "acos" | "atan" | "atan2" | "degrees" | "radians" | "pi" | "random"
@@ -216,7 +282,7 @@ fn infer_function_return_oid(
         "sum" => args
             .first()
             .map(|expr| {
-                let oid = infer_expr_type_oid(expr, scope, ctes);
+                let oid = infer_expr_type(expr, scope, ctes).type_oid;
                 if oid == PG_FLOAT8_OID {
                     PG_FLOAT8_OID
                 } else {
@@ -226,11 +292,11 @@ fn infer_function_return_oid(
             .unwrap_or(PG_INT8_OID),
         "percentile_disc" | "mode" => within_group
             .first()
-            .map(|entry| infer_expr_type_oid(&entry.expr, scope, ctes))
+            .map(|entry| infer_expr_type(&entry.expr, scope, ctes).type_oid)
             .unwrap_or(PG_TEXT_OID),
         "min" | "max" | "nullif" => args
             .first()
-            .map(|expr| infer_expr_type_oid(expr, scope, ctes))
+            .map(|expr| infer_expr_type(expr, scope, ctes).type_oid)
             .unwrap_or(PG_TEXT_OID),
         "coalesce" | "greatest" | "least" => infer_common_type_oid(args, scope, ctes),
         "date" | "current_date" | "to_date" => PG_DATE_OID,
@@ -251,39 +317,67 @@ fn infer_function_return_oid(
         "subvector" | "vector_concat" => PG_VECTOR_OID,
         "vector_to_float4" => PG_FLOAT4_ARRAY_OID,
         _ => PG_TEXT_OID,
-    }
+    };
+
+    let value_type = match fn_name.as_str() {
+        "jsonb_build_object"
+        | "jsonb_build_array"
+        | "jsonb_set"
+        | "jsonb_insert"
+        | "jsonb_set_lax"
+        | "jsonb_concat"
+        | "jsonb_delete"
+        | "jsonb_delete_path"
+        | "jsonb_extract_path"
+        | "jsonb_path_query_array"
+        | "jsonb_path_query_first"
+        | "jsonb_strip_nulls"
+        | "jsonb_agg"
+        | "jsonb_object_agg"
+        | "to_jsonb" => SubscriptValueType::Jsonb,
+        "vector_to_float4" | "array_agg" | "string_to_array" | "regexp_split_to_array" => {
+            array_type(SubscriptValueType::Other)
+        }
+        _ => SubscriptValueType::Other,
+    };
+    ResolvedExprType::new(type_oid, &value_type)
 }
 
-fn infer_expr_type_oid(
+fn infer_expr_type(
     expr: &Expr,
     scope: &TypeScope,
     ctes: &HashMap<String, Vec<PlannedOutputColumn>>,
-) -> u32 {
+) -> ResolvedExprType {
     match expr {
-        Expr::Identifier(parts) => scope.lookup_identifier(parts).unwrap_or(PG_TEXT_OID),
-        Expr::String(_) => PG_TEXT_OID,
-        Expr::Integer(_) => PG_INT8_OID,
-        Expr::Float(_) => PG_FLOAT8_OID,
-        Expr::Boolean(_) => PG_BOOL_OID,
-        Expr::Null => PG_TEXT_OID,
-        Expr::Default => PG_TEXT_OID,
-        Expr::Parameter(_) => PG_TEXT_OID,
+        Expr::Identifier(parts) => scope
+            .lookup_identifier(parts)
+            .unwrap_or_else(|| ResolvedExprType::scalar(PG_TEXT_OID)),
+        Expr::String(_) => ResolvedExprType::scalar(PG_TEXT_OID),
+        Expr::Integer(_) => ResolvedExprType::scalar(PG_INT8_OID),
+        Expr::Float(_) => ResolvedExprType::scalar(PG_FLOAT8_OID),
+        Expr::Boolean(_) => ResolvedExprType::scalar(PG_BOOL_OID),
+        Expr::Null | Expr::Default | Expr::Parameter(_) => ResolvedExprType::scalar(PG_TEXT_OID),
         Expr::FunctionCall {
             name,
             args,
             within_group,
             ..
-        } => infer_function_return_oid(name, args, within_group, scope, ctes),
-        Expr::Cast { type_name, .. } => cast_type_name_to_oid(type_name),
-        Expr::Wildcard | Expr::QualifiedWildcard(_) => PG_TEXT_OID,
+        } => infer_function_return_type(name, args, within_group, scope, ctes),
+        Expr::Cast { type_name, .. } | Expr::TypedLiteral { type_name, .. } => {
+            ResolvedExprType::new(
+                cast_type_name_to_oid(type_name),
+                &type_name_subscript_value_type(type_name),
+            )
+        }
+        Expr::Wildcard | Expr::QualifiedWildcard(_) => ResolvedExprType::scalar(PG_TEXT_OID),
         Expr::Unary { op, expr } => match op {
-            UnaryOp::Not => PG_BOOL_OID,
-            UnaryOp::Plus | UnaryOp::Minus => infer_expr_type_oid(expr, scope, ctes),
+            UnaryOp::Not => ResolvedExprType::scalar(PG_BOOL_OID),
+            UnaryOp::Plus | UnaryOp::Minus => infer_expr_type(expr, scope, ctes),
         },
         Expr::Binary { left, op, right } => {
-            let left_oid = infer_expr_type_oid(left, scope, ctes);
-            let right_oid = infer_expr_type_oid(right, scope, ctes);
-            match op {
+            let left_ty = infer_expr_type(left, scope, ctes);
+            let right_ty = infer_expr_type(right, scope, ctes);
+            let type_oid = match op {
                 BinaryOp::Or
                 | BinaryOp::And
                 | BinaryOp::Eq
@@ -309,65 +403,77 @@ fn infer_expr_type_oid(
                 | BinaryOp::JsonConcat
                 | BinaryOp::JsonDelete
                 | BinaryOp::JsonDeletePath => PG_TEXT_OID,
-                BinaryOp::ArrayConcat => left_oid,
+                BinaryOp::ArrayConcat => left_ty.type_oid,
                 BinaryOp::VectorL2Distance
                 | BinaryOp::VectorInnerProduct
                 | BinaryOp::VectorCosineDistance => PG_FLOAT8_OID,
                 BinaryOp::Add => {
-                    if left_oid == PG_VECTOR_OID && right_oid == PG_VECTOR_OID {
+                    if left_ty.type_oid == PG_VECTOR_OID && right_ty.type_oid == PG_VECTOR_OID {
                         PG_VECTOR_OID
-                    } else if (left_oid == PG_DATE_OID || left_oid == PG_TIMESTAMP_OID)
-                        && right_oid == PG_INT8_OID
+                    } else if (left_ty.type_oid == PG_DATE_OID
+                        || left_ty.type_oid == PG_TIMESTAMP_OID)
+                        && right_ty.type_oid == PG_INT8_OID
                     {
-                        left_oid
-                    } else if (right_oid == PG_DATE_OID || right_oid == PG_TIMESTAMP_OID)
-                        && left_oid == PG_INT8_OID
+                        left_ty.type_oid
+                    } else if (right_ty.type_oid == PG_DATE_OID
+                        || right_ty.type_oid == PG_TIMESTAMP_OID)
+                        && left_ty.type_oid == PG_INT8_OID
                     {
-                        right_oid
+                        right_ty.type_oid
                     } else {
-                        infer_numeric_result_oid(left_oid, right_oid)
+                        infer_numeric_result_oid(left_ty.type_oid, right_ty.type_oid)
                     }
                 }
                 BinaryOp::Sub => {
-                    if left_oid == PG_VECTOR_OID && right_oid == PG_VECTOR_OID {
+                    if left_ty.type_oid == PG_VECTOR_OID && right_ty.type_oid == PG_VECTOR_OID {
                         PG_VECTOR_OID
-                    } else if (left_oid == PG_DATE_OID || left_oid == PG_TIMESTAMP_OID)
-                        && (right_oid == PG_DATE_OID || right_oid == PG_TIMESTAMP_OID)
+                    } else if (left_ty.type_oid == PG_DATE_OID
+                        || left_ty.type_oid == PG_TIMESTAMP_OID)
+                        && (right_ty.type_oid == PG_DATE_OID
+                            || right_ty.type_oid == PG_TIMESTAMP_OID)
                     {
                         PG_INT8_OID
-                    } else if (left_oid == PG_DATE_OID || left_oid == PG_TIMESTAMP_OID)
-                        && right_oid == PG_INT8_OID
+                    } else if (left_ty.type_oid == PG_DATE_OID
+                        || left_ty.type_oid == PG_TIMESTAMP_OID)
+                        && right_ty.type_oid == PG_INT8_OID
                     {
-                        left_oid
-                    } else if left_oid == PG_TEXT_OID && right_oid == PG_TEXT_OID {
+                        left_ty.type_oid
+                    } else if left_ty.type_oid == PG_TEXT_OID && right_ty.type_oid == PG_TEXT_OID {
                         PG_TEXT_OID
                     } else {
-                        infer_numeric_result_oid(left_oid, right_oid)
+                        infer_numeric_result_oid(left_ty.type_oid, right_ty.type_oid)
                     }
                 }
                 BinaryOp::Mul => {
-                    if left_oid == PG_VECTOR_OID && right_oid == PG_VECTOR_OID {
+                    if left_ty.type_oid == PG_VECTOR_OID && right_ty.type_oid == PG_VECTOR_OID {
                         PG_VECTOR_OID
                     } else {
-                        infer_numeric_result_oid(left_oid, right_oid)
+                        infer_numeric_result_oid(left_ty.type_oid, right_ty.type_oid)
                     }
                 }
                 BinaryOp::Div
                 | BinaryOp::Mod
                 | BinaryOp::Pow
                 | BinaryOp::ShiftLeft
-                | BinaryOp::ShiftRight => infer_numeric_result_oid(left_oid, right_oid),
-            }
+                | BinaryOp::ShiftRight => {
+                    infer_numeric_result_oid(left_ty.type_oid, right_ty.type_oid)
+                }
+            };
+            let value_type = match op {
+                BinaryOp::ArrayConcat => array_type(SubscriptValueType::Other),
+                _ => SubscriptValueType::Other,
+            };
+            ResolvedExprType::new(type_oid, &value_type)
         }
-        Expr::AnyAll { .. } => PG_BOOL_OID,
-        Expr::Exists(_)
+        Expr::AnyAll { .. }
+        | Expr::Exists(_)
         | Expr::InList { .. }
         | Expr::InSubquery { .. }
         | Expr::Between { .. }
         | Expr::Like { .. }
         | Expr::IsNull { .. }
         | Expr::IsDistinctFrom { .. }
-        | Expr::BooleanTest { .. } => PG_BOOL_OID,
+        | Expr::BooleanTest { .. } => ResolvedExprType::scalar(PG_BOOL_OID),
         Expr::CaseSimple {
             when_then,
             else_expr,
@@ -384,29 +490,674 @@ fn infer_expr_type_oid(
             if let Some(else_expr) = else_expr {
                 result_exprs.push((**else_expr).clone());
             }
-            infer_common_type_oid(&result_exprs, scope, ctes)
+            ResolvedExprType::scalar(infer_common_type_oid(&result_exprs, scope, ctes))
         }
         Expr::ScalarSubquery(query) => {
             let mut nested = ctes.clone();
+            let subquery_type = derive_query_output_columns_with_ctes(query, &mut nested)
+                .ok()
+                .and_then(|cols| cols.first().cloned());
+            if let Some(column) = subquery_type {
+                ResolvedExprType::new(column.type_oid, &column.subscript_value_type)
+            } else {
+                ResolvedExprType::scalar(PG_TEXT_OID)
+            }
+        }
+        Expr::ArrayConstructor(exprs) => ResolvedExprType::new(
+            PG_TEXT_OID,
+            &array_type(common_array_element_subscript_type(exprs, scope, ctes)),
+        ),
+        Expr::ArraySubquery(_) => {
+            ResolvedExprType::new(PG_TEXT_OID, &array_type(SubscriptValueType::Other))
+        }
+        Expr::ArraySubscript {
+            expr,
+            container_type,
+            ..
+        } => {
+            let value_type = match container_type {
+                SubscriptContainerType::Jsonb => SubscriptValueType::Jsonb,
+                SubscriptContainerType::Array => {
+                    match infer_expr_subscript_value_type(expr, scope, ctes) {
+                        SubscriptValueType::Array(inner) => *inner,
+                        _ => SubscriptValueType::Other,
+                    }
+                }
+                SubscriptContainerType::Other | SubscriptContainerType::Unknown => {
+                    SubscriptValueType::Other
+                }
+            };
+            ResolvedExprType::new(PG_TEXT_OID, &value_type)
+        }
+        Expr::ArraySlice {
+            expr,
+            container_type,
+            ..
+        } => {
+            let value_type = if matches!(container_type, SubscriptContainerType::Array) {
+                infer_expr_subscript_value_type(expr, scope, ctes)
+            } else {
+                SubscriptValueType::Other
+            };
+            ResolvedExprType::new(PG_TEXT_OID, &value_type)
+        }
+        Expr::RowConstructor(_) => ResolvedExprType::scalar(2249),
+        Expr::MultiColumnSubqueryRef { .. } => ResolvedExprType::scalar(PG_TEXT_OID),
+    }
+}
+
+fn infer_expr_subscript_value_type(
+    expr: &Expr,
+    scope: &TypeScope,
+    ctes: &HashMap<String, Vec<PlannedOutputColumn>>,
+) -> SubscriptValueType {
+    infer_expr_type(expr, scope, ctes).subscript_value_type
+}
+
+fn build_scope_from_columns(columns: Vec<ExpandedFromTypeColumn>) -> TypeScope {
+    let mut scope = TypeScope::default();
+    for column in columns {
+        let resolved = ResolvedExprType::new(column.type_oid, &column.subscript_value_type);
+        scope.insert_unqualified(&column.label, resolved.clone());
+        scope.insert_qualified(&column.lookup_parts, resolved);
+    }
+    scope
+}
+
+fn extend_scope_with_table(
+    scope: &mut TypeScope,
+    table_name: &[String],
+    alias: Option<&str>,
+) -> Result<(), EngineError> {
+    let table = with_catalog_read(|catalog| {
+        catalog
+            .resolve_table(table_name, &SearchPath::default())
+            .cloned()
+    })
+    .map_err(|err| EngineError {
+        message: err.message,
+    })?;
+    let qualifier = alias
+        .map(|name| name.to_ascii_lowercase())
+        .unwrap_or_else(|| table.name().to_string());
+    for column in table.columns() {
+        let resolved = ResolvedExprType::new(
+            type_signature_to_oid(column.type_signature()),
+            column.subscript_value_type(),
+        );
+        scope.insert_unqualified(column.name(), resolved.clone());
+        scope.insert_qualified(
+            &[qualifier.clone(), column.name().to_string()],
+            resolved.clone(),
+        );
+        scope.insert_qualified(
+            &[
+                table.qualified_name().to_string(),
+                column.name().to_string(),
+            ],
+            resolved,
+        );
+    }
+    Ok(())
+}
+
+fn annotate_window_spec(
+    spec: &mut crate::parser::ast::WindowSpec,
+    scope: &TypeScope,
+    ctes: &HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    for expr in &mut spec.partition_by {
+        let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+    }
+    for order_by in &mut spec.order_by {
+        let _ = annotate_expr_subscript_types(&mut order_by.expr, scope, ctes)?;
+    }
+    if let Some(frame) = &mut spec.frame {
+        annotate_window_frame_bound(&mut frame.start, scope, ctes)?;
+        annotate_window_frame_bound(&mut frame.end, scope, ctes)?;
+    }
+    Ok(())
+}
+
+fn annotate_window_frame_bound(
+    bound: &mut crate::parser::ast::WindowFrameBound,
+    scope: &TypeScope,
+    ctes: &HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    match bound {
+        crate::parser::ast::WindowFrameBound::OffsetPreceding(expr)
+        | crate::parser::ast::WindowFrameBound::OffsetFollowing(expr) => {
+            let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+        }
+        crate::parser::ast::WindowFrameBound::UnboundedPreceding
+        | crate::parser::ast::WindowFrameBound::CurrentRow
+        | crate::parser::ast::WindowFrameBound::UnboundedFollowing => {}
+    }
+    Ok(())
+}
+
+fn annotate_group_by_expr(
+    expr: &mut GroupByExpr,
+    scope: &TypeScope,
+    ctes: &HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    match expr {
+        GroupByExpr::Expr(expr) => {
+            let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+        }
+        GroupByExpr::GroupingSets(sets) => {
+            for set in sets {
+                for expr in set {
+                    let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+                }
+            }
+        }
+        GroupByExpr::Rollup(exprs) | GroupByExpr::Cube(exprs) => {
+            for expr in exprs {
+                let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn annotate_table_expression_subscript_types(
+    table: &mut TableExpression,
+    ctes: &mut HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    match table {
+        TableExpression::Relation(_) => Ok(()),
+        TableExpression::Function(function) => {
+            let scope = TypeScope::default();
+            for arg in &mut function.args {
+                let _ = annotate_expr_subscript_types(arg, &scope, ctes)?;
+            }
+            Ok(())
+        }
+        TableExpression::Subquery(subquery) => {
+            annotate_query_subscript_types_with_ctes(&mut subquery.query, ctes)
+        }
+        TableExpression::Join(join) => {
+            annotate_table_expression_subscript_types(&mut join.left, ctes)?;
+            annotate_table_expression_subscript_types(&mut join.right, ctes)?;
+            Ok(())
+        }
+    }
+}
+
+fn annotate_join_conditions(
+    table: &mut TableExpression,
+    scope: &TypeScope,
+    ctes: &HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    match table {
+        TableExpression::Join(join) => {
+            annotate_join_conditions(&mut join.left, scope, ctes)?;
+            annotate_join_conditions(&mut join.right, scope, ctes)?;
+            if let Some(JoinCondition::On(expr)) = &mut join.condition {
+                let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+            }
+            Ok(())
+        }
+        TableExpression::Relation(_)
+        | TableExpression::Function(_)
+        | TableExpression::Subquery(_) => Ok(()),
+    }
+}
+
+fn annotate_select_subscript_types(
+    select: &mut SelectStatement,
+    ctes: &mut HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    for table in &mut select.from {
+        annotate_table_expression_subscript_types(table, ctes)?;
+    }
+    let scope = if select.from.is_empty() {
+        TypeScope::default()
+    } else {
+        build_scope_from_columns(expand_from_columns_typed(&select.from, ctes)?)
+    };
+    for table in &mut select.from {
+        annotate_join_conditions(table, &scope, ctes)?;
+    }
+    for target in &mut select.targets {
+        let _ = annotate_expr_subscript_types(&mut target.expr, &scope, ctes)?;
+    }
+    if let Some(where_clause) = &mut select.where_clause {
+        let _ = annotate_expr_subscript_types(where_clause, &scope, ctes)?;
+    }
+    for expr in &mut select.group_by {
+        annotate_group_by_expr(expr, &scope, ctes)?;
+    }
+    if let Some(having) = &mut select.having {
+        let _ = annotate_expr_subscript_types(having, &scope, ctes)?;
+    }
+    for window in &mut select.window_definitions {
+        annotate_window_spec(&mut window.spec, &scope, ctes)?;
+    }
+    Ok(())
+}
+
+fn annotate_query_expr_subscript_types(
+    expr: &mut QueryExpr,
+    ctes: &mut HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    match expr {
+        QueryExpr::Select(select) => annotate_select_subscript_types(select, ctes),
+        QueryExpr::SetOperation { left, right, .. } => {
+            annotate_query_expr_subscript_types(left, ctes)?;
+            annotate_query_expr_subscript_types(right, ctes)
+        }
+        QueryExpr::Nested(query) => annotate_query_subscript_types_with_ctes(query, ctes),
+        QueryExpr::Values(rows) => {
+            let scope = TypeScope::default();
+            for row in rows {
+                for expr in row {
+                    let _ = annotate_expr_subscript_types(expr, &scope, ctes)?;
+                }
+            }
+            Ok(())
+        }
+        QueryExpr::Insert(insert) => annotate_insert_subscript_types(insert, ctes),
+        QueryExpr::Update(update) => annotate_update_subscript_types(update, ctes),
+        QueryExpr::Delete(delete) => annotate_delete_subscript_types(delete, ctes),
+    }
+}
+
+fn annotate_recursive_cte_subscript_types(
+    cte: &mut crate::parser::ast::CommonTableExpr,
+    ctes: &mut HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    let cte_name = cte.name.to_ascii_lowercase();
+    let QueryExpr::SetOperation {
+        left,
+        op,
+        quantifier: _,
+        right,
+    } = &mut cte.query.body
+    else {
+        return Err(EngineError {
+            message: format!(
+                "recursive query \"{}\" must be of the form non-recursive-term UNION [ALL] recursive-term",
+                cte.name
+            ),
+        });
+    };
+    if *op != SetOperator::Union {
+        return Err(EngineError {
+            message: format!(
+                "recursive query \"{}\" must use UNION or UNION ALL",
+                cte.name
+            ),
+        });
+    }
+    validate_recursive_cte_terms(&cte.name, &cte_name, left, right)?;
+
+    annotate_query_expr_subscript_types(left, ctes)?;
+    let mut left_cols = derive_query_expr_output_columns(left, ctes)?;
+    if !cte.column_names.is_empty() {
+        for (idx, name) in cte.column_names.iter().take(left_cols.len()).enumerate() {
+            left_cols[idx].name = name.clone();
+        }
+    }
+
+    let mut recursive_ctes = ctes.clone();
+    recursive_ctes.insert(cte_name, left_cols);
+    annotate_query_expr_subscript_types(right, &mut recursive_ctes)
+}
+
+fn annotate_query_subscript_types_with_ctes(
+    query: &mut Query,
+    ctes: &mut HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    let mut local_ctes = ctes.clone();
+    if let Some(with) = &mut query.with {
+        for cte in &mut with.ctes {
+            if with.recursive
+                && query_references_relation(&cte.query, &cte.name)
+                && is_recursive_union_expr(&cte.query.body)
+            {
+                annotate_recursive_cte_subscript_types(cte, &mut local_ctes)?;
+            } else {
+                annotate_query_subscript_types_with_ctes(&mut cte.query, &mut local_ctes)?;
+            }
+            let mut cols = derive_query_output_columns_with_ctes(&cte.query, &mut local_ctes)?;
+            if !cte.column_names.is_empty() {
+                for (idx, name) in cte.column_names.iter().take(cols.len()).enumerate() {
+                    cols[idx].name = name.clone();
+                }
+            }
+            append_cte_aux_output_columns(&mut cols, cte);
+            local_ctes.insert(cte.name.to_ascii_lowercase(), cols);
+        }
+    }
+    annotate_query_expr_subscript_types(&mut query.body, &mut local_ctes)?;
+    let scope = TypeScope::default();
+    for order_by in &mut query.order_by {
+        let _ = annotate_expr_subscript_types(&mut order_by.expr, &scope, &local_ctes)?;
+    }
+    if let Some(limit) = &mut query.limit {
+        let _ = annotate_expr_subscript_types(limit, &scope, &local_ctes)?;
+    }
+    if let Some(offset) = &mut query.offset {
+        let _ = annotate_expr_subscript_types(offset, &scope, &local_ctes)?;
+    }
+    Ok(())
+}
+
+fn annotate_insert_subscript_types(
+    insert: &mut crate::parser::ast::InsertStatement,
+    ctes: &mut HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    match &mut insert.source {
+        crate::parser::ast::InsertSource::Values(rows) => {
+            let scope = TypeScope::default();
+            for row in rows {
+                for expr in row {
+                    let _ = annotate_expr_subscript_types(expr, &scope, ctes)?;
+                }
+            }
+        }
+        crate::parser::ast::InsertSource::Query(query) => {
+            annotate_query_subscript_types_with_ctes(query, ctes)?;
+        }
+    }
+    let mut scope = TypeScope::default();
+    extend_scope_with_table(
+        &mut scope,
+        &insert.table_name,
+        insert.table_alias.as_deref(),
+    )?;
+    for target in &mut insert.returning {
+        let _ = annotate_expr_subscript_types(&mut target.expr, &scope, ctes)?;
+    }
+    if let Some(on_conflict) = &mut insert.on_conflict {
+        match on_conflict {
+            crate::parser::ast::OnConflictClause::DoNothing { .. } => {}
+            crate::parser::ast::OnConflictClause::DoUpdate {
+                assignments,
+                where_clause,
+                ..
+            } => {
+                for assignment in assignments {
+                    let _ = annotate_expr_subscript_types(&mut assignment.value, &scope, ctes)?;
+                }
+                if let Some(where_clause) = where_clause {
+                    let _ = annotate_expr_subscript_types(where_clause, &scope, ctes)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn annotate_update_subscript_types(
+    update: &mut crate::parser::ast::UpdateStatement,
+    ctes: &mut HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    for table in &mut update.from {
+        annotate_table_expression_subscript_types(table, ctes)?;
+    }
+    let mut scope = if update.from.is_empty() {
+        TypeScope::default()
+    } else {
+        build_scope_from_columns(expand_from_columns_typed(&update.from, ctes)?)
+    };
+    extend_scope_with_table(&mut scope, &update.table_name, update.alias.as_deref())?;
+    for table in &mut update.from {
+        annotate_join_conditions(table, &scope, ctes)?;
+    }
+    for assignment in &mut update.assignments {
+        let _ = annotate_expr_subscript_types(&mut assignment.value, &scope, ctes)?;
+    }
+    if let Some(where_clause) = &mut update.where_clause {
+        let _ = annotate_expr_subscript_types(where_clause, &scope, ctes)?;
+    }
+    for target in &mut update.returning {
+        let _ = annotate_expr_subscript_types(&mut target.expr, &scope, ctes)?;
+    }
+    Ok(())
+}
+
+fn annotate_delete_subscript_types(
+    delete: &mut crate::parser::ast::DeleteStatement,
+    ctes: &mut HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<(), EngineError> {
+    for table in &mut delete.using {
+        annotate_table_expression_subscript_types(table, ctes)?;
+    }
+    let mut scope = if delete.using.is_empty() {
+        TypeScope::default()
+    } else {
+        build_scope_from_columns(expand_from_columns_typed(&delete.using, ctes)?)
+    };
+    extend_scope_with_table(&mut scope, &delete.table_name, None)?;
+    for table in &mut delete.using {
+        annotate_join_conditions(table, &scope, ctes)?;
+    }
+    if let Some(where_clause) = &mut delete.where_clause {
+        let _ = annotate_expr_subscript_types(where_clause, &scope, ctes)?;
+    }
+    for target in &mut delete.returning {
+        let _ = annotate_expr_subscript_types(&mut target.expr, &scope, ctes)?;
+    }
+    Ok(())
+}
+
+fn annotate_expr_subscript_types(
+    expr: &mut Expr,
+    scope: &TypeScope,
+    ctes: &HashMap<String, Vec<PlannedOutputColumn>>,
+) -> Result<SubscriptValueType, EngineError> {
+    let value_type = match expr {
+        Expr::Identifier(parts) => scope
+            .lookup_identifier(parts)
+            .map_or(SubscriptValueType::Other, |ty| ty.subscript_value_type),
+        Expr::String(_)
+        | Expr::Integer(_)
+        | Expr::Float(_)
+        | Expr::Boolean(_)
+        | Expr::Null
+        | Expr::Default
+        | Expr::Parameter(_)
+        | Expr::Wildcard
+        | Expr::QualifiedWildcard(_)
+        | Expr::MultiColumnSubqueryRef { .. } => SubscriptValueType::Other,
+        Expr::FunctionCall {
+            name,
+            args,
+            within_group,
+            filter,
+            over,
+            ..
+        } => {
+            for arg in args.iter_mut() {
+                let _ = annotate_expr_subscript_types(arg, scope, ctes)?;
+            }
+            for order_by in within_group.iter_mut() {
+                let _ = annotate_expr_subscript_types(&mut order_by.expr, scope, ctes)?;
+            }
+            if let Some(filter) = filter {
+                let _ = annotate_expr_subscript_types(filter, scope, ctes)?;
+            }
+            if let Some(over) = over {
+                annotate_window_spec(over, scope, ctes)?;
+            }
+            infer_function_return_type(name, args, within_group, scope, ctes).subscript_value_type
+        }
+        Expr::Cast { expr, type_name } => {
+            let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+            type_name_subscript_value_type(type_name)
+        }
+        Expr::TypedLiteral { type_name, .. } => type_name_subscript_value_type(type_name),
+        Expr::Unary { expr, .. } => {
+            let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+            infer_expr_subscript_value_type(expr, scope, ctes)
+        }
+        Expr::Binary { left, right, op } => {
+            let _ = annotate_expr_subscript_types(left, scope, ctes)?;
+            let _ = annotate_expr_subscript_types(right, scope, ctes)?;
+            match op {
+                BinaryOp::ArrayConcat => array_type(SubscriptValueType::Other),
+                _ => SubscriptValueType::Other,
+            }
+        }
+        Expr::AnyAll { left, right, .. } | Expr::IsDistinctFrom { left, right, .. } => {
+            let _ = annotate_expr_subscript_types(left, scope, ctes)?;
+            let _ = annotate_expr_subscript_types(right, scope, ctes)?;
+            SubscriptValueType::Other
+        }
+        Expr::Exists(query) => {
+            let mut nested = ctes.clone();
+            annotate_query_subscript_types_with_ctes(query, &mut nested)?;
+            SubscriptValueType::Other
+        }
+        Expr::ScalarSubquery(query) => {
+            let mut nested = ctes.clone();
+            annotate_query_subscript_types_with_ctes(query, &mut nested)?;
             derive_query_output_columns_with_ctes(query, &mut nested)
                 .ok()
-                .and_then(|cols| cols.first().map(|col| col.type_oid))
-                .unwrap_or(PG_TEXT_OID)
+                .and_then(|cols| cols.first().map(|col| col.subscript_value_type.clone()))
+                .unwrap_or(SubscriptValueType::Other)
         }
-        Expr::ArrayConstructor(_) | Expr::ArraySubquery(_) => PG_TEXT_OID,
-        Expr::ArraySubscript { expr, .. } => {
-            // Return the element type - for simplicity, return text type for now
-            // A more complete implementation would infer element type from array type
-            infer_expr_type_oid(expr, scope, ctes);
-            PG_TEXT_OID
+        Expr::ArraySubquery(query) => {
+            let mut nested = ctes.clone();
+            annotate_query_subscript_types_with_ctes(query, &mut nested)?;
+            let element_type = derive_query_output_columns_with_ctes(query, &mut nested)
+                .ok()
+                .and_then(|cols| cols.first().map(|col| col.subscript_value_type.clone()))
+                .unwrap_or(SubscriptValueType::Other);
+            array_type(element_type)
         }
-        Expr::ArraySlice { expr, .. } => {
-            // Return the same type as the array
-            infer_expr_type_oid(expr, scope, ctes)
+        Expr::InList { expr, list, .. } => {
+            let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+            for item in list {
+                let _ = annotate_expr_subscript_types(item, scope, ctes)?;
+            }
+            SubscriptValueType::Other
         }
-        Expr::TypedLiteral { type_name, .. } => cast_type_name_to_oid(type_name),
-        Expr::RowConstructor(_) => 2249, // record type OID
-        Expr::MultiColumnSubqueryRef { .. } => PG_TEXT_OID, // approximate
+        Expr::InSubquery { expr, subquery, .. } => {
+            let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+            let mut nested = ctes.clone();
+            annotate_query_subscript_types_with_ctes(subquery, &mut nested)?;
+            SubscriptValueType::Other
+        }
+        Expr::Between {
+            expr, low, high, ..
+        } => {
+            let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+            let _ = annotate_expr_subscript_types(low, scope, ctes)?;
+            let _ = annotate_expr_subscript_types(high, scope, ctes)?;
+            SubscriptValueType::Other
+        }
+        Expr::Like {
+            expr,
+            pattern,
+            escape,
+            ..
+        } => {
+            let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+            let _ = annotate_expr_subscript_types(pattern, scope, ctes)?;
+            if let Some(escape) = escape {
+                let _ = annotate_expr_subscript_types(escape, scope, ctes)?;
+            }
+            SubscriptValueType::Other
+        }
+        Expr::IsNull { expr, .. } | Expr::BooleanTest { expr, .. } => {
+            let _ = annotate_expr_subscript_types(expr, scope, ctes)?;
+            SubscriptValueType::Other
+        }
+        Expr::CaseSimple {
+            operand,
+            when_then,
+            else_expr,
+        } => {
+            let _ = annotate_expr_subscript_types(operand, scope, ctes)?;
+            for (when, then) in when_then {
+                let _ = annotate_expr_subscript_types(when, scope, ctes)?;
+                let _ = annotate_expr_subscript_types(then, scope, ctes)?;
+            }
+            if let Some(else_expr) = else_expr {
+                let _ = annotate_expr_subscript_types(else_expr, scope, ctes)?;
+            }
+            SubscriptValueType::Other
+        }
+        Expr::CaseSearched {
+            when_then,
+            else_expr,
+        } => {
+            for (when, then) in when_then {
+                let _ = annotate_expr_subscript_types(when, scope, ctes)?;
+                let _ = annotate_expr_subscript_types(then, scope, ctes)?;
+            }
+            if let Some(else_expr) = else_expr {
+                let _ = annotate_expr_subscript_types(else_expr, scope, ctes)?;
+            }
+            SubscriptValueType::Other
+        }
+        Expr::ArrayConstructor(values) => {
+            for value in values.iter_mut() {
+                let _ = annotate_expr_subscript_types(value, scope, ctes)?;
+            }
+            array_type(common_array_element_subscript_type(values, scope, ctes))
+        }
+        Expr::RowConstructor(values) => {
+            for value in values.iter_mut() {
+                let _ = annotate_expr_subscript_types(value, scope, ctes)?;
+            }
+            SubscriptValueType::Other
+        }
+        Expr::ArraySubscript {
+            expr,
+            index,
+            container_type,
+        } => {
+            let base_type = annotate_expr_subscript_types(expr, scope, ctes)?;
+            let _ = annotate_expr_subscript_types(index, scope, ctes)?;
+            *container_type = base_type.container_type();
+            match base_type {
+                SubscriptValueType::Jsonb => SubscriptValueType::Jsonb,
+                SubscriptValueType::Array(inner) => *inner,
+                SubscriptValueType::Other | SubscriptValueType::Unknown => {
+                    SubscriptValueType::Other
+                }
+            }
+        }
+        Expr::ArraySlice {
+            expr,
+            start,
+            end,
+            container_type,
+        } => {
+            let base_type = annotate_expr_subscript_types(expr, scope, ctes)?;
+            if let Some(start) = start {
+                let _ = annotate_expr_subscript_types(start, scope, ctes)?;
+            }
+            if let Some(end) = end {
+                let _ = annotate_expr_subscript_types(end, scope, ctes)?;
+            }
+            *container_type = base_type.container_type();
+            match base_type {
+                SubscriptValueType::Array(_) => base_type,
+                SubscriptValueType::Jsonb
+                | SubscriptValueType::Other
+                | SubscriptValueType::Unknown => SubscriptValueType::Other,
+            }
+        }
+    };
+    Ok(value_type)
+}
+
+pub(crate) fn annotate_statement_subscript_types(
+    statement: &mut Statement,
+) -> Result<(), EngineError> {
+    let mut ctes = HashMap::new();
+    match statement {
+        Statement::Query(query) => annotate_query_subscript_types_with_ctes(query, &mut ctes),
+        Statement::Insert(insert) => annotate_insert_subscript_types(insert, &mut ctes),
+        Statement::Update(update) => annotate_update_subscript_types(update, &mut ctes),
+        Statement::Delete(delete) => annotate_delete_subscript_types(delete, &mut ctes),
+        _ => Ok(()),
     }
 }
 
@@ -505,6 +1256,7 @@ fn append_cte_aux_output_columns(
         columns.push(PlannedOutputColumn {
             name: search.set_column.clone(),
             type_oid: PG_INT8_OID,
+            subscript_value_type: SubscriptValueType::Other,
         });
     }
     if let Some(cycle) = &cte.cycle_clause {
@@ -515,6 +1267,7 @@ fn append_cte_aux_output_columns(
             columns.push(PlannedOutputColumn {
                 name: cycle.set_column.clone(),
                 type_oid: PG_BOOL_OID,
+                subscript_value_type: SubscriptValueType::Other,
             });
         }
         if !columns
@@ -524,6 +1277,7 @@ fn append_cte_aux_output_columns(
             columns.push(PlannedOutputColumn {
                 name: cycle.using_column.clone(),
                 type_oid: PG_TEXT_OID,
+                subscript_value_type: SubscriptValueType::Other,
             });
         }
     }
@@ -568,6 +1322,11 @@ pub(crate) fn derive_query_output_columns_with_ctes(
                         .map(|(idx, name)| PlannedOutputColumn {
                             name: name.clone(),
                             type_oid: cols.get(idx).map_or(PG_TEXT_OID, |col| col.type_oid),
+                            subscript_value_type: cols
+                                .get(idx)
+                                .map_or(SubscriptValueType::Other, |col| {
+                                    col.subscript_value_type.clone()
+                                }),
                         })
                         .collect::<Vec<_>>();
                     cols = renamed;
@@ -619,6 +1378,9 @@ fn derive_recursive_cte_output_columns(
             .map(|(idx, name)| PlannedOutputColumn {
                 name: name.clone(),
                 type_oid: left_cols.get(idx).map_or(PG_TEXT_OID, |col| col.type_oid),
+                subscript_value_type: left_cols.get(idx).map_or(SubscriptValueType::Other, |col| {
+                    col.subscript_value_type.clone()
+                }),
             })
             .collect();
     }
@@ -652,6 +1414,7 @@ fn derive_query_expr_output_columns(
                 .map(|i| PlannedOutputColumn {
                     name: format!("column{i}"),
                     type_oid: PG_TEXT_OID, // Default to text, actual type determined at execution
+                    subscript_value_type: SubscriptValueType::Other,
                 })
                 .collect())
         }
@@ -667,6 +1430,7 @@ fn derive_query_expr_output_columns(
                 .map(|(idx, name)| PlannedOutputColumn {
                     name,
                     type_oid: types.get(idx).copied().unwrap_or(PG_TEXT_OID),
+                    subscript_value_type: SubscriptValueType::Other,
                 })
                 .collect())
         }
@@ -682,6 +1446,7 @@ fn derive_query_expr_output_columns(
                 .map(|(idx, name)| PlannedOutputColumn {
                     name,
                     type_oid: types.get(idx).copied().unwrap_or(PG_TEXT_OID),
+                    subscript_value_type: SubscriptValueType::Other,
                 })
                 .collect())
         }
@@ -697,6 +1462,7 @@ fn derive_query_expr_output_columns(
                 .map(|(idx, name)| PlannedOutputColumn {
                     name,
                     type_oid: types.get(idx).copied().unwrap_or(PG_TEXT_OID),
+                    subscript_value_type: SubscriptValueType::Other,
                 })
                 .collect())
         }
@@ -724,8 +1490,9 @@ fn derive_select_output_columns(
 
     let mut type_scope = TypeScope::default();
     for col in from_columns {
-        type_scope.insert_unqualified(&col.label, col.type_oid);
-        type_scope.insert_qualified(&col.lookup_parts, col.type_oid);
+        let resolved = ResolvedExprType::new(col.type_oid, &col.subscript_value_type);
+        type_scope.insert_unqualified(&col.label, resolved.clone());
+        type_scope.insert_qualified(&col.lookup_parts, resolved);
     }
 
     let mut columns = Vec::new();
@@ -739,6 +1506,7 @@ fn derive_select_output_columns(
             columns.extend(expanded.iter().map(|col| PlannedOutputColumn {
                 name: col.label.clone(),
                 type_oid: col.type_oid,
+                subscript_value_type: col.subscript_value_type.clone(),
             }));
             continue;
         }
@@ -753,15 +1521,18 @@ fn derive_select_output_columns(
                     columns.push(PlannedOutputColumn {
                         name: col.label.clone(),
                         type_oid: col.type_oid,
+                        subscript_value_type: col.subscript_value_type.clone(),
                     });
                 }
             }
             continue;
         }
 
+        let resolved = infer_expr_type(&target.expr, &type_scope, ctes);
         columns.push(PlannedOutputColumn {
             name: infer_select_target_name(target)?,
-            type_oid: infer_expr_type_oid(&target.expr, &type_scope, ctes),
+            type_oid: resolved.type_oid,
+            subscript_value_type: resolved.subscript_value_type,
         });
     }
     Ok(columns)
@@ -1204,9 +1975,19 @@ fn derive_returning_column_type_oids_from_table(
     let mut scope = TypeScope::default();
     for column in table.columns() {
         let oid = type_signature_to_oid(column.type_signature());
-        scope.insert_unqualified(column.name(), oid);
-        scope.insert_qualified(&[table.name().to_string(), column.name().to_string()], oid);
-        scope.insert_qualified(&[table.qualified_name(), column.name().to_string()], oid);
+        let resolved = ResolvedExprType::new(oid, column.subscript_value_type());
+        scope.insert_unqualified(column.name(), resolved.clone());
+        scope.insert_qualified(
+            &[table.name().to_string(), column.name().to_string()],
+            resolved.clone(),
+        );
+        scope.insert_qualified(
+            &[
+                table.qualified_name().to_string(),
+                column.name().to_string(),
+            ],
+            resolved,
+        );
     }
 
     let ctes = HashMap::new();
@@ -1221,7 +2002,7 @@ fn derive_returning_column_type_oids_from_table(
             );
             continue;
         }
-        out.push(infer_expr_type_oid(&target.expr, &scope, &ctes));
+        out.push(infer_expr_type(&target.expr, &scope, &ctes).type_oid);
     }
     Ok(out)
 }
@@ -1540,6 +2321,7 @@ fn expand_table_expression_columns_typed(
                             label: column.name.to_string(),
                             lookup_parts: vec![qualifier.clone(), column.name.to_string()],
                             type_oid: column.type_oid,
+                            subscript_value_type: column.subscript_value_type.clone(),
                         })
                         .collect());
                 }
@@ -1556,6 +2338,7 @@ fn expand_table_expression_columns_typed(
                         label: column.name.clone(),
                         lookup_parts: vec![qualifier.clone(), column.name.to_string()],
                         type_oid: column.type_oid,
+                        subscript_value_type: SubscriptValueType::Other,
                     })
                     .collect());
             }
@@ -1579,6 +2362,7 @@ fn expand_table_expression_columns_typed(
                     label: column.name().to_string(),
                     lookup_parts: vec![qualifier.clone(), column.name().to_string()],
                     type_oid: type_signature_to_oid(column.type_signature()),
+                    subscript_value_type: column.subscript_value_type().clone(),
                 })
                 .collect())
         }
@@ -1607,6 +2391,7 @@ fn expand_table_expression_columns_typed(
                         label: column_name,
                         lookup_parts,
                         type_oid: *column_type_oids.get(idx).unwrap_or(&PG_TEXT_OID),
+                        subscript_value_type: SubscriptValueType::Other,
                     }
                 })
                 .collect())
@@ -1627,6 +2412,7 @@ fn expand_table_expression_columns_typed(
                         label: col.name.clone(),
                         lookup_parts: vec![qualifier.clone(), col.name],
                         type_oid: col.type_oid,
+                        subscript_value_type: col.subscript_value_type,
                     })
                     .collect())
             } else {
@@ -1636,6 +2422,7 @@ fn expand_table_expression_columns_typed(
                         label: col.name.clone(),
                         lookup_parts: vec![col.name],
                         type_oid: col.type_oid,
+                        subscript_value_type: col.subscript_value_type,
                     })
                     .collect())
             }

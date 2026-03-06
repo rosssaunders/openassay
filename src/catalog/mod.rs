@@ -156,6 +156,7 @@ impl Catalog {
                 self.oid_gen.next_oid()?,
                 column_name,
                 column.type_signature,
+                column.subscript_value_type,
                 idx as u16,
                 column.nullable,
                 column.unique,
@@ -456,6 +457,7 @@ impl Catalog {
                 self.oid_gen.next_oid()?,
                 column_name,
                 TypeSignature::Text,
+                crate::parser::ast::SubscriptValueType::Other,
                 idx as u16,
                 true,
                 false,
@@ -652,6 +654,7 @@ impl Catalog {
 
         let ColumnSpec {
             type_signature,
+            subscript_value_type,
             nullable,
             unique,
             primary_key,
@@ -667,6 +670,7 @@ impl Catalog {
             column_oid,
             column_name.clone(),
             type_signature,
+            subscript_value_type,
             ordinal,
             nullable,
             unique,

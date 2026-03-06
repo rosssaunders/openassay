@@ -69,9 +69,9 @@ impl IcebergObjectLocation {
                 });
             }
 
-            let (bucket, suffix) = rest.split_once('/').map_or((rest, ""), |(bucket, suffix)| {
-                (bucket, suffix)
-            });
+            let (bucket, suffix) = rest
+                .split_once('/')
+                .map_or((rest, ""), |(bucket, suffix)| (bucket, suffix));
             if bucket.is_empty() {
                 return Err(catalog_error(format!(
                     "storage URI \"{trimmed}\" is missing a bucket or container"
@@ -295,9 +295,14 @@ impl IcebergStorage {
         })
     }
 
-    async fn read_to_string(&self, location: &IcebergObjectLocation) -> Result<String, CatalogError> {
+    async fn read_to_string(
+        &self,
+        location: &IcebergObjectLocation,
+    ) -> Result<String, CatalogError> {
         match self.kind {
-            IcebergStorageKind::Local => std::fs::read_to_string(location.path()).map_err(to_catalog_error),
+            IcebergStorageKind::Local => {
+                std::fs::read_to_string(location.path()).map_err(to_catalog_error)
+            }
             _ => {
                 let bytes = self
                     .store
@@ -404,6 +409,7 @@ pub async fn browse_iceberg_catalogs(
                     oid,
                     field.name.clone(),
                     field.type_signature,
+                    crate::parser::ast::SubscriptValueType::Other,
                     idx as u16,
                     field.nullable,
                     false,
@@ -481,7 +487,8 @@ pub async fn resolve_iceberg_table(path: &str) -> Result<IcebergResolvedTable, C
     let storage = IcebergStorage::from_location(&table_root).await?;
     let metadata_file = resolve_iceberg_metadata_file(&storage, &input).await?;
     let metadata_text = storage.read_to_string(&metadata_file).await?;
-    let metadata_json = serde_json::from_str::<JsonValue>(&metadata_text).map_err(to_catalog_error)?;
+    let metadata_json =
+        serde_json::from_str::<JsonValue>(&metadata_text).map_err(to_catalog_error)?;
 
     let current_schema_id = metadata_json
         .get("current-schema-id")
@@ -493,7 +500,9 @@ pub async fn resolve_iceberg_table(path: &str) -> Result<IcebergResolvedTable, C
     let current_schema_json = if let Some(current_schema_id) = current_schema_id {
         schemas
             .iter()
-            .find(|schema| schema.get("schema-id").and_then(JsonValue::as_i64) == Some(current_schema_id))
+            .find(|schema| {
+                schema.get("schema-id").and_then(JsonValue::as_i64) == Some(current_schema_id)
+            })
             .or_else(|| schemas.last())
     } else {
         schemas.last()
@@ -503,7 +512,9 @@ pub async fn resolve_iceberg_table(path: &str) -> Result<IcebergResolvedTable, C
     let current_schema = parse_schema_fields(current_schema_json)?;
     let alias_map = collect_schema_aliases(schemas, &current_schema);
     let partition_columns = current_partition_columns(&metadata_json);
-    let parquet_files = discover_iceberg_parquet_files(&storage, &table_root, &partition_columns, &current_schema).await?;
+    let parquet_files =
+        discover_iceberg_parquet_files(&storage, &table_root, &partition_columns, &current_schema)
+            .await?;
 
     let metadata = IcebergTableMetadata {
         table_root: table_root.raw().to_string(),
@@ -512,8 +523,12 @@ pub async fn resolve_iceberg_table(path: &str) -> Result<IcebergResolvedTable, C
             .get("table-uuid")
             .and_then(JsonValue::as_str)
             .map(ToOwned::to_owned),
-        format_version: metadata_json.get("format-version").and_then(JsonValue::as_i64),
-        last_updated_ms: metadata_json.get("last-updated-ms").and_then(JsonValue::as_i64),
+        format_version: metadata_json
+            .get("format-version")
+            .and_then(JsonValue::as_i64),
+        last_updated_ms: metadata_json
+            .get("last-updated-ms")
+            .and_then(JsonValue::as_i64),
         current_schema_id,
         partition_spec_json: metadata_json
             .get("partition-specs")
@@ -630,7 +645,9 @@ pub async fn scan_iceberg_table_with_predicate(
         .cloned()
         .collect::<Vec<_>>();
     let partition_predicates = predicate
-        .map(|predicate| extract_partition_predicates(predicate, qualifiers, &partition_fields, params))
+        .map(|predicate| {
+            extract_partition_predicates(predicate, qualifiers, &partition_fields, params)
+        })
         .transpose()?
         .unwrap_or_default();
     plan_iceberg_scan(path, None, &partition_predicates)
@@ -666,12 +683,9 @@ pub fn extract_partition_predicates(
         .collect::<HashMap<_, _>>();
     let mut out = Vec::new();
     for conjunct in decompose_and_conjuncts(predicate) {
-        if let Some(extracted) = extract_single_partition_predicate(
-            &conjunct,
-            qualifiers,
-            &partition_lookup,
-            params,
-        )? {
+        if let Some(extracted) =
+            extract_single_partition_predicate(&conjunct, qualifiers, &partition_lookup, params)?
+        {
             out.push(extracted);
         }
     }
@@ -809,7 +823,10 @@ async fn discover_table_roots(
         let Some(parent) = object.parent() else {
             continue;
         };
-        let Some(root_dir) = (if parent.file_name().is_some_and(|name| name.eq_ignore_ascii_case("metadata")) {
+        let Some(root_dir) = (if parent
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("metadata"))
+        {
             parent.parent()
         } else {
             object.parent()
@@ -859,7 +876,10 @@ fn resolve_iceberg_table_root(
                 location.raw()
             ))
         })?;
-        if parent.file_name().is_some_and(|name| name.eq_ignore_ascii_case("metadata")) {
+        if parent
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("metadata"))
+        {
             return parent.parent().ok_or_else(|| {
                 catalog_error(format!(
                     "cannot determine Iceberg table root from {}",
@@ -902,9 +922,12 @@ async fn resolve_iceberg_metadata_file(
             right.file_name().unwrap_or_default(),
         )
     });
-    candidates
-        .pop()
-        .ok_or_else(|| catalog_error(format!("no Iceberg metadata found under {}", table_root.raw())))
+    candidates.pop().ok_or_else(|| {
+        catalog_error(format!(
+            "no Iceberg metadata found under {}",
+            table_root.raw()
+        ))
+    })
 }
 
 async fn discover_iceberg_parquet_files(
@@ -930,7 +953,8 @@ async fn discover_iceberg_parquet_files(
         {
             continue;
         }
-        let partition_values = parse_partition_values(&entry, &data_dir, partition_columns, &partition_lookup);
+        let partition_values =
+            parse_partition_values(&entry, &data_dir, partition_columns, &partition_lookup);
         files.push(IcebergDiscoveredFile {
             location: entry,
             partition_values,
@@ -964,9 +988,8 @@ fn parse_partition_values(
             .get(&name.to_ascii_lowercase())
             .copied()
             .unwrap_or(TypeSignature::Text);
-        let scalar = coerce_text_to_type(value, type_signature).unwrap_or_else(|_| {
-            ScalarValue::Text(value.to_string())
-        });
+        let scalar = coerce_text_to_type(value, type_signature)
+            .unwrap_or_else(|_| ScalarValue::Text(value.to_string()));
         out.insert(name.to_ascii_lowercase(), scalar);
     }
     out
@@ -1055,15 +1078,17 @@ fn parquet_field_to_scalar(field: &ParquetField) -> ScalarValue {
         ParquetField::Str(value) => ScalarValue::Text(value.clone()),
         ParquetField::Bytes(value) => String::from_utf8(value.data().to_vec())
             .map(ScalarValue::Text)
-            .unwrap_or_else(|_| ScalarValue::Text(base64::prelude::BASE64_STANDARD.encode(value.data()))),
+            .unwrap_or_else(|_| {
+                ScalarValue::Text(base64::prelude::BASE64_STANDARD.encode(value.data()))
+            }),
         ParquetField::Date(value) => ScalarValue::Text(value.to_string()),
         ParquetField::TimeMillis(value) => ScalarValue::Text(value.to_string()),
         ParquetField::TimeMicros(value) => ScalarValue::Text(value.to_string()),
         ParquetField::TimestampMillis(value) => ScalarValue::Text(value.to_string()),
         ParquetField::TimestampMicros(value) => ScalarValue::Text(value.to_string()),
-        ParquetField::Group(_)
-        | ParquetField::ListInternal(_)
-        | ParquetField::MapInternal(_) => ScalarValue::Text(field.to_string()),
+        ParquetField::Group(_) | ParquetField::ListInternal(_) | ParquetField::MapInternal(_) => {
+            ScalarValue::Text(field.to_string())
+        }
     }
 }
 
@@ -1117,39 +1142,47 @@ fn evaluate_partition_predicate(
     partition_values: &HashMap<String, ScalarValue>,
 ) -> bool {
     match predicate {
-        IcebergPartitionPredicate::Eq(column, value) => {
-            compare_partition_value(partition_values.get(column), value, std::cmp::Ordering::Equal)
-        }
-        IcebergPartitionPredicate::Lt(column, value) => {
-            compare_partition_value(partition_values.get(column), value, std::cmp::Ordering::Less)
-        }
-        IcebergPartitionPredicate::Lte(column, value) => partition_values
-            .get(column)
-            .is_none_or(|partition| {
+        IcebergPartitionPredicate::Eq(column, value) => compare_partition_value(
+            partition_values.get(column),
+            value,
+            std::cmp::Ordering::Equal,
+        ),
+        IcebergPartitionPredicate::Lt(column, value) => compare_partition_value(
+            partition_values.get(column),
+            value,
+            std::cmp::Ordering::Less,
+        ),
+        IcebergPartitionPredicate::Lte(column, value) => {
+            partition_values.get(column).is_none_or(|partition| {
                 let ordering = scalar_cmp(partition, value);
                 ordering == std::cmp::Ordering::Less || ordering == std::cmp::Ordering::Equal
-            }),
+            })
+        }
         IcebergPartitionPredicate::Gt(column, value) => partition_values
             .get(column)
             .is_none_or(|partition| scalar_cmp(partition, value) == std::cmp::Ordering::Greater),
-        IcebergPartitionPredicate::Gte(column, value) => partition_values
-            .get(column)
-            .is_none_or(|partition| {
+        IcebergPartitionPredicate::Gte(column, value) => {
+            partition_values.get(column).is_none_or(|partition| {
                 let ordering = scalar_cmp(partition, value);
                 ordering == std::cmp::Ordering::Greater || ordering == std::cmp::Ordering::Equal
-            }),
-        IcebergPartitionPredicate::In(column, values) => partition_values
-            .get(column)
-            .is_none_or(|partition| values.iter().any(|value| scalar_cmp(partition, value) == std::cmp::Ordering::Equal)),
-        IcebergPartitionPredicate::Between(column, low, high) => partition_values
-            .get(column)
-            .is_none_or(|partition| {
+            })
+        }
+        IcebergPartitionPredicate::In(column, values) => {
+            partition_values.get(column).is_none_or(|partition| {
+                values
+                    .iter()
+                    .any(|value| scalar_cmp(partition, value) == std::cmp::Ordering::Equal)
+            })
+        }
+        IcebergPartitionPredicate::Between(column, low, high) => {
+            partition_values.get(column).is_none_or(|partition| {
                 let low_cmp = scalar_cmp(partition, low);
                 let high_cmp = scalar_cmp(partition, high);
                 (low_cmp == std::cmp::Ordering::Greater || low_cmp == std::cmp::Ordering::Equal)
                     && (high_cmp == std::cmp::Ordering::Less
                         || high_cmp == std::cmp::Ordering::Equal)
-            }),
+            })
+        }
     }
 }
 
@@ -1169,9 +1202,13 @@ fn extract_single_partition_predicate(
 ) -> Result<Option<IcebergPartitionPredicate>, EngineError> {
     match expr {
         Expr::Binary { left, op, right } => {
-            if let Some((column, field, value, reverse)) =
-                extract_partition_column_and_value(left, right, qualifiers, partition_lookup, params)?
-            {
+            if let Some((column, field, value, reverse)) = extract_partition_column_and_value(
+                left,
+                right,
+                qualifiers,
+                partition_lookup,
+                params,
+            )? {
                 let predicate = match (op.clone(), reverse) {
                     (BinaryOp::Eq, false | true) => IcebergPartitionPredicate::Eq(column, value),
                     (BinaryOp::Lt, false) => IcebergPartitionPredicate::Lt(column, value),
@@ -1189,14 +1226,22 @@ fn extract_single_partition_predicate(
             }
             Ok(None)
         }
-        Expr::InList { expr, list, negated } if !negated => {
-            let Some((column, field)) = extract_partition_column(expr, qualifiers, partition_lookup) else {
+        Expr::InList {
+            expr,
+            list,
+            negated,
+        } if !negated => {
+            let Some((column, field)) =
+                extract_partition_column(expr, qualifiers, partition_lookup)
+            else {
                 return Ok(None);
             };
             let mut values = Vec::with_capacity(list.len());
             for item in list {
                 let scalar = eval_constant_scalar(item, params)?;
-                values.push(coerce_scalar_to_type(scalar, field.type_signature).map_err(to_engine_error)?);
+                values.push(
+                    coerce_scalar_to_type(scalar, field.type_signature).map_err(to_engine_error)?,
+                );
             }
             Ok(Some(IcebergPartitionPredicate::In(column, values)))
         }
@@ -1206,13 +1251,17 @@ fn extract_single_partition_predicate(
             high,
             negated,
         } if !negated => {
-            let Some((column, field)) = extract_partition_column(expr, qualifiers, partition_lookup) else {
+            let Some((column, field)) =
+                extract_partition_column(expr, qualifiers, partition_lookup)
+            else {
                 return Ok(None);
             };
-            let low = coerce_scalar_to_type(eval_constant_scalar(low, params)?, field.type_signature)
-                .map_err(to_engine_error)?;
-            let high = coerce_scalar_to_type(eval_constant_scalar(high, params)?, field.type_signature)
-                .map_err(to_engine_error)?;
+            let low =
+                coerce_scalar_to_type(eval_constant_scalar(low, params)?, field.type_signature)
+                    .map_err(to_engine_error)?;
+            let high =
+                coerce_scalar_to_type(eval_constant_scalar(high, params)?, field.type_signature)
+                    .map_err(to_engine_error)?;
             Ok(Some(IcebergPartitionPredicate::Between(column, low, high)))
         }
         _ => Ok(None),
@@ -1252,7 +1301,11 @@ fn extract_partition_column(
             .get(&column.to_ascii_lowercase())
             .cloned()
             .map(|field| (field.name.to_ascii_lowercase(), field)),
-        [qualifier, column] if qualifiers.iter().any(|item| item.eq_ignore_ascii_case(qualifier)) => {
+        [qualifier, column]
+            if qualifiers
+                .iter()
+                .any(|item| item.eq_ignore_ascii_case(qualifier)) =>
+        {
             partition_lookup
                 .get(&column.to_ascii_lowercase())
                 .cloned()
@@ -1262,25 +1315,34 @@ fn extract_partition_column(
     }
 }
 
-fn eval_constant_scalar(expr: &Expr, params: &[Option<String>]) -> Result<ScalarValue, EngineError> {
+fn eval_constant_scalar(
+    expr: &Expr,
+    params: &[Option<String>],
+) -> Result<ScalarValue, EngineError> {
     match expr {
         Expr::Null => Ok(ScalarValue::Null),
         Expr::Boolean(value) => Ok(ScalarValue::Bool(*value)),
         Expr::Integer(value) => Ok(ScalarValue::Int(*value)),
-        Expr::Float(value) => Ok(ScalarValue::Float(
-            value.parse::<f64>().map_err(|_| EngineError {
+        Expr::Float(value) => Ok(ScalarValue::Float(value.parse::<f64>().map_err(|_| {
+            EngineError {
                 message: "unsupported partition predicate literal".to_string(),
-            })?,
-        )),
+            }
+        })?)),
         Expr::String(value) => Ok(ScalarValue::Text(value.clone())),
-        Expr::Unary { op: UnaryOp::Minus, expr } => match eval_constant_scalar(expr, params)? {
+        Expr::Unary {
+            op: UnaryOp::Minus,
+            expr,
+        } => match eval_constant_scalar(expr, params)? {
             ScalarValue::Int(value) => Ok(ScalarValue::Int(-value)),
             ScalarValue::Float(value) => Ok(ScalarValue::Float(-value)),
             _ => Err(EngineError {
                 message: "unsupported partition predicate literal".to_string(),
             }),
         },
-        Expr::Unary { op: UnaryOp::Plus, expr } => eval_constant_scalar(expr, params),
+        Expr::Unary {
+            op: UnaryOp::Plus,
+            expr,
+        } => eval_constant_scalar(expr, params),
         Expr::Cast { expr, .. } => eval_constant_scalar(expr, params),
         Expr::Parameter(index) => params
             .get(index.saturating_sub(1) as usize)
@@ -1305,11 +1367,13 @@ fn coerce_scalar_to_type(
 
     match (type_signature, value) {
         (TypeSignature::Bool, ScalarValue::Bool(value)) => Ok(ScalarValue::Bool(value)),
-        (TypeSignature::Bool, ScalarValue::Text(value)) => match value.trim().to_ascii_lowercase().as_str() {
-            "true" | "t" | "1" => Ok(ScalarValue::Bool(true)),
-            "false" | "f" | "0" => Ok(ScalarValue::Bool(false)),
-            _ => Err(catalog_error("invalid boolean literal")),
-        },
+        (TypeSignature::Bool, ScalarValue::Text(value)) => {
+            match value.trim().to_ascii_lowercase().as_str() {
+                "true" | "t" | "1" => Ok(ScalarValue::Bool(true)),
+                "false" | "f" | "0" => Ok(ScalarValue::Bool(false)),
+                _ => Err(catalog_error("invalid boolean literal")),
+            }
+        }
         (TypeSignature::Int8, ScalarValue::Int(value)) => Ok(ScalarValue::Int(value)),
         (TypeSignature::Int8, ScalarValue::Text(value)) => value
             .trim()
@@ -1341,7 +1405,9 @@ fn coerce_scalar_to_type(
             .map_err(to_catalog_error),
         (TypeSignature::Text, ScalarValue::Text(value)) => Ok(ScalarValue::Text(value)),
         (TypeSignature::Text, value) => Ok(ScalarValue::Text(value.render())),
-        (TypeSignature::Date, ScalarValue::Text(value)) => Ok(ScalarValue::Text(value.trim().to_string())),
+        (TypeSignature::Date, ScalarValue::Text(value)) => {
+            Ok(ScalarValue::Text(value.trim().to_string()))
+        }
         (TypeSignature::Timestamp, ScalarValue::Text(value)) => {
             Ok(ScalarValue::Text(value.trim().to_string()))
         }
@@ -1353,19 +1419,22 @@ fn coerce_scalar_to_type(
     }
 }
 
-fn coerce_text_to_type(value: &str, type_signature: TypeSignature) -> Result<ScalarValue, CatalogError> {
+fn coerce_text_to_type(
+    value: &str,
+    type_signature: TypeSignature,
+) -> Result<ScalarValue, CatalogError> {
     coerce_scalar_to_type(ScalarValue::Text(value.to_string()), type_signature)
 }
 
 fn scalar_cmp(left: &ScalarValue, right: &ScalarValue) -> std::cmp::Ordering {
     match (left, right) {
         (ScalarValue::Int(left), ScalarValue::Int(right)) => left.cmp(right),
-        (ScalarValue::Int(left), ScalarValue::Float(right)) => {
-            (*left as f64).partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
-        }
-        (ScalarValue::Float(left), ScalarValue::Int(right)) => {
-            left.partial_cmp(&(*right as f64)).unwrap_or(std::cmp::Ordering::Equal)
-        }
+        (ScalarValue::Int(left), ScalarValue::Float(right)) => (*left as f64)
+            .partial_cmp(right)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (ScalarValue::Float(left), ScalarValue::Int(right)) => left
+            .partial_cmp(&(*right as f64))
+            .unwrap_or(std::cmp::Ordering::Equal),
         (ScalarValue::Float(left), ScalarValue::Float(right)) => {
             left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
         }
@@ -1551,24 +1620,27 @@ mod tests {
 
     #[test]
     fn parses_local_storage_locations() {
-        let location = IcebergObjectLocation::parse("/tmp/demo/table").expect("local path should parse");
+        let location =
+            IcebergObjectLocation::parse("/tmp/demo/table").expect("local path should parse");
         assert_eq!(location.store_kind(), IcebergStorageKind::Local);
         assert_eq!(location.path(), "/tmp/demo/table");
     }
 
     #[test]
     fn parses_cloud_storage_locations() {
-        let s3 = IcebergObjectLocation::parse("s3://warehouse/trades").expect("s3 uri should parse");
+        let s3 =
+            IcebergObjectLocation::parse("s3://warehouse/trades").expect("s3 uri should parse");
         assert_eq!(s3.store_kind(), IcebergStorageKind::S3);
         assert_eq!(s3.bucket(), Some("warehouse"));
         assert_eq!(s3.path(), "trades");
 
-        let gcs = IcebergObjectLocation::parse("gs://lake/crypto/trades").expect("gs uri should parse");
+        let gcs =
+            IcebergObjectLocation::parse("gs://lake/crypto/trades").expect("gs uri should parse");
         assert_eq!(gcs.store_kind(), IcebergStorageKind::Gcs);
         assert_eq!(gcs.bucket(), Some("lake"));
 
-        let azure =
-            IcebergObjectLocation::parse("az://container/root/table").expect("azure uri should parse");
+        let azure = IcebergObjectLocation::parse("az://container/root/table")
+            .expect("azure uri should parse");
         assert_eq!(azure.store_kind(), IcebergStorageKind::AzureBlob);
         assert_eq!(azure.bucket(), Some("container"));
     }
@@ -1583,8 +1655,10 @@ mod tests {
     fn layout_detects_multiple_catalogs() {
         let root = IcebergObjectLocation::parse("/tmp/warehouse").expect("root should parse");
         let tables = vec![
-            IcebergObjectLocation::parse("/tmp/warehouse/alpha/crypto/trades").expect("table should parse"),
-            IcebergObjectLocation::parse("/tmp/warehouse/beta/market/ohlcv").expect("table should parse"),
+            IcebergObjectLocation::parse("/tmp/warehouse/alpha/crypto/trades")
+                .expect("table should parse"),
+            IcebergObjectLocation::parse("/tmp/warehouse/beta/market/ohlcv")
+                .expect("table should parse"),
         ];
         let layout = IcebergCatalogLayout::from_table_roots(&root, &tables);
         let first = layout.entry_for(&root, &tables[0]);
@@ -1597,8 +1671,10 @@ mod tests {
     fn partition_values_parse_from_hive_paths() {
         let data_root =
             IcebergObjectLocation::parse("/tmp/table/data").expect("data root should parse");
-        let file = IcebergObjectLocation::parse("/tmp/table/data/day=2024-01-01/symbol=btc/part-1.parquet")
-            .expect("file should parse");
+        let file = IcebergObjectLocation::parse(
+            "/tmp/table/data/day=2024-01-01/symbol=btc/part-1.parquet",
+        )
+        .expect("file should parse");
         let values = parse_partition_values(
             &file,
             &data_root,

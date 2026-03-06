@@ -2822,7 +2822,7 @@ fn parses_array_subscript() {
     let QueryExpr::Select(select) = &query.body else {
         panic!("expected select");
     };
-    let Expr::ArraySubscript { expr, index } = &select.targets[0].expr else {
+    let Expr::ArraySubscript { expr, index, .. } = &select.targets[0].expr else {
         panic!("expected array subscript, got {:?}", select.targets[0].expr);
     };
     let Expr::Identifier(parts) = &**expr else {
@@ -2844,7 +2844,10 @@ fn parses_array_slice() {
     let QueryExpr::Select(select) = &query.body else {
         panic!("expected select");
     };
-    let Expr::ArraySlice { expr, start, end } = &select.targets[0].expr else {
+    let Expr::ArraySlice {
+        expr, start, end, ..
+    } = &select.targets[0].expr
+    else {
         panic!("expected array slice, got {:?}", select.targets[0].expr);
     };
     let Expr::Identifier(parts) = &**expr else {
@@ -2880,6 +2883,7 @@ fn parses_array_slice_open_end() {
         expr: _,
         start,
         end,
+        ..
     } = &select.targets[0].expr
     else {
         panic!("expected array slice");

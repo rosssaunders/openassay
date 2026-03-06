@@ -1,6 +1,6 @@
+use super::table_functions::evaluate_table_function_with_predicate;
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use super::table_functions::evaluate_table_function_with_predicate;
 
 pub async fn execute_query(
     query: &Query,

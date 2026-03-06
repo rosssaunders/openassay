@@ -12,8 +12,8 @@ use crate::extensions::pgvector::{eval_pgvector_function, eval_vector_distance_o
 use crate::extensions::uuid_ossp::eval_uuid_ossp_function;
 use crate::parser::ast::{
     BinaryOp, BooleanTestType, ComparisonQuantifier, CreateFunctionStatement, Expr, OrderByExpr,
-    UnaryOp, WindowDefinition, WindowFrameBound, WindowFrameExclusion, WindowFrameUnits,
-    WindowSpec,
+    SubscriptContainerType, UnaryOp, WindowDefinition, WindowFrameBound, WindowFrameExclusion,
+    WindowFrameUnits, WindowSpec,
 };
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::lookup_user_function as lookup_registered_user_function;
@@ -486,12 +486,21 @@ pub(crate) fn eval_expr<'a>(
                 message: "wildcard expression requires FROM support".to_string(),
             }),
             Expr::QualifiedWildcard(parts) => scope.lookup_identifier(parts),
-            Expr::ArraySubscript { expr, index } => {
+            Expr::ArraySubscript {
+                expr,
+                index,
+                container_type,
+            } => {
                 let array_value = eval_expr(expr, scope, params).await?;
                 let index_value = eval_expr(index, scope, params).await?;
-                eval_array_subscript(array_value, index_value, should_use_json_subscript(expr))
+                eval_array_subscript(array_value, index_value, *container_type)
             }
-            Expr::ArraySlice { expr, start, end } => {
+            Expr::ArraySlice {
+                expr,
+                start,
+                end,
+                container_type,
+            } => {
                 let array_value = eval_expr(expr, scope, params).await?;
                 let start_value = if let Some(start_expr) = start {
                     Some(eval_expr(start_expr, scope, params).await?)
@@ -503,12 +512,7 @@ pub(crate) fn eval_expr<'a>(
                 } else {
                     None
                 };
-                eval_array_slice(
-                    array_value,
-                    start_value,
-                    end_value,
-                    should_use_json_subscript(expr),
-                )
+                eval_array_slice(array_value, start_value, end_value, *container_type)
             }
             Expr::TypedLiteral { type_name, value } => {
                 // Evaluate typed literals as CAST(value AS type_name)
@@ -1087,7 +1091,11 @@ pub(crate) fn eval_expr_with_window<'a>(
                 message: "wildcard expression requires FROM support".to_string(),
             }),
             Expr::QualifiedWildcard(parts) => scope.lookup_identifier(parts),
-            Expr::ArraySubscript { expr, index } => {
+            Expr::ArraySubscript {
+                expr,
+                index,
+                container_type,
+            } => {
                 let array_value = eval_expr_with_window(
                     expr,
                     scope,
@@ -1106,9 +1114,14 @@ pub(crate) fn eval_expr_with_window<'a>(
                     params,
                 )
                 .await?;
-                eval_array_subscript(array_value, index_value, should_use_json_subscript(expr))
+                eval_array_subscript(array_value, index_value, *container_type)
             }
-            Expr::ArraySlice { expr, start, end } => {
+            Expr::ArraySlice {
+                expr,
+                start,
+                end,
+                container_type,
+            } => {
                 let array_value = eval_expr_with_window(
                     expr,
                     scope,
@@ -1148,12 +1161,7 @@ pub(crate) fn eval_expr_with_window<'a>(
                 } else {
                     None
                 };
-                eval_array_slice(
-                    array_value,
-                    start_value,
-                    end_value,
-                    should_use_json_subscript(expr),
-                )
+                eval_array_slice(array_value, start_value, end_value, *container_type)
             }
             Expr::TypedLiteral { type_name, value } => {
                 // Evaluate typed literals as CAST(value AS type_name)
@@ -3770,39 +3778,19 @@ fn try_build_batch_insert(body: &str, param: &str, messages: &[String]) -> Optio
     Some(format!("{} {}", prefix, rows.join(", ")))
 }
 
-fn is_json_type_name(type_name: &str) -> bool {
-    type_name.eq_ignore_ascii_case("json") || type_name.eq_ignore_ascii_case("jsonb")
-}
-
-fn should_use_json_subscript(expr: &Expr) -> bool {
-    match expr {
-        Expr::Cast { type_name, .. } | Expr::TypedLiteral { type_name, .. } => {
-            is_json_type_name(type_name)
-        }
-        Expr::ArraySubscript { expr, .. } => should_use_json_subscript(expr),
-        Expr::Binary { op, .. } => matches!(
-            op,
-            BinaryOp::JsonGet
-                | BinaryOp::JsonPath
-                | BinaryOp::JsonConcat
-                | BinaryOp::JsonDelete
-                | BinaryOp::JsonDeletePath
-        ),
-        Expr::FunctionCall { name, .. } => name
-            .last()
-            .map(|part| part.to_ascii_lowercase().starts_with("json"))
-            .unwrap_or(false),
-        _ => false,
-    }
-}
-
 fn eval_array_subscript(
     array: ScalarValue,
     index: ScalarValue,
-    json_subscript: bool,
+    container_type: SubscriptContainerType,
 ) -> Result<ScalarValue, EngineError> {
-    if json_subscript {
-        return eval_json_get_operator(array, index, false);
+    match container_type {
+        SubscriptContainerType::Jsonb => return eval_json_get_operator(array, index, false),
+        SubscriptContainerType::Array => {}
+        SubscriptContainerType::Other | SubscriptContainerType::Unknown => {
+            return Err(EngineError {
+                message: "subscript operation requires array type".to_string(),
+            });
+        }
     }
 
     // Get the array elements
@@ -3853,12 +3841,20 @@ fn eval_array_slice(
     array: ScalarValue,
     start: Option<ScalarValue>,
     end: Option<ScalarValue>,
-    json_subscript: bool,
+    container_type: SubscriptContainerType,
 ) -> Result<ScalarValue, EngineError> {
-    if json_subscript {
-        return Err(EngineError {
-            message: "jsonb subscript does not support slices".to_string(),
-        });
+    match container_type {
+        SubscriptContainerType::Jsonb => {
+            return Err(EngineError {
+                message: "jsonb subscript does not support slices".to_string(),
+            });
+        }
+        SubscriptContainerType::Array => {}
+        SubscriptContainerType::Other | SubscriptContainerType::Unknown => {
+            return Err(EngineError {
+                message: "slice operation requires array type".to_string(),
+            });
+        }
     }
 
     // Get the array elements

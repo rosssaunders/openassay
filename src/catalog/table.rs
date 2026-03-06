@@ -1,5 +1,5 @@
 use super::oid::Oid;
-use crate::parser::ast::{Expr, ForeignKeyAction, Query};
+use crate::parser::ast::{Expr, ForeignKeyAction, Query, SubscriptValueType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableKind {
@@ -76,6 +76,7 @@ pub struct Column {
     oid: Oid,
     name: String,
     type_signature: TypeSignature,
+    subscript_value_type: SubscriptValueType,
     ordinal: u16,
     nullable: bool,
     unique: bool,
@@ -91,6 +92,7 @@ impl Column {
         oid: Oid,
         name: String,
         type_signature: TypeSignature,
+        subscript_value_type: SubscriptValueType,
         ordinal: u16,
         nullable: bool,
         unique: bool,
@@ -103,6 +105,7 @@ impl Column {
             oid,
             name,
             type_signature,
+            subscript_value_type,
             ordinal,
             nullable,
             unique,
@@ -175,6 +178,10 @@ impl Column {
         self.type_signature = type_signature;
     }
 
+    pub fn subscript_value_type(&self) -> &SubscriptValueType {
+        &self.subscript_value_type
+    }
+
     pub fn set_default(&mut self, default: Option<Expr>) {
         self.default = default;
     }
@@ -184,6 +191,7 @@ impl Column {
 pub struct ColumnSpec {
     pub name: String,
     pub type_signature: TypeSignature,
+    pub subscript_value_type: SubscriptValueType,
     pub nullable: bool,
     pub unique: bool,
     pub primary_key: bool,
@@ -197,6 +205,7 @@ impl ColumnSpec {
         Self {
             name: name.into(),
             type_signature,
+            subscript_value_type: SubscriptValueType::Other,
             nullable: true,
             unique: false,
             primary_key: false,
@@ -240,6 +249,11 @@ impl ColumnSpec {
 
     pub fn default(mut self, expr: Expr) -> Self {
         self.default = Some(expr);
+        self
+    }
+
+    pub fn subscript_value_type(mut self, subscript_value_type: SubscriptValueType) -> Self {
+        self.subscript_value_type = subscript_value_type;
         self
     }
 }
