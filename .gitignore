@@ -6,3 +6,4 @@ excel-addin/pkg/
 excel-addin/.certs/
 notebook/pkg/
 .claude/
+data/clickbench/*.tsv

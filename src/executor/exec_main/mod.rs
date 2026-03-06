@@ -97,8 +97,8 @@ use table_functions::{
     evaluate_relation, evaluate_relation_with_predicates, evaluate_table_function,
 };
 
-tokio::task_local! {
-    static ACTIVE_SCAN_PROJECTIONS: RefCell<VecDeque<ScanProjectionHint>>;
+thread_local! {
+    static ACTIVE_SCAN_PROJECTIONS: RefCell<VecDeque<ScanProjectionHint>> = RefCell::new(VecDeque::new());
 }
 
 #[derive(Debug, Clone)]
@@ -114,16 +114,18 @@ pub(crate) async fn with_scan_projection_hints<T>(
         .ok()
         .map(|plan| collect_scan_projection_hints(&plan.physical))
         .unwrap_or_default();
-    ACTIVE_SCAN_PROJECTIONS
-        .scope(RefCell::new(projections), future)
-        .await
+    ACTIVE_SCAN_PROJECTIONS.with(|hints| {
+        *hints.borrow_mut() = projections;
+    });
+    let result = future.await;
+    ACTIVE_SCAN_PROJECTIONS.with(|hints| {
+        hints.borrow_mut().clear();
+    });
+    result
 }
 
 pub(crate) fn next_scan_projection_hint() -> Option<ScanProjectionHint> {
-    ACTIVE_SCAN_PROJECTIONS
-        .try_with(|hints| hints.borrow_mut().pop_front())
-        .ok()
-        .flatten()
+    ACTIVE_SCAN_PROJECTIONS.with(|hints| hints.borrow_mut().pop_front())
 }
 
 fn collect_scan_projection_hints(
