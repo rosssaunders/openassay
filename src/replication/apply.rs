@@ -164,11 +164,7 @@ impl ApplyWorker {
             }
         }
         with_storage_write(|storage| {
-            storage
-                .rows_by_table
-                .entry(relation.local_oid)
-                .or_default()
-                .push(row);
+            let _ = storage.append_row(relation.local_oid, row);
         });
         Ok(())
     }
@@ -210,7 +206,7 @@ impl ApplyWorker {
         }
         rows[row_idx] = updated;
         with_storage_write(|storage| {
-            storage.rows_by_table.insert(relation.local_oid, rows);
+            let _ = storage.replace_rows_for_table(relation.local_oid, rows);
         });
         Ok(())
     }
@@ -239,7 +235,7 @@ impl ApplyWorker {
         };
         rows.remove(row_idx);
         with_storage_write(|storage| {
-            storage.rows_by_table.insert(relation.local_oid, rows);
+            let _ = storage.replace_rows_for_table(relation.local_oid, rows);
         });
         Ok(())
     }
@@ -248,7 +244,7 @@ impl ApplyWorker {
         with_storage_write(|storage| {
             for relation_id in &truncate.relation_ids {
                 if let Some(info) = self.relations.get(relation_id) {
-                    storage.rows_by_table.insert(info.local_oid, Vec::new());
+                    let _ = storage.replace_rows_for_table(info.local_oid, Vec::new());
                 }
             }
         });

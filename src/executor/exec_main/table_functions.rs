@@ -1501,7 +1501,7 @@ pub(super) async fn evaluate_relation_with_predicates(
                 .map(|column| column.name().to_string())
                 .collect::<Vec<_>>();
             let columns = projected_column_names(&all_columns, projected_columns.as_deref());
-            let rows = with_storage_read(|storage| {
+            let rows = crate::tcop::engine::with_storage_write(|storage| {
                 storage.scan_rows_for_table(
                     table.oid(),
                     index_offsets.as_deref(),

@@ -109,7 +109,7 @@ pub(crate) async fn execute_create_view_internal(
 
     if create.or_replace {
         with_storage_write(|storage| {
-            storage.rows_by_table.remove(&oid);
+            storage.remove_table(oid);
         });
     }
     if create.materialized {

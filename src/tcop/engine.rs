@@ -865,6 +865,7 @@ pub(crate) fn with_ext_write<T>(f: impl FnOnce(&mut ExtensionState) -> T) -> T {
 pub struct EngineStateSnapshot {
     catalog: crate::catalog::Catalog,
     rows_by_table: HashMap<Oid, Vec<Vec<ScalarValue>>>,
+    columnar_by_table: HashMap<Oid, crate::storage::heap::ColumnarTable>,
     indexes_by_table: HashMap<(Oid, String), crate::storage::heap::StoredIndex>,
     pub(crate) sequences: HashMap<String, SequenceState>,
     security: crate::security::SecurityState,
@@ -874,6 +875,7 @@ pub fn snapshot_state() -> EngineStateSnapshot {
     EngineStateSnapshot {
         catalog: with_catalog_read(|catalog| catalog.clone()),
         rows_by_table: with_storage_read(|storage| storage.rows_by_table.clone()),
+        columnar_by_table: with_storage_read(|storage| storage.columnar_by_table.clone()),
         indexes_by_table: with_storage_read(|storage| storage.indexes_by_table.clone()),
         sequences: with_sequences_read(|sequences| sequences.clone()),
         security: security::snapshot_state(),
@@ -884,6 +886,7 @@ pub fn restore_state(snapshot: EngineStateSnapshot) {
     let EngineStateSnapshot {
         catalog: next_catalog,
         rows_by_table: next_rows,
+        columnar_by_table: next_columnar,
         indexes_by_table: next_indexes,
         sequences: next_sequences,
         security: next_security,
@@ -893,6 +896,7 @@ pub fn restore_state(snapshot: EngineStateSnapshot) {
     });
     with_storage_write(|storage| {
         storage.rows_by_table = next_rows;
+        storage.columnar_by_table = next_columnar;
         storage.indexes_by_table = next_indexes;
     });
     with_sequences_write(|sequences| {
@@ -905,6 +909,7 @@ pub fn restore_state(snapshot: EngineStateSnapshot) {
 pub fn reset_global_storage_for_tests() {
     with_storage_write(|storage| {
         storage.rows_by_table.clear();
+        storage.columnar_by_table.clear();
         storage.indexes_by_table.clear();
     });
     with_sequences_write(|sequences| {

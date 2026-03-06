@@ -66,7 +66,7 @@ pub async fn copy_tables(
         }
 
         with_storage_write(|storage| {
-            storage.rows_by_table.insert(local_oid, rows.clone());
+            let _ = storage.replace_rows_for_table(local_oid, rows.clone());
         });
     }
 

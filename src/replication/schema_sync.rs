@@ -96,7 +96,7 @@ pub fn ensure_local_table(
     })?;
 
     with_storage_write(|storage| {
-        storage.rows_by_table.entry(oid).or_default();
+        let _ = storage.ensure_table(oid);
     });
 
     Ok(oid)
