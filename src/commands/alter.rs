@@ -74,10 +74,15 @@ pub async fn execute_alter_table(
             })?;
 
             with_storage_write(|storage| {
-                let rows = storage.rows_by_table.entry(table.oid()).or_default();
-                for row in rows.iter_mut() {
+                let mut rows = storage
+                    .rows_by_table
+                    .get(&table.oid())
+                    .cloned()
+                    .unwrap_or_default();
+                for row in &mut rows {
                     row.push(default_value.clone().unwrap_or(ScalarValue::Null));
                 }
+                let _ = storage.replace_rows_for_table(table.oid(), rows);
             });
         }
         AlterTableAction::AddConstraint(constraint) => {
@@ -130,12 +135,17 @@ pub async fn execute_alter_table(
             })?;
 
             with_storage_write(|storage| {
-                let rows = storage.rows_by_table.entry(table.oid()).or_default();
-                for row in rows.iter_mut() {
+                let mut rows = storage
+                    .rows_by_table
+                    .get(&table.oid())
+                    .cloned()
+                    .unwrap_or_default();
+                for row in &mut rows {
                     if dropped_index < row.len() {
                         row.remove(dropped_index);
                     }
                 }
+                let _ = storage.replace_rows_for_table(table.oid(), rows);
             });
         }
         AlterTableAction::DropConstraint { name } => {
@@ -211,7 +221,7 @@ pub async fn execute_alter_table(
             }
 
             with_storage_write(|storage| {
-                storage.rows_by_table.insert(table.oid(), rewritten_rows);
+                let _ = storage.replace_rows_for_table(table.oid(), rewritten_rows);
             });
             with_catalog_write(|catalog| {
                 catalog.set_column_type(table.schema_name(), table.name(), name, target_signature)

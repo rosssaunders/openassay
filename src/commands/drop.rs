@@ -20,8 +20,7 @@ pub fn drop_relations_by_oid_order(
                 message: err.message,
             })?;
         with_storage_write(|storage| {
-            storage.rows_by_table.remove(table_oid);
-            storage.drop_all_indexes_for_table(*table_oid);
+            storage.remove_table(*table_oid);
         });
         crate::security::clear_relation_security(*table_oid);
     }

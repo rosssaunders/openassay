@@ -107,7 +107,7 @@ pub async fn execute_create_table(
     };
 
     with_storage_write(|storage| {
-        storage.rows_by_table.entry(table_oid).or_default();
+        let _ = storage.ensure_table(table_oid);
     });
     security::set_relation_owner(table_oid, &security::current_role());
     if !identity_sequence_names.is_empty() {
@@ -389,7 +389,7 @@ async fn execute_create_table_as_select(
     };
 
     with_storage_write(|storage| {
-        storage.rows_by_table.entry(table_oid).or_default();
+        let _ = storage.ensure_table(table_oid);
     });
     security::set_relation_owner(table_oid, &security::current_role());
 
@@ -399,10 +399,7 @@ async fn execute_create_table_as_select(
     let row_count = query_result.rows.len() as u64;
 
     with_storage_write(|storage| {
-        let rows = storage.rows_by_table.entry(table_oid).or_default();
-        for row in query_result.rows {
-            rows.push(row);
-        }
+        let _ = storage.replace_rows_for_table(table_oid, query_result.rows);
     });
 
     Ok(QueryResult {
