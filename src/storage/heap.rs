@@ -30,6 +30,29 @@ pub(crate) struct InMemoryStorage {
 }
 
 impl InMemoryStorage {
+    pub(crate) fn scan_rows(
+        &self,
+        table_oid: Oid,
+        offsets: Option<&[usize]>,
+        projected_columns: Option<&[usize]>,
+    ) -> Vec<Vec<ScalarValue>> {
+        let Some(all_rows) = self.rows_by_table.get(&table_oid) else {
+            return Vec::new();
+        };
+
+        match offsets {
+            Some(offsets) => offsets
+                .iter()
+                .filter_map(|offset| all_rows.get(*offset))
+                .map(|row| project_row(row, projected_columns))
+                .collect(),
+            None => all_rows
+                .iter()
+                .map(|row| project_row(row, projected_columns))
+                .collect(),
+        }
+    }
+
     pub(crate) fn register_index(
         &mut self,
         table_oid: Oid,
@@ -356,6 +379,16 @@ fn composite_key_from_row(row: &[ScalarValue], indexes: &[usize]) -> Result<Comp
         out.push(value);
     }
     Ok(out)
+}
+
+fn project_row(row: &[ScalarValue], projected_columns: Option<&[usize]>) -> Vec<ScalarValue> {
+    match projected_columns {
+        Some(columns) => columns
+            .iter()
+            .filter_map(|idx| row.get(*idx).cloned())
+            .collect(),
+        None => row.to_vec(),
+    }
 }
 
 fn composite_key_contains_nulls(key: &[ScalarValue]) -> bool {

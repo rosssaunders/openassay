@@ -70,7 +70,17 @@ pub fn execute_query_with_outer<'a>(
                 augment_select_for_order_by(&query.body, &extra_order_cols)
             };
 
-            let mut result = execute_query_expr_with_outer(&body, params, outer_scope).await?;
+            let execution_query = Query {
+                with: None,
+                body: body.clone(),
+                order_by: Vec::new(),
+                limit: None,
+                offset: None,
+            };
+            let mut result = with_scan_projection_hints(&execution_query, async {
+                execute_query_expr_with_outer(&body, params, outer_scope).await
+            })
+            .await?;
             apply_order_by(&mut result, query, params).await?;
 
             // Strip hidden ORDER BY columns
@@ -464,11 +474,14 @@ pub(super) async fn execute_select(
                         .where_clause
                         .as_ref()
                         .map_or_else(Vec::new, decompose_and_conjuncts);
+                    let projected_columns =
+                        next_scan_projection_hint().and_then(|hint| hint.projected_columns);
                     evaluate_relation_with_predicates(
                         rel,
                         params,
                         outer_scope,
                         &relation_predicates,
+                        projected_columns,
                     )
                     .await?
                     .rows

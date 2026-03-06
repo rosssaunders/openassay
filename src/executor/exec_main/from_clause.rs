@@ -421,7 +421,11 @@ pub fn evaluate_table_expression<'a>(
 ) -> EngineFuture<'a, Result<TableEval, EngineError>> {
     Box::pin(async move {
         match table {
-            TableExpression::Relation(rel) => evaluate_relation(rel, params, outer_scope).await,
+            TableExpression::Relation(rel) => {
+                let projected_columns =
+                    next_scan_projection_hint().and_then(|hint| hint.projected_columns);
+                evaluate_relation(rel, params, outer_scope, projected_columns).await
+            }
             TableExpression::Function(function) => {
                 evaluate_table_function(function, params, outer_scope).await
             }

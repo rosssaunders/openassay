@@ -81,7 +81,8 @@ pub fn plan(statement: &Statement) -> PlanNode {
 
 pub fn plan_query(query: &Query) -> Result<QueryPlan, PlannerError> {
     let logical = logical::build_logical_plan(query);
-    let physical = physical::plan_physical(&logical)?;
+    let mut physical = physical::plan_physical(&logical)?;
+    physical::annotate_scan_projections(query, &mut physical);
     Ok(QueryPlan {
         query: query.clone(),
         logical,

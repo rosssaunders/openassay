@@ -1,4 +1,6 @@
+use std::cell::RefCell;
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::{self, File};
@@ -94,3 +96,95 @@ use set_operations::{
 use table_functions::{
     evaluate_relation, evaluate_relation_with_predicates, evaluate_table_function,
 };
+
+tokio::task_local! {
+    static ACTIVE_SCAN_PROJECTIONS: RefCell<VecDeque<ScanProjectionHint>>;
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ScanProjectionHint {
+    pub(crate) projected_columns: Option<Vec<usize>>,
+}
+
+pub(crate) async fn with_scan_projection_hints<T>(
+    query: &Query,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    let projections = crate::planner::plan_query(query)
+        .ok()
+        .map(|plan| collect_scan_projection_hints(&plan.physical))
+        .unwrap_or_default();
+    ACTIVE_SCAN_PROJECTIONS
+        .scope(RefCell::new(projections), future)
+        .await
+}
+
+pub(crate) fn next_scan_projection_hint() -> Option<ScanProjectionHint> {
+    ACTIVE_SCAN_PROJECTIONS
+        .try_with(|hints| hints.borrow_mut().pop_front())
+        .ok()
+        .flatten()
+}
+
+fn collect_scan_projection_hints(
+    plan: &crate::planner::physical::PhysicalPlan,
+) -> VecDeque<ScanProjectionHint> {
+    let mut hints = VecDeque::new();
+    collect_scan_projection_hints_inner(plan, &mut hints);
+    hints
+}
+
+fn collect_scan_projection_hints_inner(
+    plan: &crate::planner::physical::PhysicalPlan,
+    hints: &mut VecDeque<ScanProjectionHint>,
+) {
+    match plan {
+        crate::planner::physical::PhysicalPlan::Scan(scan) => {
+            hints.push_back(ScanProjectionHint {
+                projected_columns: scan.projected_columns.clone(),
+            });
+        }
+        crate::planner::physical::PhysicalPlan::Filter(filter) => {
+            collect_scan_projection_hints_inner(&filter.input, hints);
+        }
+        crate::planner::physical::PhysicalPlan::Project(project) => {
+            collect_scan_projection_hints_inner(&project.input, hints);
+        }
+        crate::planner::physical::PhysicalPlan::Aggregate(aggregate) => {
+            collect_scan_projection_hints_inner(&aggregate.input, hints);
+        }
+        crate::planner::physical::PhysicalPlan::Window(window) => {
+            collect_scan_projection_hints_inner(&window.input, hints);
+        }
+        crate::planner::physical::PhysicalPlan::Distinct(distinct) => {
+            collect_scan_projection_hints_inner(&distinct.input, hints);
+        }
+        crate::planner::physical::PhysicalPlan::Sort(sort) => {
+            collect_scan_projection_hints_inner(&sort.input, hints);
+        }
+        crate::planner::physical::PhysicalPlan::Limit(limit) => {
+            collect_scan_projection_hints_inner(&limit.input, hints);
+        }
+        crate::planner::physical::PhysicalPlan::Subquery(subquery) => {
+            collect_scan_projection_hints_inner(&subquery.plan, hints);
+        }
+        crate::planner::physical::PhysicalPlan::SetOp(set_op) => {
+            collect_scan_projection_hints_inner(&set_op.left, hints);
+            collect_scan_projection_hints_inner(&set_op.right, hints);
+        }
+        crate::planner::physical::PhysicalPlan::HashJoin(join)
+        | crate::planner::physical::PhysicalPlan::NestedLoopJoin(join) => {
+            collect_scan_projection_hints_inner(&join.left, hints);
+            collect_scan_projection_hints_inner(&join.right, hints);
+        }
+        crate::planner::physical::PhysicalPlan::Cte(cte) => {
+            for binding in &cte.ctes {
+                collect_scan_projection_hints_inner(&binding.plan, hints);
+            }
+            collect_scan_projection_hints_inner(&cte.input, hints);
+        }
+        crate::planner::physical::PhysicalPlan::Result(_)
+        | crate::planner::physical::PhysicalPlan::FunctionScan(_)
+        | crate::planner::physical::PhysicalPlan::CteScan(_) => {}
+    }
+}
