@@ -2178,14 +2178,14 @@ fn expand_table_expression_columns(
                     })
                     .collect());
             }
-            let Some(table) = with_catalog_read(|catalog| {
+            let table = with_catalog_read(|catalog| {
                 catalog
                     .resolve_table(&rel.name, &SearchPath::default())
-                    .ok()
                     .cloned()
-            }) else {
-                return Ok(Vec::new());
-            };
+            })
+            .map_err(|err| EngineError {
+                message: err.message,
+            })?;
             let qualifier = rel
                 .alias
                 .as_ref()
