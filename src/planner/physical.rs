@@ -753,7 +753,7 @@ fn collect_query_expr_scan_projections(
 ) {
     match expr {
         QueryExpr::Select(select) => {
-            collect_select_scan_projections(select, &[], cte_names, output)
+            collect_select_scan_projections(select, &[], cte_names, output);
         }
         QueryExpr::Nested(query) => collect_query_scan_projections_inner(query, cte_names, output),
         QueryExpr::SetOperation { left, right, .. } => {
@@ -1623,12 +1623,12 @@ fn assign_scan_projections(
         }
         PhysicalPlan::Window(window) => assign_scan_projections(&mut window.input, projections),
         PhysicalPlan::Distinct(distinct) => {
-            assign_scan_projections(&mut distinct.input, projections)
+            assign_scan_projections(&mut distinct.input, projections);
         }
         PhysicalPlan::Sort(sort) => assign_scan_projections(&mut sort.input, projections),
         PhysicalPlan::Limit(limit) => assign_scan_projections(&mut limit.input, projections),
         PhysicalPlan::Subquery(subquery) => {
-            assign_scan_projections(&mut subquery.plan, projections)
+            assign_scan_projections(&mut subquery.plan, projections);
         }
         PhysicalPlan::SetOp(set_op) => {
             assign_scan_projections(&mut set_op.left, projections);

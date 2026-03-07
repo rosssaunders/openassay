@@ -262,29 +262,26 @@ pub(crate) fn append_scalar_value_to_builder(
         .as_any_mut()
         .downcast_mut::<FixedSizeListBuilder<Box<dyn ArrayBuilder>>>()
     {
-        match val {
-            ScalarValue::Vector(values) => {
-                let expected_len = builder.value_length() as usize;
-                if values.len() != expected_len {
-                    return Err(format!(
-                        "vector length {} does not match schema length {expected_len}",
-                        values.len()
-                    ));
-                }
-                for value in values {
-                    append_scalar_value_to_builder(
-                        &ScalarValue::Float(f64::from(*value)),
-                        builder.values().as_mut(),
-                    )?;
-                }
-                builder.append(true);
+        if let ScalarValue::Vector(values) = val {
+            let expected_len = builder.value_length() as usize;
+            if values.len() != expected_len {
+                return Err(format!(
+                    "vector length {} does not match schema length {expected_len}",
+                    values.len()
+                ));
             }
-            _ => {
-                for _ in 0..builder.value_length() {
-                    append_null_to_builder(builder.values().as_mut())?;
-                }
-                builder.append(false);
+            for value in values {
+                append_scalar_value_to_builder(
+                    &ScalarValue::Float(f64::from(*value)),
+                    builder.values().as_mut(),
+                )?;
             }
+            builder.append(true);
+        } else {
+            for _ in 0..builder.value_length() {
+                append_null_to_builder(builder.values().as_mut())?;
+            }
+            builder.append(false);
         }
         return Ok(());
     }

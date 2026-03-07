@@ -13,6 +13,7 @@ use std::arch::x86_64::{
 };
 
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
+use crate::executor::column_filter::eval_columnar_predicate;
 use crate::executor::exec_expr::{
     EngineFuture, EvalScope, eval_any_all, eval_between_predicate, eval_binary, eval_cast_scalar,
     eval_expr, eval_expr_with_window, eval_is_distinct_from, eval_like_predicate, eval_unary,
@@ -88,11 +89,12 @@ use set_operations::{
     normalize_row_width, populate_cte_aux_values,
 };
 use table_functions::{
-    evaluate_relation, evaluate_relation_with_predicates, evaluate_table_function,
+    evaluate_relation, evaluate_relation_with_predicates,
+    evaluate_relation_with_predicates_columnar, evaluate_table_function,
 };
 
 thread_local! {
-    static ACTIVE_SCAN_PROJECTIONS: RefCell<VecDeque<ScanProjectionHint>> = RefCell::new(VecDeque::new());
+    static ACTIVE_SCAN_PROJECTIONS: RefCell<VecDeque<ScanProjectionHint>> = const { RefCell::new(VecDeque::new()) };
 }
 
 #[derive(Debug, Clone)]

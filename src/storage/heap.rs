@@ -8,6 +8,7 @@ use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 
 use crate::catalog::oid::Oid;
 use crate::catalog::{TypeSignature, with_catalog_read};
+use crate::executor::column_batch::ColumnBatch;
 use crate::storage::btree::{BTreeIndex, CompositeKey};
 use crate::storage::tuple::{
     ScalarValue, append_scalar_value_to_builder, arrow_value_to_scalar_value, scalar_values_schema,
@@ -414,6 +415,65 @@ impl InMemoryStorage {
         }
     }
 
+    pub(crate) fn scan_columnar_for_table(
+        &mut self,
+        table_oid: Oid,
+        predicates: &[ScanPredicate],
+        projected_columns: Option<&[usize]>,
+    ) -> Result<ColumnBatch, String> {
+        self.ensure_table(table_oid)?;
+        self.flush_pending(table_oid)?;
+        let Some(table) = self.columnar_by_table.get(&table_oid) else {
+            return Ok(ColumnBatch::empty(Vec::new()));
+        };
+        let output_column_names = projected_column_names(&table.column_names, projected_columns);
+        if table.batches.is_empty() {
+            return Ok(ColumnBatch::empty(output_column_names));
+        }
+
+        let mut combined = ColumnBatch::empty(output_column_names);
+        for batch in &table.batches {
+            let (filtered_batch, _) = filter_batch(batch, predicates, None)?;
+            let mut batch_columns =
+                ColumnBatch::from_record_batch(&filtered_batch, &table.column_names);
+            if let Some(projected_columns) = projected_columns {
+                batch_columns = batch_columns.project(projected_columns);
+            }
+            combined.append_batch(&batch_columns)?;
+        }
+        Ok(combined)
+    }
+
+    pub(crate) fn scan_batches_for_table(
+        &mut self,
+        table_oid: Oid,
+        predicates: &[ScanPredicate],
+        projected_columns: Option<&[usize]>,
+        callback: &mut dyn FnMut(ColumnBatch) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        self.ensure_table(table_oid)?;
+        self.flush_pending(table_oid)?;
+        let Some(table) = self.columnar_by_table.get(&table_oid) else {
+            return Ok(());
+        };
+        if table.batches.is_empty() {
+            return Ok(());
+        }
+
+        for batch in &table.batches {
+            let (filtered_batch, _) = filter_batch(batch, predicates, None)?;
+            let mut batch_columns =
+                ColumnBatch::from_record_batch(&filtered_batch, &table.column_names);
+            if let Some(projected_columns) = projected_columns {
+                batch_columns = batch_columns.project(projected_columns);
+            }
+            if !callback(batch_columns)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn index_for_table(&self, table_oid: Oid, index_name: &str) -> Option<&StoredIndex> {
         self.indexes_by_table
             .get(&(table_oid, index_name.to_ascii_lowercase()))
@@ -745,6 +805,16 @@ fn record_batch_to_rows(
     rows
 }
 
+fn projected_column_names(columns: &[String], projected_columns: Option<&[usize]>) -> Vec<String> {
+    match projected_columns {
+        Some(projected_columns) => projected_columns
+            .iter()
+            .filter_map(|idx| columns.get(*idx).cloned())
+            .collect(),
+        None => columns.to_vec(),
+    }
+}
+
 fn record_batch_row_matches_predicates(
     batch: &RecordBatch,
     row_idx: usize,
@@ -886,6 +956,32 @@ mod tests {
             .expect("columnar table should exist");
         assert_eq!(table.batches.len(), 1);
         assert_eq!(table.pending_rows.len(), 1);
+    }
+
+    #[test]
+    fn scan_batches_for_table_streams_and_can_stop_early() {
+        let mut storage = InMemoryStorage::default();
+        storage
+            .replace_rows_for_table(
+                77,
+                (0..=COLUMNAR_BATCH_SIZE as i64)
+                    .map(|value| vec![ScalarValue::Int(value)])
+                    .collect(),
+            )
+            .expect("replace rows");
+
+        let mut seen_batches = 0usize;
+        let mut seen_rows = 0usize;
+        storage
+            .scan_batches_for_table(77, &[], None, &mut |batch| {
+                seen_batches += 1;
+                seen_rows += batch.row_count;
+                Ok(false)
+            })
+            .expect("streaming scan should succeed");
+
+        assert_eq!(seen_batches, 1);
+        assert_eq!(seen_rows, COLUMNAR_BATCH_SIZE);
     }
 
     #[test]
