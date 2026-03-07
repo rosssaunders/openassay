@@ -168,6 +168,21 @@ fn order_limit_with_offset_preserves_input_order_for_equal_keys() {
 }
 
 #[test]
+fn executes_simple_heap_projection_filter_limit_shape() {
+    let results = run_batch(&[
+        "CREATE TABLE t (id int8, payload text)",
+        "INSERT INTO t SELECT g, format('row-%s', g) FROM generate_series(1, 150) AS g",
+        "SELECT id, payload FROM t WHERE id > 100 LIMIT 10",
+    ]);
+    assert_eq!(
+        results[2].rows,
+        (101..=110)
+            .map(|id| { vec![ScalarValue::Int(id), ScalarValue::Text(format!("row-{id}")),] })
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn executes_parameterized_expression() {
     let result = with_isolated_state(|| run_statement("SELECT $1 + 5", &[Some("7".to_string())]));
     assert_eq!(result.rows[0], vec![ScalarValue::Int(12)]);
@@ -3006,6 +3021,69 @@ fn executes_grouping_sets_rollup_and_cube() {
 }
 
 #[test]
+fn executes_columnar_hash_aggregation_for_simple_group_by() {
+    let results = run_batch(&[
+        "CREATE TABLE employees (department text, salary int8, age int8)",
+        "INSERT INTO employees VALUES \
+            ('Engineering', 100, 30), \
+            ('Engineering', 150, 40), \
+            ('Sales', 90, 25), \
+            ('Sales', 110, 35)",
+        "SELECT department, SUM(salary), COUNT(*), AVG(age) \
+             FROM employees \
+             GROUP BY department \
+             ORDER BY department",
+    ]);
+
+    assert_eq!(
+        results[2].rows,
+        vec![
+            vec![
+                ScalarValue::Text("Engineering".to_string()),
+                ScalarValue::Int(250),
+                ScalarValue::Int(2),
+                ScalarValue::Float(35.0),
+            ],
+            vec![
+                ScalarValue::Text("Sales".to_string()),
+                ScalarValue::Int(200),
+                ScalarValue::Int(2),
+                ScalarValue::Float(30.0),
+            ],
+        ]
+    );
+}
+
+#[test]
+fn grouped_string_agg_falls_back_to_row_aggregation() {
+    let results = run_batch(&[
+        "CREATE TABLE teams (department text, name text)",
+        "INSERT INTO teams VALUES \
+            ('Engineering', 'Ada'), \
+            ('Engineering', 'Linus'), \
+            ('Sales', 'Grace')",
+        "SELECT department, string_agg(name, ', ') \
+             FROM teams \
+             GROUP BY department \
+             ORDER BY department",
+    ]);
+
+    assert_eq!(
+        results[2].rows,
+        vec![
+            vec![
+                ScalarValue::Text("Engineering".to_string()),
+                ScalarValue::Text("Ada, Linus".to_string()),
+            ],
+            vec![
+                ScalarValue::Text("Sales".to_string()),
+                ScalarValue::Text("Grace".to_string()),
+            ],
+        ]
+    );
+}
+
+#[test]
 fn executes_ranking_and_offset_window_functions() {
     let results = run_batch(&[
         "CREATE TABLE wf (dept text, id int8, score int8)",
@@ -4521,6 +4599,36 @@ fn selects_wildcard_over_join_with_using() {
             ScalarValue::Int(1),
             ScalarValue::Text("av".to_string()),
             ScalarValue::Text("bw".to_string())
+        ]]
+    );
+}
+
+#[test]
+fn executes_hash_join_over_columnar_batches_end_to_end() {
+    let results = run_batch(&[
+        "CREATE TABLE t1 (id int8 NOT NULL, payload text)",
+        "CREATE TABLE t2 (id int8 NOT NULL, val int8)",
+        "INSERT INTO t1 VALUES (1, 'a'), (2, 'b'), (3, 'c')",
+        "INSERT INTO t2 VALUES (1, 3), (2, 9), (4, 11)",
+        "SELECT * FROM t1 JOIN t2 ON t1.id = t2.id WHERE t2.val > 5 ORDER BY 1",
+    ]);
+
+    assert_eq!(
+        results[4].columns,
+        vec![
+            "id".to_string(),
+            "payload".to_string(),
+            "id".to_string(),
+            "val".to_string(),
+        ]
+    );
+    assert_eq!(
+        results[4].rows,
+        vec![vec![
+            ScalarValue::Int(2),
+            ScalarValue::Text("b".to_string()),
+            ScalarValue::Int(2),
+            ScalarValue::Int(9),
         ]]
     );
 }

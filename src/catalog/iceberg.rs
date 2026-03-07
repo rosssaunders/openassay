@@ -60,7 +60,7 @@ impl IcebergObjectLocation {
 
             if store_kind == IcebergStorageKind::Local {
                 let normalized = rest.trim_start_matches('/');
-                let local_path = format!("/{}", normalized);
+                let local_path = format!("/{normalized}");
                 return Ok(Self {
                     raw: trimmed.to_string(),
                     store_kind,
@@ -299,21 +299,18 @@ impl IcebergStorage {
         &self,
         location: &IcebergObjectLocation,
     ) -> Result<String, CatalogError> {
-        match self.kind {
-            IcebergStorageKind::Local => {
-                std::fs::read_to_string(location.path()).map_err(to_catalog_error)
-            }
-            _ => {
-                let bytes = self
-                    .store
-                    .get(&object_path(location.path()))
-                    .await
-                    .map_err(to_catalog_error)?
-                    .bytes()
-                    .await
-                    .map_err(to_catalog_error)?;
-                String::from_utf8(bytes.to_vec()).map_err(to_catalog_error)
-            }
+        if self.kind == IcebergStorageKind::Local {
+            std::fs::read_to_string(location.path()).map_err(to_catalog_error)
+        } else {
+            let bytes = self
+                .store
+                .get(&object_path(location.path()))
+                .await
+                .map_err(to_catalog_error)?
+                .bytes()
+                .await
+                .map_err(to_catalog_error)?;
+            String::from_utf8(bytes.to_vec()).map_err(to_catalog_error)
         }
     }
 
@@ -801,12 +798,12 @@ fn collect_schema_aliases(
 async fn discover_table_roots(
     root: &IcebergObjectLocation,
 ) -> Result<Vec<IcebergObjectLocation>, CatalogError> {
-    if can_be_direct_table(root) {
-        if let Ok(direct) = resolve_iceberg_table_root(root) {
-            let storage = IcebergStorage::from_location(&direct).await?;
-            if resolve_iceberg_metadata_file(&storage, root).await.is_ok() {
-                return Ok(vec![direct]);
-            }
+    if can_be_direct_table(root)
+        && let Ok(direct) = resolve_iceberg_table_root(root)
+    {
+        let storage = IcebergStorage::from_location(&direct).await?;
+        if resolve_iceberg_metadata_file(&storage, root).await.is_ok() {
+            return Ok(vec![direct]);
         }
     }
 
