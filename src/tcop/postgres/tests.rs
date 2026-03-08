@@ -62,6 +62,41 @@ fn simple_query_flow_emits_ready_and_completion() {
 }
 
 #[test]
+fn simple_query_caches_select_plans() {
+    with_isolated_state(|| {
+        let mut session = PostgresSession::new();
+
+        session.run_sync([FrontendMessage::Query {
+            sql: "SELECT 1".to_string(),
+        }]);
+        assert_eq!(session.simple_query_cache.len(), 1);
+        assert!(session.simple_query_cache.contains_key("SELECT 1"));
+
+        session.run_sync([FrontendMessage::Query {
+            sql: "SELECT 1".to_string(),
+        }]);
+        assert_eq!(session.simple_query_cache.len(), 1);
+    });
+}
+
+#[test]
+fn simple_query_cache_clears_after_non_select_execution() {
+    with_isolated_state(|| {
+        let mut session = PostgresSession::new();
+
+        session.run_sync([FrontendMessage::Query {
+            sql: "SELECT 1".to_string(),
+        }]);
+        assert_eq!(session.simple_query_cache.len(), 1);
+
+        session.run_sync([FrontendMessage::Query {
+            sql: "CREATE TABLE cache_invalidation (id INT)".to_string(),
+        }]);
+        assert!(session.simple_query_cache.is_empty());
+    });
+}
+
+#[test]
 fn extended_query_flow_requires_sync_for_ready() {
     let out = with_isolated_state(|| {
         let mut session = PostgresSession::new();

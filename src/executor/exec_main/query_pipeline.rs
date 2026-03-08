@@ -11,7 +11,7 @@ use crate::executor::window_eval::{
     expr_references_columns, resolve_window_spec,
 };
 use crate::parser::ast::WindowSpec;
-use crate::storage::heap::ScanPredicate;
+use crate::storage::heap::{ColumnAggregateOp, ColumnAggregateRequest, ScanPredicate};
 use crate::tcop::engine::with_storage_write;
 use std::collections::BTreeSet;
 
@@ -91,14 +91,22 @@ pub fn execute_query_with_outer<'a>(
                 limit: None,
                 offset: None,
             };
-            let mut result = with_scan_projection_hints(&execution_query, async {
+            let mut result = if scan_projection_hints_active() {
                 if let QueryExpr::Select(select) = &body {
                     execute_select_with_query(select, query, params, outer_scope).await
                 } else {
                     execute_query_expr_with_outer(&body, params, outer_scope).await
                 }
-            })
-            .await?;
+            } else {
+                with_scan_projection_hints(&execution_query, async {
+                    if let QueryExpr::Select(select) = &body {
+                        execute_select_with_query(select, query, params, outer_scope).await
+                    } else {
+                        execute_query_expr_with_outer(&body, params, outer_scope).await
+                    }
+                })
+                .await
+            }?;
 
             // Strip hidden ORDER BY columns
             if num_hidden > 0 {
@@ -583,8 +591,8 @@ fn aggregate_identifier_column_index(expr: &Expr, batch: &ColumnBatch) -> Option
     batch.column_index(&parts.join("."))
 }
 
-fn aggregate_cast_identifier_column_index<'a>(
-    expr: &'a Expr,
+fn aggregate_cast_identifier_column_index(
+    expr: &Expr,
     expected_types: &[&str],
     batch: &ColumnBatch,
 ) -> Option<usize> {
@@ -850,7 +858,7 @@ fn plan_columnar_aggregation(
     }
     let mut final_target_exprs = Vec::with_capacity(select.targets.len());
     for target in &select.targets {
-        let Some(rewritten) = rewrite_columnar_agg_target_expr(
+        let rewritten = rewrite_columnar_agg_target_expr(
             &target.expr,
             &group_output_names,
             &group_expr_outputs,
@@ -858,9 +866,7 @@ fn plan_columnar_aggregation(
             &mut output_exprs,
             &mut intermediate_columns,
             batch,
-        ) else {
-            return None;
-        };
+        )?;
         final_target_exprs.push(rewritten);
     }
 
@@ -1355,23 +1361,23 @@ async fn try_execute_simple_columnar_select(
     if wildcard_only
         && let Some(query) = query
         && stage_limit.is_none()
-    {
-        if let Some(topn_projection) = topn_projection_indices_for_query(
+        && let Some(topn_projection) = topn_projection_indices_for_query(
             query,
             &scan_plan.schema_batch,
             scan_plan.remaining_predicate.as_ref(),
             &[],
-        ) {
-            let topn_batch = scan_plan.schema_batch.project(&topn_projection);
-            let topn_columns = topn_batch.column_names.clone();
-            if let Some(mut offset_collector) =
-                OffsetTopNCollector::new(query, &topn_columns, params).await?
-            {
-                let simple_like = scan_plan
-                    .remaining_predicate
-                    .as_ref()
-                    .and_then(|predicate| classify_simple_like_predicate(predicate, &topn_batch));
-                with_storage_write(|storage| {
+        )
+    {
+        let topn_batch = scan_plan.schema_batch.project(&topn_projection);
+        let topn_columns = topn_batch.column_names.clone();
+        if let Some(mut offset_collector) =
+            OffsetTopNCollector::new(query, &topn_columns, params).await?
+        {
+            let simple_like = scan_plan
+                .remaining_predicate
+                .as_ref()
+                .and_then(|predicate| classify_simple_like_predicate(predicate, &topn_batch));
+            with_storage_write(|storage| {
                     storage.scan_batches_for_table_with_offsets(
                         scan_plan.table.oid(),
                         &scan_plan.scan_predicates,
@@ -1420,18 +1426,17 @@ async fn try_execute_simple_columnar_select(
                 })
                 .map_err(|message| EngineError { message })?;
 
-                let offsets = offset_collector.finish();
-                let rows = with_storage_write(|storage| {
-                    storage.scan_rows_for_table(scan_plan.table.oid(), Some(&offsets), &[], None)
-                })
-                .map_err(|message| EngineError { message })?;
-                return Ok(Some(QueryResult {
-                    columns: columns.to_vec(),
-                    rows_affected: rows.len() as u64,
-                    rows,
-                    command_tag: "SELECT".to_string(),
-                }));
-            }
+            let offsets = offset_collector.finish();
+            let rows = with_storage_write(|storage| {
+                storage.scan_rows_for_table(scan_plan.table.oid(), Some(&offsets), &[], None)
+            })
+            .map_err(|message| EngineError { message })?;
+            return Ok(Some(QueryResult {
+                columns: columns.to_vec(),
+                rows_affected: rows.len() as u64,
+                rows,
+                command_tag: "SELECT".to_string(),
+            }));
         }
     }
     if !wildcard_only
@@ -2030,6 +2035,484 @@ async fn execute_select_with_query(
     execute_select_internal(select, Some(query), params, outer_scope).await
 }
 
+fn resolve_simple_aggregate_column(
+    expr: &Expr,
+    qualifiers: &[String],
+    column_indexes: &HashMap<String, usize>,
+) -> Option<usize> {
+    match expr {
+        Expr::Identifier(parts) if parts.len() == 1 => {
+            column_indexes.get(&parts[0].to_ascii_lowercase()).copied()
+        }
+        Expr::Identifier(parts)
+            if parts.len() == 2 && qualifiers.iter().any(|q| q.eq_ignore_ascii_case(&parts[0])) =>
+        {
+            column_indexes.get(&parts[1].to_ascii_lowercase()).copied()
+        }
+        _ => None,
+    }
+}
+
+fn simple_aggregate_request_impl(
+    expr: &Expr,
+    qualifiers: &[String],
+    column_indexes: &HashMap<String, usize>,
+    allow_distinct_count: bool,
+) -> Option<ColumnAggregateRequest> {
+    let Expr::FunctionCall {
+        name,
+        args,
+        distinct,
+        order_by,
+        within_group,
+        filter,
+        over,
+    } = expr
+    else {
+        return None;
+    };
+    if name.len() != 1
+        || !order_by.is_empty()
+        || !within_group.is_empty()
+        || filter.is_some()
+        || over.is_some()
+    {
+        return None;
+    }
+
+    match name[0].to_ascii_lowercase().as_str() {
+        "count" => {
+            if args.len() != 1 || (*distinct && !allow_distinct_count) {
+                return None;
+            }
+            if matches!(args[0], Expr::Wildcard) {
+                return Some(ColumnAggregateRequest {
+                    op: ColumnAggregateOp::CountAll,
+                    column_index: None,
+                    distinct: false,
+                });
+            }
+            resolve_simple_aggregate_column(&args[0], qualifiers, column_indexes).map(
+                |column_index| ColumnAggregateRequest {
+                    op: ColumnAggregateOp::Count,
+                    column_index: Some(column_index),
+                    distinct: *distinct,
+                },
+            )
+        }
+        "sum" | "avg" => {
+            if args.len() != 1 || *distinct {
+                return None;
+            }
+            resolve_simple_aggregate_column(&args[0], qualifiers, column_indexes).map(
+                |column_index| ColumnAggregateRequest {
+                    op: if name[0].eq_ignore_ascii_case("sum") {
+                        ColumnAggregateOp::Sum
+                    } else {
+                        ColumnAggregateOp::Avg
+                    },
+                    column_index: Some(column_index),
+                    distinct: false,
+                },
+            )
+        }
+        _ => None,
+    }
+}
+
+fn simple_aggregate_request(
+    expr: &Expr,
+    qualifiers: &[String],
+    column_indexes: &HashMap<String, usize>,
+) -> Option<ColumnAggregateRequest> {
+    simple_aggregate_request_impl(expr, qualifiers, column_indexes, false)
+}
+
+fn simple_group_aggregate_request(
+    expr: &Expr,
+    qualifiers: &[String],
+    column_indexes: &HashMap<String, usize>,
+) -> Option<ColumnAggregateRequest> {
+    simple_aggregate_request_impl(expr, qualifiers, column_indexes, true)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SimpleGroupedTarget {
+    GroupColumn(usize),
+    Aggregate(usize),
+}
+
+async fn try_execute_simple_column_aggregates(
+    select: &SelectStatement,
+    query: Option<&Query>,
+    outer_scope: Option<&EvalScope>,
+    columns: &[String],
+) -> Result<Option<QueryResult>, EngineError> {
+    if outer_scope.is_some()
+        || select.targets.is_empty()
+        || select.from.len() != 1
+        || select.where_clause.is_some()
+        || !select.group_by.is_empty()
+        || select.having.is_some()
+        || !select.window_definitions.is_empty()
+        || select.quantifier.is_some()
+    {
+        return Ok(None);
+    }
+
+    if let Some(query) = query
+        && (!query.order_by.is_empty() || query.limit.is_some() || query.offset.is_some())
+    {
+        return Ok(None);
+    }
+
+    let TableExpression::Relation(rel) = &select.from[0] else {
+        return Ok(None);
+    };
+    if rel.name.len() == 1 && current_cte_binding(&rel.name[0]).is_some() {
+        return Ok(None);
+    }
+    if lookup_virtual_relation(&rel.name).is_some() {
+        return Ok(None);
+    }
+
+    let table = with_catalog_read(|catalog| {
+        catalog
+            .resolve_table(&rel.name, &SearchPath::default())
+            .cloned()
+    })
+    .map_err(|err| EngineError {
+        message: err.message,
+    })?;
+    if !matches!(table.kind(), TableKind::Heap | TableKind::MaterializedView) {
+        return Ok(None);
+    }
+
+    require_relation_privilege(&table, TablePrivilege::Select)?;
+    let role = security::current_role();
+    let evaluation = security::rls_evaluation_for_role(&role, table.oid(), RlsCommand::Select);
+    if evaluation.enabled && !evaluation.bypass {
+        return Ok(None);
+    }
+
+    let qualifiers = if let Some(alias) = &rel.alias {
+        vec![alias.to_ascii_lowercase()]
+    } else {
+        vec![table.name().to_string(), table.qualified_name()]
+    };
+    let column_indexes = table
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(idx, column)| (column.name().to_string(), idx))
+        .collect::<HashMap<_, _>>();
+    let Some(requests) = select
+        .targets
+        .iter()
+        .map(|target| simple_aggregate_request(&target.expr, &qualifiers, &column_indexes))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+
+    let Some(values) = crate::tcop::engine::with_storage_write(|storage| {
+        storage.aggregate_columns_for_table(table.oid(), &requests)
+    })
+    .map_err(|message| EngineError { message })?
+    else {
+        return Ok(None);
+    };
+
+    Ok(Some(QueryResult {
+        columns: columns.to_vec(),
+        rows: vec![values],
+        command_tag: "SELECT".to_string(),
+        rows_affected: 1,
+    }))
+}
+
+async fn try_execute_simple_grouped_column_aggregates(
+    select: &SelectStatement,
+    query: Option<&Query>,
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+    columns: &[String],
+) -> Result<Option<QueryResult>, EngineError> {
+    if outer_scope.is_some()
+        || select.targets.is_empty()
+        || select.from.len() != 1
+        || select.where_clause.is_some()
+        || select.group_by.is_empty()
+        || select.having.is_some()
+        || !select.window_definitions.is_empty()
+        || select.quantifier.is_some()
+    {
+        return Ok(None);
+    }
+
+    let TableExpression::Relation(rel) = &select.from[0] else {
+        return Ok(None);
+    };
+    if rel.name.len() == 1 && current_cte_binding(&rel.name[0]).is_some() {
+        return Ok(None);
+    }
+    if lookup_virtual_relation(&rel.name).is_some() {
+        return Ok(None);
+    }
+
+    let table = with_catalog_read(|catalog| {
+        catalog
+            .resolve_table(&rel.name, &SearchPath::default())
+            .cloned()
+    })
+    .map_err(|err| EngineError {
+        message: err.message,
+    })?;
+    if !matches!(table.kind(), TableKind::Heap | TableKind::MaterializedView) {
+        return Ok(None);
+    }
+
+    require_relation_privilege(&table, TablePrivilege::Select)?;
+    let role = security::current_role();
+    let evaluation = security::rls_evaluation_for_role(&role, table.oid(), RlsCommand::Select);
+    if evaluation.enabled && !evaluation.bypass {
+        return Ok(None);
+    }
+
+    let qualifiers = if let Some(alias) = &rel.alias {
+        vec![alias.to_ascii_lowercase()]
+    } else {
+        vec![table.name().to_string(), table.qualified_name()]
+    };
+    let column_indexes = table
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(idx, column)| (column.name().to_string(), idx))
+        .collect::<HashMap<_, _>>();
+
+    let Some(group_column_indexes) = select
+        .group_by
+        .iter()
+        .map(|group_expr| match group_expr {
+            GroupByExpr::Expr(expr) => {
+                resolve_simple_aggregate_column(expr, &qualifiers, &column_indexes)
+            }
+            GroupByExpr::GroupingSets(_) | GroupByExpr::Rollup(_) | GroupByExpr::Cube(_) => None,
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+
+    let mut aggregate_requests = Vec::new();
+    let mut target_plan = Vec::with_capacity(select.targets.len());
+    for target in &select.targets {
+        if let Some(column_index) =
+            resolve_simple_aggregate_column(&target.expr, &qualifiers, &column_indexes)
+        {
+            let Some(group_position) = group_column_indexes
+                .iter()
+                .position(|group_index| *group_index == column_index)
+            else {
+                return Ok(None);
+            };
+            target_plan.push(SimpleGroupedTarget::GroupColumn(group_position));
+            continue;
+        }
+
+        let Some(request) =
+            simple_group_aggregate_request(&target.expr, &qualifiers, &column_indexes)
+        else {
+            return Ok(None);
+        };
+        let request_index = aggregate_requests.len();
+        aggregate_requests.push(request);
+        target_plan.push(SimpleGroupedTarget::Aggregate(request_index));
+    }
+
+    let Some(group_rows) = crate::tcop::engine::with_storage_write(|storage| {
+        storage.group_aggregate_columns_for_table(
+            table.oid(),
+            &group_column_indexes,
+            &aggregate_requests,
+        )
+    })
+    .map_err(|message| EngineError { message })?
+    else {
+        return Ok(None);
+    };
+
+    let mut rows = Vec::with_capacity(group_rows.len());
+    for (group_values, aggregate_values) in group_rows {
+        let mut row = Vec::with_capacity(target_plan.len());
+        for target in &target_plan {
+            match target {
+                SimpleGroupedTarget::GroupColumn(group_idx) => {
+                    row.push(group_values[*group_idx].clone());
+                }
+                SimpleGroupedTarget::Aggregate(aggregate_idx) => {
+                    row.push(aggregate_values[*aggregate_idx].clone());
+                }
+            }
+        }
+        rows.push(row);
+    }
+
+    let mut result = QueryResult {
+        columns: columns.to_vec(),
+        rows,
+        command_tag: "SELECT".to_string(),
+        rows_affected: 0,
+    };
+    if let Some(query) = query {
+        apply_order_by(&mut result, query, params).await?;
+        apply_offset_limit(&mut result, query, params).await?;
+    }
+    result.rows_affected = result.rows.len() as u64;
+    Ok(Some(result))
+}
+
+async fn try_execute_simple_count_star(
+    select: &SelectStatement,
+    query: Option<&Query>,
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+    columns: &[String],
+) -> Result<Option<QueryResult>, EngineError> {
+    if outer_scope.is_some()
+        || select.targets.len() != 1
+        || select.from.len() != 1
+        || !select.group_by.is_empty()
+        || select.having.is_some()
+        || !select.window_definitions.is_empty()
+        || select.quantifier.is_some()
+    {
+        return Ok(None);
+    }
+
+    if let Some(query) = query
+        && (!query.order_by.is_empty() || query.limit.is_some() || query.offset.is_some())
+    {
+        return Ok(None);
+    }
+
+    let target = &select.targets[0];
+    let Expr::FunctionCall {
+        name,
+        args,
+        distinct,
+        order_by,
+        within_group,
+        filter,
+        over,
+    } = &target.expr
+    else {
+        return Ok(None);
+    };
+    if name.len() != 1
+        || !name[0].eq_ignore_ascii_case("count")
+        || args.len() != 1
+        || !matches!(args[0], Expr::Wildcard)
+        || *distinct
+        || !order_by.is_empty()
+        || !within_group.is_empty()
+        || filter.is_some()
+        || over.is_some()
+    {
+        return Ok(None);
+    }
+
+    let TableExpression::Relation(rel) = &select.from[0] else {
+        return Ok(None);
+    };
+
+    if rel.name.len() == 1 && current_cte_binding(&rel.name[0]).is_some() {
+        return Ok(None);
+    }
+    if lookup_virtual_relation(&rel.name).is_some() {
+        return Ok(None);
+    }
+
+    let table = with_catalog_read(|catalog| {
+        catalog
+            .resolve_table(&rel.name, &SearchPath::default())
+            .cloned()
+    })
+    .map_err(|err| EngineError {
+        message: err.message,
+    })?;
+
+    if !matches!(table.kind(), TableKind::Heap | TableKind::MaterializedView) {
+        return Ok(None);
+    }
+
+    require_relation_privilege(&table, TablePrivilege::Select)?;
+    let role = security::current_role();
+    let evaluation = security::rls_evaluation_for_role(&role, table.oid(), RlsCommand::Select);
+    if evaluation.enabled && !evaluation.bypass {
+        return Ok(None);
+    }
+
+    let qualifiers = if let Some(alias) = &rel.alias {
+        vec![alias.to_ascii_lowercase()]
+    } else {
+        vec![table.name().to_string(), table.qualified_name()]
+    };
+    let column_indexes = table
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(idx, column)| (column.name().to_string(), idx))
+        .collect::<HashMap<_, _>>();
+    let table_columns = column_indexes.keys().cloned().collect::<HashSet<_>>();
+    let relation_predicates = select
+        .where_clause
+        .as_ref()
+        .map_or_else(Vec::new, decompose_and_conjuncts);
+
+    let mut scan_predicates = Vec::with_capacity(relation_predicates.len());
+    for predicate in &relation_predicates {
+        let Some(scan_predicate) = extract_relation_scan_predicate(
+            predicate,
+            &qualifiers,
+            &table_columns,
+            &column_indexes,
+            params,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        scan_predicates.push(scan_predicate);
+    }
+
+    let index_offsets = if relation_predicates.is_empty() {
+        None
+    } else {
+        relation_index_offsets_for_predicates(
+            &table,
+            &qualifiers,
+            &relation_predicates,
+            params,
+            outer_scope,
+        )
+        .await?
+    };
+
+    let count = crate::tcop::engine::with_storage_write(|storage| {
+        storage.count_rows_for_table(table.oid(), index_offsets.as_deref(), &scan_predicates)
+    })
+    .map_err(|message| EngineError { message })?;
+
+    Ok(Some(QueryResult {
+        columns: columns.to_vec(),
+        rows: vec![vec![ScalarValue::Int(count as i64)]],
+        command_tag: "SELECT".to_string(),
+        rows_affected: 1,
+    }))
+}
+
 async fn execute_select_internal(
     select: &SelectStatement,
     query: Option<&Query>,
@@ -2055,6 +2538,22 @@ async fn execute_select_internal(
     } else {
         derive_select_columns(select, &cte_columns)?
     };
+    if let Some(result) =
+        try_execute_simple_column_aggregates(select, query, outer_scope, &columns).await?
+    {
+        return Ok(result);
+    }
+    if let Some(result) =
+        try_execute_simple_grouped_column_aggregates(select, query, params, outer_scope, &columns)
+            .await?
+    {
+        return Ok(result);
+    }
+    if let Some(result) =
+        try_execute_simple_count_star(select, query, params, outer_scope, &columns).await?
+    {
+        return Ok(result);
+    }
     let mut row_collector = if let Some(query) = query {
         Some(QueryRowCollector::new(query, params).await?)
     } else {

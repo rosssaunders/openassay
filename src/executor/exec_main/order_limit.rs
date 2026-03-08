@@ -352,8 +352,8 @@ impl OffsetTopNCollector {
             return;
         }
 
-        for row_idx in 0..batch.row_count.min(offsets.len()) {
-            self.push_row(batch, row_idx, offsets[row_idx]);
+        for (row_idx, row_offset) in offsets.iter().copied().enumerate().take(batch.row_count) {
+            self.push_row(batch, row_idx, row_offset);
         }
     }
 

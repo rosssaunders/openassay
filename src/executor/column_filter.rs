@@ -121,10 +121,8 @@ fn eval_predicate(expr: &Expr, batch: &ColumnBatch) -> Option<Vec<Option<bool>>>
             let pattern = literal_scalar(pattern)?;
             let escape_char = escape
                 .as_deref()
-                .map(literal_scalar)
-                .flatten()
-                .map(extract_escape_char)
-                .flatten();
+                .and_then(literal_scalar)
+                .and_then(extract_escape_char);
             Some(compare_column_to_like_literal(
                 batch,
                 column_idx,
@@ -321,7 +319,7 @@ fn compare_column_to_like_literal(
 
 fn classify_like_pattern(pattern: &str, escape: Option<char>) -> Option<LikeLiteralMatcher> {
     let escape_char = escape.unwrap_or('\\');
-    let mut chars = pattern.chars().peekable();
+    let mut chars = pattern.chars();
     let mut literal = String::with_capacity(pattern.len());
     let mut has_prefix_wildcard = false;
     let mut has_suffix_wildcard = false;

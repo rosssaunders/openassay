@@ -284,7 +284,15 @@ pub fn execute_planned_query<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<QueryResult, EngineError>> + 'a>> {
     Box::pin(async move {
         let result = match &plan.plan {
-            PlanNode::Query(query_plan) => execute_query(&query_plan.query, params).await?,
+            PlanNode::Query(query_plan) => {
+                let projections =
+                    crate::executor::exec_main::collect_scan_projection_hints(&query_plan.physical);
+                crate::executor::exec_main::with_precomputed_scan_projection_hints(
+                    projections,
+                    execute_query(&query_plan.query, params),
+                )
+                .await?
+            }
             PlanNode::Insert(insert_plan) => execute_insert(&insert_plan.statement, params).await?,
             PlanNode::Update(update_plan) => execute_update(&update_plan.statement, params).await?,
             PlanNode::Delete(delete_plan) => execute_delete(&delete_plan.statement, params).await?,

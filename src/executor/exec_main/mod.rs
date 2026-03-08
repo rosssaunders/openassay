@@ -121,11 +121,30 @@ pub(crate) async fn with_scan_projection_hints<T>(
     result
 }
 
+pub(crate) async fn with_precomputed_scan_projection_hints<T>(
+    projections: VecDeque<ScanProjectionHint>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    let previous = ACTIVE_SCAN_PROJECTIONS.with(|hints| {
+        let mut hints = hints.borrow_mut();
+        std::mem::replace(&mut *hints, projections)
+    });
+    let result = future.await;
+    ACTIVE_SCAN_PROJECTIONS.with(|hints| {
+        *hints.borrow_mut() = previous;
+    });
+    result
+}
+
+pub(crate) fn scan_projection_hints_active() -> bool {
+    ACTIVE_SCAN_PROJECTIONS.with(|hints| !hints.borrow().is_empty())
+}
+
 pub(crate) fn next_scan_projection_hint() -> Option<ScanProjectionHint> {
     ACTIVE_SCAN_PROJECTIONS.with(|hints| hints.borrow_mut().pop_front())
 }
 
-fn collect_scan_projection_hints(
+pub(crate) fn collect_scan_projection_hints(
     plan: &crate::planner::physical::PhysicalPlan,
 ) -> VecDeque<ScanProjectionHint> {
     let mut hints = VecDeque::new();

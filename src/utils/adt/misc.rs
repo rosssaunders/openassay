@@ -7,6 +7,13 @@ use crate::utils::adt::datetime::{
 };
 use crate::utils::adt::math_functions::{NumericOperand, parse_numeric_operand};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LikeToken {
+    AnySeq,
+    AnyChar,
+    Literal(char),
+}
+
 pub(crate) fn array_value_matches(
     target: &ScalarValue,
     candidate: &ScalarValue,
@@ -46,6 +53,127 @@ pub(crate) fn build_regex(
     builder.build().map_err(|err| EngineError {
         message: format!("{fn_name}() invalid regex: {err}"),
     })
+}
+
+pub(crate) fn parse_like_escape_char(
+    escape: Option<&ScalarValue>,
+) -> Result<Option<char>, EngineError> {
+    let Some(escape) = escape else {
+        return Ok(None);
+    };
+    if matches!(escape, ScalarValue::Null) {
+        return Ok(None);
+    }
+    let escape_text = escape.render();
+    if escape_text.len() != 1 {
+        return Err(EngineError {
+            message: "ESCAPE string must be a single character".to_string(),
+        });
+    }
+    escape_text
+        .chars()
+        .next()
+        .ok_or_else(|| EngineError {
+            message: "ESCAPE string must not be empty".to_string(),
+        })
+        .map(Some)
+}
+
+pub(crate) fn like_matches(value: &str, pattern: &str, escape: Option<char>) -> bool {
+    let tokens = tokenize_like_pattern(pattern, escape.unwrap_or('\\'));
+
+    if tokens
+        .iter()
+        .all(|token| !matches!(token, LikeToken::AnyChar))
+    {
+        let wildcard_positions = tokens
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, token)| matches!(token, LikeToken::AnySeq).then_some(idx))
+            .collect::<Vec<_>>();
+        let literals = tokens
+            .iter()
+            .filter_map(|token| match token {
+                LikeToken::Literal(ch) => Some(*ch),
+                LikeToken::AnySeq | LikeToken::AnyChar => None,
+            })
+            .collect::<String>();
+
+        match wildcard_positions.as_slice() {
+            [] => return value == literals,
+            [pos] if *pos == tokens.len().saturating_sub(1) => return value.starts_with(&literals),
+            [0] => return value.ends_with(&literals),
+            [0, end] if *end == tokens.len().saturating_sub(1) => return value.contains(&literals),
+            _ => {}
+        }
+    }
+
+    like_matches_tokens(value, &tokens)
+}
+
+fn tokenize_like_pattern(pattern: &str, escape: char) -> Vec<LikeToken> {
+    let mut tokens = Vec::new();
+    let mut chars = pattern.chars();
+
+    while let Some(ch) = chars.next() {
+        let token = if ch == escape {
+            LikeToken::Literal(chars.next().unwrap_or(escape))
+        } else if ch == '%' {
+            LikeToken::AnySeq
+        } else if ch == '_' {
+            LikeToken::AnyChar
+        } else {
+            LikeToken::Literal(ch)
+        };
+
+        if token == LikeToken::AnySeq && matches!(tokens.last(), Some(LikeToken::AnySeq)) {
+            continue;
+        }
+        tokens.push(token);
+    }
+
+    tokens
+}
+
+fn like_matches_tokens(value: &str, tokens: &[LikeToken]) -> bool {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut value_idx = 0usize;
+    let mut token_idx = 0usize;
+    let mut star_token_idx = None;
+    let mut star_value_idx = 0usize;
+
+    while value_idx < chars.len() {
+        if let Some(token) = tokens.get(token_idx)
+            && (*token == LikeToken::AnyChar
+                || matches!(token, LikeToken::Literal(ch) if *ch == chars[value_idx]))
+        {
+            value_idx += 1;
+            token_idx += 1;
+            continue;
+        }
+
+        if matches!(tokens.get(token_idx), Some(LikeToken::AnySeq)) {
+            star_token_idx = Some(token_idx);
+            token_idx += 1;
+            star_value_idx = value_idx;
+            continue;
+        }
+
+        if let Some(star) = star_token_idx {
+            token_idx = star + 1;
+            star_value_idx += 1;
+            value_idx = star_value_idx;
+            continue;
+        }
+
+        return false;
+    }
+
+    while matches!(tokens.get(token_idx), Some(LikeToken::AnySeq)) {
+        token_idx += 1;
+    }
+
+    token_idx == tokens.len()
 }
 
 pub(crate) fn text_array_from_options(items: &[Option<String>]) -> String {
