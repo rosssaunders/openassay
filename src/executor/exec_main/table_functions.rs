@@ -65,6 +65,7 @@ pub(super) async fn evaluate_table_function(
         rows: scoped_rows,
         columns,
         null_scope,
+        batch: None,
     })
 }
 
@@ -118,6 +119,7 @@ pub(super) async fn evaluate_table_function_with_predicate(
                 &[],
                 &["value".to_string()],
             ),
+            batch: None,
         }));
     }
 
@@ -178,6 +180,7 @@ pub(super) async fn evaluate_table_function_with_predicate(
         rows: scoped_rows,
         columns,
         null_scope,
+        batch: None,
     }))
 }
 
@@ -1016,7 +1019,7 @@ pub(super) async fn evaluate_relation(
     outer_scope: Option<&EvalScope>,
     projected_columns: Option<Vec<usize>>,
 ) -> Result<TableEval, EngineError> {
-    evaluate_relation_with_predicates(rel, params, outer_scope, &[], projected_columns)
+    evaluate_relation_with_predicates_impl(rel, params, outer_scope, &[], projected_columns, true)
         .await
         .map(|(table_eval, _)| table_eval)
 }
@@ -1027,6 +1030,42 @@ pub(super) async fn evaluate_relation_with_predicates(
     outer_scope: Option<&EvalScope>,
     relation_predicates: &[Expr],
     projected_columns: Option<Vec<usize>>,
+) -> Result<(TableEval, Vec<usize>), EngineError> {
+    evaluate_relation_with_predicates_impl(
+        rel,
+        params,
+        outer_scope,
+        relation_predicates,
+        projected_columns,
+        true,
+    )
+    .await
+}
+
+pub(super) async fn evaluate_relation_with_predicates_columnar(
+    rel: &TableRef,
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+    relation_predicates: &[Expr],
+) -> Result<(TableEval, Vec<usize>), EngineError> {
+    evaluate_relation_with_predicates_impl(
+        rel,
+        params,
+        outer_scope,
+        relation_predicates,
+        None,
+        false,
+    )
+    .await
+}
+
+async fn evaluate_relation_with_predicates_impl(
+    rel: &TableRef,
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+    relation_predicates: &[Expr],
+    projected_columns: Option<Vec<usize>>,
+    materialize_rows: bool,
 ) -> Result<(TableEval, Vec<usize>), EngineError> {
     if rel.name.len() == 1
         && let Some(cte) = current_cte_binding(&rel.name[0])
@@ -1049,6 +1088,7 @@ pub(super) async fn evaluate_relation_with_predicates(
                 rows: scoped_rows,
                 columns: cte.columns,
                 null_scope,
+                batch: None,
             },
             Vec::new(),
         ));
@@ -1084,6 +1124,7 @@ pub(super) async fn evaluate_relation_with_predicates(
                 rows: scoped_rows,
                 columns: column_names,
                 null_scope,
+                batch: None,
             },
             Vec::new(),
         ));
@@ -1110,6 +1151,7 @@ pub(super) async fn evaluate_relation_with_predicates(
                         rows: Vec::new(),
                         columns,
                         null_scope,
+                        batch: None,
                     },
                     Vec::new(),
                 ));
@@ -1161,13 +1203,17 @@ pub(super) async fn evaluate_relation_with_predicates(
         .await?
     };
 
-    let projected_columns = if relation_uses_row_level_security(&table) {
+    let uses_row_level_security = relation_uses_row_level_security(&table);
+    let projected_columns = if uses_row_level_security {
         None
     } else {
         projected_columns
     };
-    let (columns, mut rows) = match table.kind() {
-        TableKind::VirtualDual => (Vec::new(), vec![Vec::new()]),
+    let supports_columnar_batch =
+        matches!(table.kind(), TableKind::Heap | TableKind::MaterializedView)
+            && !uses_row_level_security;
+    let (columns, mut rows, batch) = match table.kind() {
+        TableKind::VirtualDual => (Vec::new(), vec![Vec::new()], None),
         TableKind::Heap | TableKind::MaterializedView => {
             let all_columns = table
                 .columns()
@@ -1175,16 +1221,38 @@ pub(super) async fn evaluate_relation_with_predicates(
                 .map(|column| column.name().to_string())
                 .collect::<Vec<_>>();
             let columns = projected_column_names(&all_columns, projected_columns.as_deref());
-            let rows = crate::tcop::engine::with_storage_write(|storage| {
-                storage.scan_rows_for_table(
-                    table.oid(),
-                    index_offsets.as_deref(),
-                    &scan_predicates,
-                    projected_columns.as_deref(),
+            let batch = if supports_columnar_batch {
+                Some(
+                    crate::tcop::engine::with_storage_write(|storage| {
+                        storage.scan_columnar_for_table(
+                            table.oid(),
+                            &scan_predicates,
+                            projected_columns.as_deref(),
+                        )
+                    })
+                    .map_err(|message| EngineError { message })?,
                 )
-            })
-            .map_err(|message| EngineError { message })?;
-            (columns, rows)
+            } else {
+                None
+            };
+            let rows = if materialize_rows {
+                if let Some(batch) = &batch {
+                    batch.to_rows()
+                } else {
+                    crate::tcop::engine::with_storage_write(|storage| {
+                        storage.scan_rows_for_table(
+                            table.oid(),
+                            index_offsets.as_deref(),
+                            &scan_predicates,
+                            projected_columns.as_deref(),
+                        )
+                    })
+                    .map_err(|message| EngineError { message })?
+                }
+            } else {
+                Vec::new()
+            };
+            (columns, rows, batch)
         }
         TableKind::View => {
             let definition = table.view_definition().ok_or_else(|| EngineError {
@@ -1207,18 +1275,22 @@ pub(super) async fn evaluate_relation_with_predicates(
                     ),
                 });
             }
-            (columns, result.rows)
+            (columns, result.rows, None)
         }
     };
     if table.kind() != TableKind::VirtualDual {
         require_relation_privilege(&table, TablePrivilege::Select)?;
-        let mut visible_rows = Vec::with_capacity(rows.len());
-        for row in rows {
-            if relation_row_visible_for_command(&table, &row, RlsCommand::Select, params).await? {
-                visible_rows.push(row);
+        if materialize_rows {
+            let mut visible_rows = Vec::with_capacity(rows.len());
+            for row in rows {
+                if relation_row_visible_for_command(&table, &row, RlsCommand::Select, params)
+                    .await?
+                {
+                    visible_rows.push(row);
+                }
             }
+            rows = visible_rows;
         }
-        rows = visible_rows;
     }
 
     let mut scoped_rows = Vec::with_capacity(rows.len());
@@ -1233,6 +1305,7 @@ pub(super) async fn evaluate_relation_with_predicates(
             rows: scoped_rows,
             columns,
             null_scope,
+            batch: if supports_columnar_batch { batch } else { None },
         },
         pushed_predicate_indexes,
     ))

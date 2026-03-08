@@ -7,3 +7,8 @@ excel-addin/.certs/
 notebook/pkg/
 .claude/
 data/clickbench/*.tsv
+data/clickbench/hits.tsv.gz
+prompts/phase2-columnar-projection.md
+prompts/phase3-hash-aggregation.md
+prompts/phase4-join-vectorization.md
+prompts/phase5-operator-fusion.md

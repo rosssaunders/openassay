@@ -2260,6 +2260,126 @@ pub(crate) fn eval_cast_scalar(
     }
 }
 
+pub(crate) fn like_match(value: &str, pattern: &str, escape: Option<char>) -> bool {
+    if let Some(matched) = like_match_fast_path(value, pattern, escape) {
+        return matched;
+    }
+    let value_chars = value.chars().collect::<Vec<_>>();
+    let pattern_chars = pattern.chars().collect::<Vec<_>>();
+    let mut memo = HashMap::new();
+    let escape_char = escape.unwrap_or('\\');
+    like_match_recursive(&value_chars, &pattern_chars, 0, 0, escape_char, &mut memo)
+}
+
+fn like_match_fast_path(value: &str, pattern: &str, escape: Option<char>) -> Option<bool> {
+    let escape_char = escape.unwrap_or('\\');
+    let mut chars = pattern.chars();
+    let mut literal = String::with_capacity(pattern.len());
+    let mut has_prefix_wildcard = false;
+    let mut has_suffix_wildcard = false;
+    let mut wildcard_count = 0usize;
+    let mut saw_underscore = false;
+
+    while let Some(ch) = chars.next() {
+        if ch == escape_char {
+            let escaped = chars.next()?;
+            literal.push(escaped);
+            continue;
+        }
+        match ch {
+            '%' => {
+                wildcard_count += 1;
+                let at_start = literal.is_empty() && wildcard_count == 1;
+                let only_suffix_remaining = chars.clone().all(|next| next == '%');
+                if at_start {
+                    has_prefix_wildcard = true;
+                } else if only_suffix_remaining {
+                    has_suffix_wildcard = true;
+                    break;
+                } else {
+                    return None;
+                }
+            }
+            '_' => {
+                saw_underscore = true;
+                break;
+            }
+            _ => literal.push(ch),
+        }
+    }
+
+    if saw_underscore {
+        return None;
+    }
+    if wildcard_count == 0 {
+        return Some(value == literal);
+    }
+    if literal.is_empty() {
+        return Some(true);
+    }
+    match (has_prefix_wildcard, has_suffix_wildcard) {
+        (true, true) => Some(value.contains(&literal)),
+        (true, false) => Some(value.ends_with(&literal)),
+        (false, true) => Some(value.starts_with(&literal)),
+        (false, false) => None,
+    }
+}
+
+fn like_match_recursive(
+    value: &[char],
+    pattern: &[char],
+    vi: usize,
+    pi: usize,
+    escape: char,
+    memo: &mut HashMap<(usize, usize), bool>,
+) -> bool {
+    if let Some(cached) = memo.get(&(vi, pi)) {
+        return *cached;
+    }
+
+    let result = if pi >= pattern.len() {
+        vi >= value.len()
+    } else {
+        match pattern[pi] {
+            '%' => {
+                let mut i = vi;
+                let mut matched = false;
+                while i <= value.len() {
+                    if like_match_recursive(value, pattern, i, pi + 1, escape, memo) {
+                        matched = true;
+                        break;
+                    }
+                    i += 1;
+                }
+                matched
+            }
+            '_' => {
+                vi < value.len()
+                    && like_match_recursive(value, pattern, vi + 1, pi + 1, escape, memo)
+            }
+            c if c == escape => {
+                if pi + 1 >= pattern.len() {
+                    vi < value.len()
+                        && value[vi] == escape
+                        && like_match_recursive(value, pattern, vi + 1, pi + 1, escape, memo)
+                } else {
+                    vi < value.len()
+                        && value[vi] == pattern[pi + 1]
+                        && like_match_recursive(value, pattern, vi + 1, pi + 2, escape, memo)
+                }
+            }
+            ch => {
+                vi < value.len()
+                    && value[vi] == ch
+                    && like_match_recursive(value, pattern, vi + 1, pi + 1, escape, memo)
+            }
+        }
+    };
+
+    memo.insert((vi, pi), result);
+    result
+}
+
 fn parse_param(index: i32, params: &[Option<String>]) -> Result<ScalarValue, EngineError> {
     if index <= 0 {
         return Err(EngineError {
@@ -3923,4 +4043,24 @@ fn eval_array_overlap(left: ScalarValue, right: ScalarValue) -> Result<ScalarVal
     };
     let overlaps = left_elems.iter().any(|l| right_elems.contains(l));
     Ok(ScalarValue::Bool(overlaps))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::like_match;
+
+    #[test]
+    fn like_match_fast_path_handles_contains_prefix_and_suffix() {
+        assert!(like_match("https://google.com", "%google%", None));
+        assert!(like_match("google.com", "google%", None));
+        assert!(like_match("https://google", "%google", None));
+        assert!(!like_match("https://example.com", "%google%", None));
+    }
+
+    #[test]
+    fn like_match_fast_path_respects_escape_literals() {
+        assert!(like_match("%", "\\%", Some('\\')));
+        assert!(like_match("abc_def", "abc\\_def", Some('\\')));
+        assert!(!like_match("abcdef", "abc\\_def", Some('\\')));
+    }
 }

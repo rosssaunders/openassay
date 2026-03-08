@@ -13,6 +13,7 @@ use std::arch::x86_64::{
 };
 
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
+use crate::executor::column_filter::eval_columnar_predicate;
 use crate::executor::exec_expr::{
     EngineFuture, EvalScope, eval_any_all, eval_between_predicate, eval_binary, eval_cast_scalar,
     eval_expr, eval_expr_with_window, eval_is_distinct_from, eval_like_predicate, eval_unary,
@@ -74,12 +75,13 @@ use aggregation::{
     identifier_key, project_select_row, project_select_row_with_window, resolve_group_by_alias,
 };
 use from_clause::{
-    decompose_and_conjuncts, evaluate_from_clause_with_pushdown, extract_relation_scan_predicate,
-    relation_index_offsets_for_predicates, remaining_predicate_from_applied,
+    collect_referenced_columns, decompose_and_conjuncts, evaluate_from_clause_with_pushdown,
+    extract_relation_scan_predicate, relation_index_offsets_for_predicates,
+    remaining_predicate_from_applied,
 };
 use order_limit::{
-    QueryRowCollector, apply_offset_limit, apply_order_by, augment_select_for_order_by,
-    collect_extra_order_by_columns, scalar_cmp,
+    OffsetTopNCollector, QueryRowCollector, SimpleTopNCollector, apply_offset_limit,
+    apply_order_by, augment_select_for_order_by, collect_extra_order_by_columns, scalar_cmp,
 };
 use query_pipeline::execute_query_expr_with_outer;
 use scope_utils::scope_from_row;
@@ -88,7 +90,8 @@ use set_operations::{
     normalize_row_width, populate_cte_aux_values,
 };
 use table_functions::{
-    evaluate_relation, evaluate_relation_with_predicates, evaluate_table_function,
+    evaluate_relation, evaluate_relation_with_predicates,
+    evaluate_relation_with_predicates_columnar, evaluate_table_function,
 };
 
 thread_local! {

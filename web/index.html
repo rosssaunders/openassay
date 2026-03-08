@@ -60,6 +60,14 @@
         grid-template-rows: 44px minmax(0, 1fr) 28px;
       }
 
+      #app.mode-advanced {
+        grid-template-rows: 0 minmax(0, 1fr) 28px;
+      }
+
+      #app.mode-advanced .header {
+        display: none;
+      }
+
       .header {
         position: sticky;
         top: 0;
@@ -80,12 +88,59 @@
         backdrop-filter: blur(6px);
       }
 
+      .header-left {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
       .brand {
         font-size: 13px;
         font-weight: 700;
         letter-spacing: 0.03em;
         color: var(--fg);
         white-space: nowrap;
+      }
+
+      .mode-switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        padding: 2px;
+        border: 1px solid var(--border);
+        background: #0b111a;
+        border-radius: 999px;
+      }
+
+      .mode-switch.compact {
+        padding: 1px;
+      }
+
+      .mode-btn {
+        height: 24px;
+        min-width: 76px;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        border-radius: 999px;
+        padding: 0 10px;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .mode-btn.active {
+        background: linear-gradient(180deg, #2fb2ff 0%, #1686cf 100%);
+        color: #04141f;
+      }
+
+      .mode-switch.compact .mode-btn {
+        height: 22px;
+        min-width: 68px;
+        padding: 0 9px;
+        font-size: 10px;
       }
 
       .url-input,
@@ -257,19 +312,33 @@
         height: 100%;
       }
 
+      .panel-shell,
       .sql-panel {
         height: 100%;
         display: grid;
         grid-template-rows: 34px minmax(0, 1fr);
       }
 
-      .sql-toolbar {
+      .panel-toolbar {
         display: flex;
         align-items: center;
-        gap: 8px;
+        justify-content: space-between;
+        gap: 10px;
         padding: 5px 8px;
         border-bottom: 1px solid var(--border);
         background: #0d131d;
+      }
+
+      .panel-toolbar-left,
+      .panel-toolbar-right {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .panel-toolbar-right {
+        justify-content: flex-end;
       }
 
       .sql-run-btn {
@@ -288,6 +357,13 @@
       .sql-hint {
         font-size: 11px;
         color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .panel-status {
+        height: 24px;
+        padding: 0 8px;
+        font-size: 10px;
       }
 
       .history-list {
@@ -386,7 +462,7 @@
           min-height: 44px;
         }
 
-        .brand {
+        .header-left {
           grid-area: brand;
         }
 
@@ -431,8 +507,23 @@
           justify-self: stretch;
         }
 
+        .header-left {
+          flex-wrap: wrap;
+        }
+
         .run-btn {
           width: 100%;
+        }
+
+        .panel-toolbar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .panel-toolbar-right {
+          width: 100%;
+          justify-content: space-between;
+          flex-wrap: wrap;
         }
       }
     </style>
@@ -447,7 +538,13 @@
   <body>
     <div id="app">
       <header class="header">
-        <div class="brand">OpenAssay</div>
+        <div class="header-left">
+          <div class="brand">OpenAssay</div>
+          <div class="mode-switch" aria-label="Explorer mode">
+            <button class="mode-btn" type="button" data-mode-target="basic">Basic</button>
+            <button class="mode-btn" type="button" data-mode-target="advanced">Advanced</button>
+          </div>
+        </div>
         <input
           id="url-input"
           class="url-input"
@@ -464,7 +561,7 @@
         <div class="actions">
           <button id="run-url-btn" class="run-btn" type="button" aria-label="Fetch URL">▶</button>
         </div>
-        <span id="status-badge" class="status-badge">WASM: loading</span>
+        <span id="status-badge" class="status-badge" data-status-badge="true">WASM: loading</span>
       </header>
 
       <section id="dockview-root" class="workspace"></section>
@@ -482,10 +579,13 @@
       import { createDockview, themeAbyss } from "dockview-core";
 
       const STORAGE_KEYS = {
-        snapshot: "openassay_snapshot_v1",
-        layout: "openassay_dockview_layout_v1",
-        uiState: "openassay_api_explorer_state_v1",
+        snapshot: "openassay_snapshot_v2",
+        layoutBasic: "openassay_dockview_layout_basic_v2",
+        layoutAdvanced: "openassay_dockview_layout_advanced_v2",
+        uiState: "openassay_api_explorer_state_v2",
       };
+
+      const DEFAULT_UI_MODE = "basic";
 
       const PRESETS = [
         {
@@ -516,6 +616,8 @@
       ];
 
       const nodes = {
+        app: document.getElementById("app"),
+        header: document.querySelector(".header"),
         urlInput: document.getElementById("url-input"),
         pathInput: document.getElementById("path-input"),
         presetSelect: document.getElementById("preset-select"),
@@ -528,12 +630,16 @@
       };
 
       const state = {
+        uiMode: DEFAULT_UI_MODE,
         dockview: null,
         gridApi: null,
         worker: null,
         workerReady: false,
         workerMsgId: 0,
         workerCallbacks: new Map(),
+        modeButtons: new Set(),
+        statusBadges: new Set(),
+        sqlRunButtons: new Set(),
         monaco: null,
         monacoReady: false,
         responseEditor: null,
@@ -541,19 +647,24 @@
         responseHost: null,
         sqlHost: null,
         historyHost: null,
-        sqlRunButton: null,
         gridHost: null,
         gridOverlay: null,
         wasmStatus: "loading",
+        statusExtraText: "",
         queryStatus: "idle",
         history: [],
         currentRows: 0,
         currentExecMs: 0,
         currentRequestToken: 0,
         layoutSaveTimer: null,
+        ensurePanelsTimer: null,
         uiSaveTimer: null,
+        suspendLayoutSave: false,
         lastKnownSql: "",
         lastResponseText: "{\n  \"status\": \"ready\",\n  \"message\": \"Raw response will appear here\"\n}",
+        lastTabularResult: null,
+        gridOverlayMode: "empty",
+        gridOverlayMessage: "Enter a URL above to get started",
       };
 
       function escapeHtml(value) {
@@ -563,20 +674,22 @@
           .replaceAll(">", "&gt;");
       }
 
-      function updateStatus(status, extraText = "") {
-        state.wasmStatus = status;
-        nodes.statusBadge.classList.remove("ready", "running", "error");
+      function normalizeMode(mode) {
+        return mode === "advanced" ? "advanced" : DEFAULT_UI_MODE;
+      }
 
+      function getLayoutStorageKey(mode = state.uiMode) {
+        return normalizeMode(mode) === "advanced" ? STORAGE_KEYS.layoutAdvanced : STORAGE_KEYS.layoutBasic;
+      }
+
+      function getStatusText(status = state.wasmStatus, extraText = state.statusExtraText) {
         let text;
         if (status === "ready") {
           text = "WASM: ready";
-          nodes.statusBadge.classList.add("ready");
         } else if (status === "running") {
           text = "WASM: running";
-          nodes.statusBadge.classList.add("running");
         } else if (status === "error") {
           text = "WASM: error";
-          nodes.statusBadge.classList.add("error");
         } else {
           text = "WASM: loading";
         }
@@ -585,13 +698,188 @@
           text += ` (${extraText})`;
         }
 
-        nodes.statusBadge.textContent = text;
+        return text;
+      }
+
+      function getIdleEmptyStateMessage(mode = state.uiMode) {
+        return normalizeMode(mode) === "advanced"
+          ? "Switch to Basic to start from a URL, or use SQL on the right."
+          : "Enter a URL above to get started";
+      }
+
+      function syncModeButtons() {
+        for (const button of state.modeButtons) {
+          const buttonMode = normalizeMode(button.getAttribute("data-mode-target"));
+          const active = buttonMode === state.uiMode;
+          button.classList.toggle("active", active);
+          button.setAttribute("aria-pressed", active ? "true" : "false");
+        }
+      }
+
+      function syncStatusBadges() {
+        const text = getStatusText();
+        for (const badge of state.statusBadges) {
+          badge.classList.remove("ready", "running", "error");
+          if (state.wasmStatus === "ready") {
+            badge.classList.add("ready");
+          } else if (state.wasmStatus === "running") {
+            badge.classList.add("running");
+          } else if (state.wasmStatus === "error") {
+            badge.classList.add("error");
+          }
+          badge.textContent = text;
+        }
         nodes.footerStatus.textContent = text;
+      }
+
+      function syncSqlRunButtons() {
+        const disabled = state.queryStatus === "running" || !state.workerReady;
+        for (const button of state.sqlRunButtons) {
+          button.disabled = disabled;
+        }
+      }
+
+      function queueWorkspaceRelayout() {
+        window.requestAnimationFrame(() => {
+          state.responseEditor?.layout();
+          state.sqlEditor?.layout();
+          try {
+            state.gridApi?.sizeColumnsToFit?.();
+          } catch (_err) {}
+        });
+      }
+
+      function registerModeButton(button) {
+        if (!button || button.__openassayModeBound) {
+          return;
+        }
+        button.__openassayModeBound = true;
+        state.modeButtons.add(button);
+        button.addEventListener("click", () => setMode(button.getAttribute("data-mode-target")));
+      }
+
+      function registerStatusBadge(badge) {
+        if (!badge) {
+          return;
+        }
+        state.statusBadges.add(badge);
+      }
+
+      function createModeSwitch({ compact = false } = {}) {
+        const root = document.createElement("div");
+        root.className = compact ? "mode-switch compact" : "mode-switch";
+        const buttons = [];
+
+        for (const mode of [DEFAULT_UI_MODE, "advanced"]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "mode-btn";
+          button.setAttribute("data-mode-target", mode);
+          button.textContent = mode === "advanced" ? "Advanced" : "Basic";
+          registerModeButton(button);
+          buttons.push(button);
+          root.append(button);
+        }
+
+        syncModeButtons();
+
+        return {
+          element: root,
+          dispose() {
+            for (const button of buttons) {
+              state.modeButtons.delete(button);
+            }
+          },
+        };
+      }
+
+      function createStatusBadge({ compact = false } = {}) {
+        const badge = document.createElement("span");
+        badge.className = compact ? "status-badge panel-status" : "status-badge";
+        badge.setAttribute("data-status-badge", "true");
+        registerStatusBadge(badge);
+        syncStatusBadges();
+
+        return {
+          element: badge,
+          dispose() {
+            state.statusBadges.delete(badge);
+          },
+        };
+      }
+
+      function createAdvancedPanelToolbar({ showSqlControls = false } = {}) {
+        const toolbar = document.createElement("div");
+        toolbar.className = "panel-toolbar";
+
+        const left = document.createElement("div");
+        left.className = "panel-toolbar-left";
+        const modeSwitch = createModeSwitch({ compact: true });
+        left.append(modeSwitch.element);
+
+        const right = document.createElement("div");
+        right.className = "panel-toolbar-right";
+
+        let runButton = null;
+        if (showSqlControls) {
+          runButton = document.createElement("button");
+          runButton.className = "sql-run-btn";
+          runButton.type = "button";
+          runButton.textContent = "Run SQL";
+          runButton.addEventListener("click", () => runSqlFromEditor());
+          state.sqlRunButtons.add(runButton);
+          right.append(runButton);
+
+          const hint = document.createElement("span");
+          hint.className = "sql-hint";
+          hint.textContent = "Power user mode (Ctrl/Cmd + Enter)";
+          right.append(hint);
+        }
+
+        const statusBadge = createStatusBadge({ compact: true });
+        right.append(statusBadge.element);
+
+        toolbar.append(left, right);
+        syncSqlRunButtons();
+
+        return {
+          element: toolbar,
+          dispose() {
+            modeSwitch.dispose();
+            statusBadge.dispose();
+            if (runButton) {
+              state.sqlRunButtons.delete(runButton);
+            }
+          },
+        };
+      }
+
+      function restoreResultsView() {
+        if (!state.gridApi) {
+          return;
+        }
+
+        if (state.lastTabularResult) {
+          const rows = renderGrid(state.lastTabularResult);
+          updateResultsPanelTitle(rows);
+        } else {
+          clearGrid();
+          updateResultsPanelTitle(state.currentRows);
+        }
+
+        setGridOverlay(state.gridOverlayMode, state.gridOverlayMessage);
+      }
+
+      function updateStatus(status, extraText = "") {
+        state.wasmStatus = status;
+        state.statusExtraText = extraText;
+        syncStatusBadges();
       }
 
       function setQueryBusy(busy) {
         state.queryStatus = busy ? "running" : "idle";
         nodes.runUrlBtn.disabled = busy || !state.workerReady;
+        syncSqlRunButtons();
       }
 
       function parsePathSegments(path) {
@@ -691,6 +979,9 @@
       }
 
       function setGridOverlay(mode, message) {
+        state.gridOverlayMode = mode;
+        state.gridOverlayMessage = message;
+
         if (!state.gridOverlay) {
           return;
         }
@@ -734,6 +1025,7 @@
           return 0;
         }
 
+        state.lastTabularResult = tabular;
         const columns = Array.isArray(tabular.columns) ? tabular.columns : [];
         const rows = Array.isArray(tabular.rows) ? tabular.rows : [];
 
@@ -840,22 +1132,25 @@
         scheduleUiStateSave();
       }
 
-      function saveDockviewLayout() {
-        if (!state.dockview) {
+      function saveDockviewLayout(mode = state.uiMode) {
+        if (!state.dockview || state.suspendLayoutSave) {
           return;
         }
 
         try {
           const layout = state.dockview.toJSON();
-          localStorage.setItem(STORAGE_KEYS.layout, JSON.stringify(layout));
+          localStorage.setItem(getLayoutStorageKey(mode), JSON.stringify(layout));
         } catch (_err) {}
       }
 
       function scheduleDockviewLayoutSave() {
+        if (state.suspendLayoutSave) {
+          return;
+        }
         if (state.layoutSaveTimer) {
           window.clearTimeout(state.layoutSaveTimer);
         }
-        state.layoutSaveTimer = window.setTimeout(saveDockviewLayout, 200);
+        state.layoutSaveTimer = window.setTimeout(() => saveDockviewLayout(), 200);
       }
 
       function scheduleUiStateSave() {
@@ -868,6 +1163,7 @@
       function saveUiState() {
         try {
           const payload = {
+            mode: state.uiMode,
             url: nodes.urlInput.value,
             path: nodes.pathInput.value,
             history: state.history,
@@ -884,6 +1180,9 @@
             return;
           }
           const parsed = JSON.parse(text);
+          if (typeof parsed.mode === "string") {
+            state.uiMode = normalizeMode(parsed.mode);
+          }
           if (typeof parsed.url === "string") {
             nodes.urlInput.value = parsed.url;
           }
@@ -927,6 +1226,8 @@
           new window.agGrid.Grid(state.gridHost, gridOptions);
           state.gridApi = gridOptions.api || null;
         }
+
+        restoreResultsView();
       }
 
       function loadMonaco() {
@@ -1013,7 +1314,7 @@
 
         const overlay = document.createElement("div");
         overlay.className = "results-overlay";
-        overlay.textContent = "Enter a URL above to get started";
+        overlay.textContent = getIdleEmptyStateMessage();
 
         root.append(grid, overlay);
 
@@ -1025,19 +1326,32 @@
             if (!state.gridApi) {
               initGrid();
             }
+            restoreResultsView();
           },
           layout() {
             try {
               state.gridApi?.sizeColumnsToFit?.();
             } catch (_err) {}
           },
-          dispose() {},
+          dispose() {
+            try {
+              state.gridApi?.destroy?.();
+            } catch (_err) {}
+            state.gridApi = null;
+            state.gridHost = null;
+            state.gridOverlay = null;
+          },
         };
       }
 
       function createResponseRenderer() {
         const root = document.createElement("div");
-        root.className = "panel-root";
+        const toolbar = state.uiMode === "advanced" ? createAdvancedPanelToolbar() : null;
+        root.className = state.uiMode === "advanced" ? "panel-root panel-shell" : "panel-root";
+
+        if (toolbar) {
+          root.append(toolbar.element);
+        }
 
         const host = document.createElement("div");
         host.className = "editor-host";
@@ -1052,51 +1366,52 @@
           layout() {
             state.responseEditor?.layout();
           },
-          dispose() {},
+          dispose() {
+            state.responseEditor?.dispose();
+            state.responseEditor = null;
+            state.responseHost = null;
+            toolbar?.dispose();
+          },
         };
       }
 
       function createSqlRenderer() {
         const root = document.createElement("div");
         root.className = "panel-root sql-panel";
-
-        const toolbar = document.createElement("div");
-        toolbar.className = "sql-toolbar";
-
-        const runButton = document.createElement("button");
-        runButton.className = "sql-run-btn";
-        runButton.type = "button";
-        runButton.textContent = "Run SQL";
-
-        const hint = document.createElement("span");
-        hint.className = "sql-hint";
-        hint.textContent = "Power user mode (Ctrl/Cmd + Enter)";
-
-        toolbar.append(runButton, hint);
+        const toolbar = createAdvancedPanelToolbar({ showSqlControls: true });
+        root.append(toolbar.element);
 
         const host = document.createElement("div");
         host.className = "editor-host";
 
-        root.append(toolbar, host);
+        root.append(host);
 
         return {
           element: root,
           init() {
             state.sqlHost = host;
-            state.sqlRunButton = runButton;
-            runButton.addEventListener("click", () => runSqlFromEditor());
             ensureEditorsReady();
           },
           layout() {
             state.sqlEditor?.layout();
           },
-          dispose() {},
+          dispose() {
+            state.sqlEditor?.dispose();
+            state.sqlEditor = null;
+            state.sqlHost = null;
+            toolbar.dispose();
+          },
         };
       }
 
       function createHistoryRenderer() {
         const root = document.createElement("div");
-        root.className = "panel-root";
+        const toolbar = state.uiMode === "advanced" ? createAdvancedPanelToolbar() : null;
+        root.className = state.uiMode === "advanced" ? "panel-root panel-shell" : "panel-root";
+
+        if (toolbar) {
+          root.append(toolbar.element);
+        }
 
         const list = document.createElement("div");
         list.className = "history-list";
@@ -1115,6 +1430,7 @@
           }
 
           if (item.type === "url") {
+            setMode(DEFAULT_UI_MODE);
             nodes.urlInput.value = item.url;
             nodes.pathInput.value = item.path;
             runUrlQuery();
@@ -1122,6 +1438,7 @@
           }
 
           if (item.type === "sql") {
+            setMode("advanced");
             setSqlText(item.sql);
             runSqlFromEditor();
           }
@@ -1134,13 +1451,14 @@
             renderHistory();
           },
           layout() {},
-          dispose() {},
+          dispose() {
+            state.historyHost = null;
+            toolbar?.dispose();
+          },
         };
       }
 
-      function buildDefaultLayout() {
-        state.dockview.clear();
-
+      function buildBasicLayout() {
         const results = state.dockview.addPanel({
           id: "results",
           title: "Results",
@@ -1158,15 +1476,44 @@
           initialWidth: Math.max(360, Math.floor(window.innerWidth * 0.35)),
         });
 
+        state.dockview.addPanel({
+          id: "history",
+          title: "History",
+          component: "history",
+          position: {
+            referencePanel: response,
+            direction: "within",
+          },
+          inactive: true,
+        });
+      }
+
+      function buildAdvancedLayout() {
+        const results = state.dockview.addPanel({
+          id: "results",
+          title: "Results",
+          component: "results",
+        });
+
         const sql = state.dockview.addPanel({
           id: "sql",
           title: "SQL",
           component: "sql",
           position: {
-            referencePanel: response,
-            direction: "below",
+            referencePanel: results,
+            direction: "right",
           },
-          initialHeight: 120,
+          initialWidth: Math.max(420, Math.floor(window.innerWidth * 0.38)),
+        });
+
+        state.dockview.addPanel({
+          id: "response",
+          title: "Response",
+          component: "response",
+          position: {
+            referencePanel: sql,
+            direction: "within",
+          },
           inactive: true,
         });
 
@@ -1180,27 +1527,181 @@
           },
           inactive: true,
         });
-
-        try {
-          sql.group.api.setSize({ height: 96 });
-        } catch (_err) {}
       }
 
-      function restoreDockviewLayout() {
-        const raw = localStorage.getItem(STORAGE_KEYS.layout);
-        if (!raw) {
-          buildDefaultLayout();
+      function ensureModePanels(mode = state.uiMode) {
+        if (!state.dockview) {
           return;
         }
 
-        try {
-          state.dockview.fromJSON(JSON.parse(raw));
-          if (!state.dockview.totalPanels) {
-            buildDefaultLayout();
-          }
-        } catch (_err) {
-          buildDefaultLayout();
+        let results = state.dockview.getPanel("results");
+        if (!results) {
+          results = state.dockview.addPanel({
+            id: "results",
+            title: "Results",
+            component: "results",
+          });
         }
+
+        if (normalizeMode(mode) === "advanced") {
+          let sql = state.dockview.getPanel("sql");
+          if (!sql) {
+            sql = state.dockview.addPanel({
+              id: "sql",
+              title: "SQL",
+              component: "sql",
+              position: {
+                referencePanel: results,
+                direction: "right",
+              },
+              initialWidth: Math.max(420, Math.floor(window.innerWidth * 0.38)),
+            });
+          }
+
+          if (!state.dockview.getPanel("response")) {
+            state.dockview.addPanel({
+              id: "response",
+              title: "Response",
+              component: "response",
+              position: {
+                referencePanel: sql,
+                direction: "within",
+              },
+              inactive: true,
+            });
+          }
+
+          if (!state.dockview.getPanel("history")) {
+            state.dockview.addPanel({
+              id: "history",
+              title: "History",
+              component: "history",
+              position: {
+                referencePanel: sql,
+                direction: "within",
+              },
+              inactive: true,
+            });
+          }
+
+          return;
+        }
+
+        let response = state.dockview.getPanel("response");
+        if (!response) {
+          response = state.dockview.addPanel({
+            id: "response",
+            title: "Response",
+            component: "response",
+            position: {
+              referencePanel: results,
+              direction: "right",
+            },
+            initialWidth: Math.max(360, Math.floor(window.innerWidth * 0.35)),
+          });
+        }
+
+        if (!state.dockview.getPanel("history")) {
+          state.dockview.addPanel({
+            id: "history",
+            title: "History",
+            component: "history",
+            position: {
+              referencePanel: response,
+              direction: "within",
+            },
+            inactive: true,
+          });
+        }
+      }
+
+      function scheduleEnsureModePanels() {
+        if (state.ensurePanelsTimer) {
+          window.clearTimeout(state.ensurePanelsTimer);
+        }
+        state.ensurePanelsTimer = window.setTimeout(() => {
+          ensureModePanels(state.uiMode);
+          state.ensurePanelsTimer = null;
+        }, 0);
+      }
+
+      function restoreDockviewLayout(mode = state.uiMode) {
+        const nextMode = normalizeMode(mode);
+        const raw = localStorage.getItem(getLayoutStorageKey(nextMode));
+
+        state.suspendLayoutSave = true;
+        try {
+          state.dockview.clear();
+          if (!raw) {
+            if (nextMode === "advanced") {
+              buildAdvancedLayout();
+            } else {
+              buildBasicLayout();
+            }
+          } else {
+            state.dockview.fromJSON(JSON.parse(raw));
+            if (!state.dockview.totalPanels) {
+              if (nextMode === "advanced") {
+                buildAdvancedLayout();
+              } else {
+                buildBasicLayout();
+              }
+            }
+          }
+
+          ensureModePanels(nextMode);
+        } catch (_err) {
+          state.dockview.clear();
+          if (nextMode === "advanced") {
+            buildAdvancedLayout();
+          } else {
+            buildBasicLayout();
+          }
+          ensureModePanels(nextMode);
+        } finally {
+          state.suspendLayoutSave = false;
+        }
+
+        scheduleDockviewLayoutSave();
+        queueWorkspaceRelayout();
+      }
+
+      function applyModeChrome() {
+        nodes.app.classList.toggle("mode-advanced", state.uiMode === "advanced");
+        syncModeButtons();
+        syncStatusBadges();
+        syncSqlRunButtons();
+      }
+
+      function setMode(mode) {
+        const nextMode = normalizeMode(mode);
+        if (nextMode === state.uiMode) {
+          applyModeChrome();
+          queueWorkspaceRelayout();
+          return;
+        }
+
+        const previousMode = state.uiMode;
+        if (state.layoutSaveTimer) {
+          window.clearTimeout(state.layoutSaveTimer);
+          state.layoutSaveTimer = null;
+        }
+        saveDockviewLayout(previousMode);
+
+        state.uiMode = nextMode;
+        applyModeChrome();
+        if (
+          state.currentRows === 0 &&
+          state.gridOverlayMode === "empty" &&
+          (state.gridOverlayMessage === "Enter a URL above to get started" ||
+            state.gridOverlayMessage === "Switch to Basic to start from a URL, or use SQL on the right.")
+        ) {
+          setGridOverlay("empty", getIdleEmptyStateMessage(nextMode));
+        }
+        if (state.dockview) {
+          restoreDockviewLayout(nextMode);
+        }
+        scheduleUiStateSave();
       }
 
       function initDockview() {
@@ -1227,7 +1728,19 @@
           scheduleDockviewLayoutSave();
         });
 
-        restoreDockviewLayout();
+        state.dockview.onDidAddPanel(() => {
+          scheduleEnsureModePanels();
+        });
+
+        state.dockview.onDidRemovePanel(() => {
+          scheduleEnsureModePanels();
+        });
+
+        state.dockview.onDidActivePanelChange(() => {
+          queueWorkspaceRelayout();
+        });
+
+        restoreDockviewLayout(state.uiMode);
       }
 
       function initWorker() {
@@ -1336,6 +1849,7 @@
               typeof payload.rendered === "string"
                 ? payload.rendered
                 : "SQL execution failed.";
+            state.lastTabularResult = null;
             clearGrid();
             setGridOverlay("error", message);
             updateResultsPanelTitle(0);
@@ -1344,6 +1858,7 @@
 
           const tabular = selectTabularResult(payload);
           if (!tabular) {
+            state.lastTabularResult = null;
             clearGrid();
             setGridOverlay("empty", "Query executed, but no tabular rows were returned.");
             updateResultsPanelTitle(0);
@@ -1360,6 +1875,7 @@
           return { ok: true, rows, message: "OK" };
         }
 
+        state.lastTabularResult = null;
         clearGrid();
         setGridOverlay("error", fallbackText || "Query returned an unrecognized payload.");
         updateResultsPanelTitle(0);
@@ -1477,6 +1993,7 @@
           }
 
           const message = err && err.message ? err.message : String(err);
+          state.lastTabularResult = null;
           clearGrid();
           setGridOverlay("error", message);
           updateResultsPanelTitle(0);
@@ -1554,6 +2071,7 @@
           }
 
           const message = err && err.message ? err.message : String(err);
+          state.lastTabularResult = null;
           clearGrid();
           setGridOverlay("error", message);
           updateResultsPanelTitle(0);
@@ -1580,6 +2098,11 @@
       }
 
       function wireHeader() {
+        registerStatusBadge(nodes.statusBadge);
+        nodes.header.querySelectorAll("[data-mode-target]").forEach((button) => {
+          registerModeButton(button);
+        });
+
         nodes.presetSelect.innerHTML =
           '<option value="">Examples</option>' +
           PRESETS.map(
@@ -1610,6 +2133,7 @@
 
         nodes.urlInput.addEventListener("input", scheduleUiStateSave);
         nodes.pathInput.addEventListener("input", scheduleUiStateSave);
+        applyModeChrome();
       }
 
       async function bootstrap() {
@@ -1624,7 +2148,7 @@
           nodes.pathInput.value = first.path;
         }
 
-        setGridOverlay("empty", "Enter a URL above to get started");
+        setGridOverlay("empty", getIdleEmptyStateMessage());
         setFooterStats(0, 0);
         updateStatus("loading");
 
@@ -1656,8 +2180,7 @@
         }
 
         state.dockview?.onDidLayoutFromJSON(() => {
-          state.responseEditor?.layout();
-          state.sqlEditor?.layout();
+          queueWorkspaceRelayout();
         });
 
         window.addEventListener("beforeunload", () => {

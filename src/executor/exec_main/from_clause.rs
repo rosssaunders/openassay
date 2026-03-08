@@ -1,5 +1,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::executor::column_batch::ColumnBatch;
+use crate::executor::hash_join::{
+    HashJoinExecutor, extract_equi_join_keys_scoped, using_join_key_indices,
+};
 use crate::parser::ast::{BinaryOp, UnaryOp};
 use crate::storage::heap::{ScanPredicate, ScanPredicateOp};
 use crate::utils::adt::misc::parse_like_escape_char;
@@ -9,6 +13,7 @@ pub struct TableEval {
     pub(crate) rows: Vec<EvalScope>,
     pub(crate) columns: Vec<String>,
     pub(crate) null_scope: EvalScope,
+    pub(crate) batch: Option<ColumnBatch>,
 }
 
 pub async fn evaluate_from_clause(
@@ -819,6 +824,7 @@ pub fn evaluate_table_expression<'a>(
                     rows,
                     columns,
                     null_scope,
+                    batch: None,
                 })
             }
             TableExpression::Join(join) => {
@@ -963,6 +969,7 @@ pub(super) async fn evaluate_lateral_join(
         rows: output_rows,
         columns: output_columns,
         null_scope,
+        batch: None,
     })
 }
 
@@ -989,6 +996,62 @@ pub(super) async fn evaluate_join(
         .iter()
         .map(|c| c.to_ascii_lowercase())
         .collect();
+
+    if join_type != JoinType::Cross
+        && let (Some(left_batch), Some(right_batch)) = (&left.batch, &right.batch)
+    {
+        let hash_join_keys = if !using_columns.is_empty() {
+            using_join_key_indices(&using_columns, &left.columns, &right.columns)
+                .map(|(left_keys, right_keys)| (left_keys, right_keys, None))
+        } else if let Some(JoinCondition::On(on_expr)) = condition {
+            extract_equi_join_keys_scoped(
+                on_expr,
+                &left.columns,
+                &right.columns,
+                &left.null_scope,
+                &right.null_scope,
+            )
+        } else {
+            None
+        };
+
+        if let Some((left_keys, right_keys, residual)) = hash_join_keys {
+            let result = HashJoinExecutor::new(join_type, left_keys, right_keys, residual)
+                .execute(left_batch, right_batch, &left.rows, &right.rows, params)
+                .await?;
+
+            let mut output_rows = Vec::with_capacity(result.row_pairs.len());
+            for (left_idx, right_idx) in &result.row_pairs {
+                let left_scope = left_idx.map_or(&left.null_scope, |idx| &left.rows[idx]);
+                let right_scope = right_idx.map_or(&right.null_scope, |idx| &right.rows[idx]);
+                output_rows.push(combine_scopes(left_scope, right_scope, &using_set));
+            }
+
+            let mut output_columns = left.columns.clone();
+            let output_batch = if using_set.is_empty() {
+                output_columns.extend(right.columns.iter().cloned());
+                result.batch
+            } else {
+                let mut indices = (0..left.columns.len()).collect::<Vec<_>>();
+                for (right_idx, column) in right.columns.iter().enumerate() {
+                    if using_set.contains(&column.to_ascii_lowercase()) {
+                        continue;
+                    }
+                    output_columns.push(column.clone());
+                    indices.push(left.columns.len() + right_idx);
+                }
+                result.batch.project(&indices)
+            };
+
+            let null_scope = combine_scopes(&left.null_scope, &right.null_scope, &using_set);
+            return Ok(TableEval {
+                rows: output_rows,
+                columns: output_columns,
+                null_scope,
+                batch: Some(output_batch),
+            });
+        }
+    }
 
     let mut output_rows = Vec::new();
     let mut right_matched = vec![false; right.rows.len()];
@@ -1037,6 +1100,7 @@ pub(super) async fn evaluate_join(
         rows: output_rows,
         columns: output_columns,
         null_scope,
+        batch: None,
     })
 }
 pub(super) async fn join_condition_matches(
