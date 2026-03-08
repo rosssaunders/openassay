@@ -1,6 +1,6 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -29,6 +29,11 @@ use crate::tcop::engine::{
 pub type PgType = u32;
 
 const UNNAMED: &str = "";
+
+#[cfg(not(target_arch = "wasm32"))]
+thread_local! {
+    static SYNC_RUNTIME: RefCell<Option<tokio::runtime::Runtime>> = const { RefCell::new(None) };
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowDescriptionField {
@@ -445,6 +450,7 @@ pub(super) struct PendingStartup {
 pub struct PostgresSession {
     pub(super) prepared_statements: HashMap<String, PreparedStatement>,
     pub(super) portals: HashMap<String, Portal>,
+    pub(super) simple_query_cache: HashMap<String, PlannedOperation>,
     pub(super) xact_started: bool,
     pub(super) tx_state: TransactionContext,
     pub(super) ignore_till_sync: bool,
@@ -467,6 +473,7 @@ impl Default for PostgresSession {
         Self {
             prepared_statements: HashMap::new(),
             portals: HashMap::new(),
+            simple_query_cache: HashMap::new(),
             xact_started: false,
             tx_state: TransactionContext::default(),
             ignore_till_sync: false,
@@ -577,15 +584,16 @@ impl PostgresSession {
     where
         I: IntoIterator<Item = FrontendMessage>,
     {
-        match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime.block_on(self.run(messages)),
-            Err(err) => vec![error_response_from_message(format!(
-                "failed to start tokio runtime: {err}"
-            ))],
-        }
+        SYNC_RUNTIME.with(|runtime| {
+            let mut runtime = runtime.borrow_mut();
+            let runtime = runtime.get_or_insert_with(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tokio runtime should start")
+            });
+            runtime.block_on(self.run(messages))
+        })
     }
 
     async fn dispatch(
@@ -764,7 +772,7 @@ impl PostgresSession {
         }
 
         for statement_sql in statements {
-            let operation = self.plan_query_string(&statement_sql)?;
+            let operation = self.plan_simple_query_operation(&statement_sql)?;
             let row_description = operation_row_description_fields(&operation, &[])?;
 
             if self.is_aborted_transaction_block() && !operation.allowed_in_failed_transaction() {
@@ -890,6 +898,30 @@ impl PostgresSession {
                 Ok(())
             }
         }
+    }
+
+    fn cacheable_simple_query_operation(&self, operation: &PlannedOperation) -> bool {
+        matches!(self.tx_state.visibility_mode(), VisibilityMode::Global)
+            && !self.tx_state.in_explicit_block()
+            && matches!(operation, PlannedOperation::ParsedQuery(plan) if plan.command_tag() == "SELECT")
+    }
+
+    fn plan_simple_query_operation(
+        &mut self,
+        statement_sql: &str,
+    ) -> Result<PlannedOperation, SessionError> {
+        if let Some(operation) = self.simple_query_cache.get(statement_sql)
+            && self.cacheable_simple_query_operation(operation)
+        {
+            return Ok(operation.clone());
+        }
+
+        let operation = self.plan_query_string(statement_sql)?;
+        if self.cacheable_simple_query_operation(&operation) {
+            self.simple_query_cache
+                .insert(statement_sql.to_string(), operation.clone());
+        }
+        Ok(operation)
     }
 
     fn plan_query_string(&mut self, query: &str) -> Result<PlannedOperation, SessionError> {
@@ -1020,6 +1052,10 @@ impl PostgresSession {
         operation: &PlannedOperation,
         params: &[Option<String>],
     ) -> Result<ExecutionOutcome, SessionError> {
+        if !self.cacheable_simple_query_operation(operation) {
+            self.simple_query_cache.clear();
+        }
+
         let role = self.current_role.clone();
         security::with_current_role_async(&role, || async {
             match operation {

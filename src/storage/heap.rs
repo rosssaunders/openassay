@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use arrow::array::{BooleanArray, BooleanBuilder, RecordBatch};
+use arrow::array::{Array, BooleanArray, BooleanBuilder, Float64Array, Int64Array, RecordBatch};
 use arrow::compute::filter_record_batch;
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 
@@ -67,6 +67,21 @@ pub(crate) struct ScanPredicate {
     pub(crate) op: ScanPredicateOp,
     pub(crate) value: ScalarValue,
     pub(crate) escape: Option<char>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ColumnAggregateOp {
+    CountAll,
+    Count,
+    Sum,
+    Avg,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ColumnAggregateRequest {
+    pub(crate) op: ColumnAggregateOp,
+    pub(crate) column_index: Option<usize>,
+    pub(crate) distinct: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -453,6 +468,106 @@ impl InMemoryStorage {
         }
     }
 
+    pub(crate) fn aggregate_columns_for_table(
+        &mut self,
+        table_oid: Oid,
+        requests: &[ColumnAggregateRequest],
+    ) -> Result<Option<Vec<ScalarValue>>, String> {
+        self.ensure_table(table_oid)?;
+        self.flush_pending(table_oid)?;
+        let Some(table) = self.columnar_by_table.get(&table_oid) else {
+            return Ok(Some(
+                requests.iter().map(column_aggregate_empty_result).collect(),
+            ));
+        };
+
+        let mut states = requests
+            .iter()
+            .map(ColumnAggregateState::from_request)
+            .collect::<Vec<_>>();
+        for batch in &table.batches {
+            for (request, state) in requests.iter().zip(states.iter_mut()) {
+                if !apply_column_aggregate_request(batch, request, state)? {
+                    return Ok(None);
+                }
+            }
+        }
+
+        Ok(Some(
+            states
+                .into_iter()
+                .map(ColumnAggregateState::finalize)
+                .collect(),
+        ))
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn group_aggregate_columns_for_table(
+        &mut self,
+        table_oid: Oid,
+        group_column_indexes: &[usize],
+        requests: &[ColumnAggregateRequest],
+    ) -> Result<Option<Vec<(Vec<ScalarValue>, Vec<ScalarValue>)>>, String> {
+        self.ensure_table(table_oid)?;
+        self.flush_pending(table_oid)?;
+        let Some(table) = self.columnar_by_table.get(&table_oid) else {
+            return Ok(Some(Vec::new()));
+        };
+
+        let mut group_indexes = HashMap::new();
+        let mut groups = Vec::new();
+        for batch in &table.batches {
+            for row_idx in 0..batch.record_batch.num_rows() {
+                if batch.deleted_rows.get(row_idx).copied().unwrap_or(false) {
+                    continue;
+                }
+
+                let mut group_values = Vec::with_capacity(group_column_indexes.len());
+                for &column_index in group_column_indexes {
+                    let Some(column) = batch.record_batch.columns().get(column_index) else {
+                        return Err(format!("column index {column_index} is out of bounds"));
+                    };
+                    group_values.push(arrow_value_to_scalar_value(column.as_ref(), row_idx));
+                }
+                let group_key = format!("{group_values:?}");
+                let group_idx = if let Some(existing) = group_indexes.get(&group_key) {
+                    *existing
+                } else {
+                    let idx = groups.len();
+                    groups.push(GroupAggregateEntry::new(group_values.clone(), requests));
+                    group_indexes.insert(group_key, idx);
+                    idx
+                };
+
+                let entry = groups
+                    .get_mut(group_idx)
+                    .ok_or_else(|| "group accumulator is missing".to_string())?;
+                for (request, state) in requests.iter().zip(entry.aggregate_states.iter_mut()) {
+                    if !apply_group_aggregate_request(&batch.record_batch, row_idx, request, state)?
+                    {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+
+        Ok(Some(
+            groups
+                .into_iter()
+                .map(|entry| {
+                    (
+                        entry.group_values,
+                        entry
+                            .aggregate_states
+                            .into_iter()
+                            .map(GroupAggregateState::finalize)
+                            .collect(),
+                    )
+                })
+                .collect(),
+        ))
+    }
+
     pub(crate) fn index_for_table(&self, table_oid: Oid, index_name: &str) -> Option<&StoredIndex> {
         self.indexes_by_table
             .get(&(table_oid, index_name.to_ascii_lowercase()))
@@ -707,6 +822,288 @@ impl InMemoryStorage {
         names.sort_unstable();
         names
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct NumericAggregateState {
+    int_sum: i64,
+    float_sum: f64,
+    non_null_count: i64,
+    saw_float: bool,
+}
+
+impl NumericAggregateState {
+    fn add_int(&mut self, value: i64) {
+        self.int_sum = self.int_sum.wrapping_add(value);
+        self.non_null_count += 1;
+    }
+
+    fn add_float(&mut self, value: f64) {
+        self.float_sum += value;
+        self.non_null_count += 1;
+        self.saw_float = true;
+    }
+
+    fn has_values(&self) -> bool {
+        self.non_null_count > 0
+    }
+}
+
+enum ColumnAggregateState {
+    CountAll(i64),
+    Count(i64),
+    Sum(NumericAggregateState),
+    Avg(NumericAggregateState),
+}
+
+impl ColumnAggregateState {
+    fn from_request(request: &ColumnAggregateRequest) -> Self {
+        match request.op {
+            ColumnAggregateOp::CountAll => Self::CountAll(0),
+            ColumnAggregateOp::Count => Self::Count(0),
+            ColumnAggregateOp::Sum => Self::Sum(NumericAggregateState::default()),
+            ColumnAggregateOp::Avg => Self::Avg(NumericAggregateState::default()),
+        }
+    }
+
+    fn finalize(self) -> ScalarValue {
+        match self {
+            Self::CountAll(count) | Self::Count(count) => ScalarValue::Int(count),
+            Self::Sum(state) => {
+                if !state.has_values() {
+                    ScalarValue::Null
+                } else if state.saw_float {
+                    ScalarValue::Float(state.float_sum + state.int_sum as f64)
+                } else {
+                    ScalarValue::Int(state.int_sum)
+                }
+            }
+            Self::Avg(state) => {
+                if !state.has_values() {
+                    ScalarValue::Null
+                } else {
+                    ScalarValue::Float(
+                        (state.float_sum + state.int_sum as f64) / state.non_null_count as f64,
+                    )
+                }
+            }
+        }
+    }
+}
+
+fn column_aggregate_empty_result(request: &ColumnAggregateRequest) -> ScalarValue {
+    match request.op {
+        ColumnAggregateOp::CountAll | ColumnAggregateOp::Count => ScalarValue::Int(0),
+        ColumnAggregateOp::Sum | ColumnAggregateOp::Avg => ScalarValue::Null,
+    }
+}
+
+fn apply_column_aggregate_request(
+    batch: &ColumnarBatch,
+    request: &ColumnAggregateRequest,
+    state: &mut ColumnAggregateState,
+) -> Result<bool, String> {
+    match (request.op, state) {
+        (ColumnAggregateOp::CountAll, ColumnAggregateState::CountAll(count)) => {
+            *count += visible_row_count(batch);
+            Ok(true)
+        }
+        (ColumnAggregateOp::Count, ColumnAggregateState::Count(count)) => {
+            if request.distinct {
+                return Ok(false);
+            }
+            let Some(column_index) = request.column_index else {
+                return Ok(false);
+            };
+            let Some(column) = batch.record_batch.columns().get(column_index) else {
+                return Err(format!("column index {column_index} is out of bounds"));
+            };
+            *count += count_non_null_values(column.as_ref(), &batch.deleted_rows);
+            Ok(true)
+        }
+        (ColumnAggregateOp::Sum, ColumnAggregateState::Sum(numeric_state))
+        | (ColumnAggregateOp::Avg, ColumnAggregateState::Avg(numeric_state)) => {
+            if request.distinct {
+                return Ok(false);
+            }
+            let Some(column_index) = request.column_index else {
+                return Ok(false);
+            };
+            let Some(column) = batch.record_batch.columns().get(column_index) else {
+                return Err(format!("column index {column_index} is out of bounds"));
+            };
+            accumulate_numeric_values(numeric_state, column.as_ref(), &batch.deleted_rows)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn visible_row_count(batch: &ColumnarBatch) -> i64 {
+    (batch.record_batch.num_rows()
+        - batch
+            .deleted_rows
+            .iter()
+            .filter(|deleted| **deleted)
+            .count()) as i64
+}
+
+fn count_non_null_values(array: &dyn Array, deleted_rows: &[bool]) -> i64 {
+    if array.null_count() == 0 && deleted_rows.iter().all(|deleted| !deleted) {
+        return array.len() as i64;
+    }
+
+    let mut count = 0i64;
+    for row_idx in 0..array.len() {
+        if deleted_rows.get(row_idx).copied().unwrap_or(false) || array.is_null(row_idx) {
+            continue;
+        }
+        count += 1;
+    }
+    count
+}
+
+fn accumulate_numeric_values(
+    state: &mut NumericAggregateState,
+    array: &dyn Array,
+    deleted_rows: &[bool],
+) -> Result<bool, String> {
+    if let Some(int_array) = array.as_any().downcast_ref::<Int64Array>() {
+        for row_idx in 0..int_array.len() {
+            if deleted_rows.get(row_idx).copied().unwrap_or(false) || int_array.is_null(row_idx) {
+                continue;
+            }
+            state.add_int(int_array.value(row_idx));
+        }
+        return Ok(true);
+    }
+    if let Some(float_array) = array.as_any().downcast_ref::<Float64Array>() {
+        for row_idx in 0..float_array.len() {
+            if deleted_rows.get(row_idx).copied().unwrap_or(false) || float_array.is_null(row_idx) {
+                continue;
+            }
+            state.add_float(float_array.value(row_idx));
+        }
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+struct GroupAggregateEntry {
+    group_values: Vec<ScalarValue>,
+    aggregate_states: Vec<GroupAggregateState>,
+}
+
+impl GroupAggregateEntry {
+    fn new(group_values: Vec<ScalarValue>, requests: &[ColumnAggregateRequest]) -> Self {
+        Self {
+            group_values,
+            aggregate_states: requests
+                .iter()
+                .map(GroupAggregateState::from_request)
+                .collect(),
+        }
+    }
+}
+
+enum GroupAggregateState {
+    CountAll(i64),
+    Count(i64),
+    CountDistinct(HashSet<String>),
+    Sum(NumericAggregateState),
+    Avg(NumericAggregateState),
+}
+
+impl GroupAggregateState {
+    fn from_request(request: &ColumnAggregateRequest) -> Self {
+        match (request.op, request.distinct) {
+            (ColumnAggregateOp::CountAll, _) => Self::CountAll(0),
+            (ColumnAggregateOp::Count, false) => Self::Count(0),
+            (ColumnAggregateOp::Count, true) => Self::CountDistinct(HashSet::new()),
+            (ColumnAggregateOp::Sum, false) => Self::Sum(NumericAggregateState::default()),
+            (ColumnAggregateOp::Avg, false) => Self::Avg(NumericAggregateState::default()),
+            (ColumnAggregateOp::Sum | ColumnAggregateOp::Avg, true) => {
+                Self::CountDistinct(HashSet::new())
+            }
+        }
+    }
+
+    fn finalize(self) -> ScalarValue {
+        match self {
+            Self::CountAll(count) | Self::Count(count) => ScalarValue::Int(count),
+            Self::CountDistinct(values) => ScalarValue::Int(values.len() as i64),
+            Self::Sum(state) => ColumnAggregateState::Sum(state).finalize(),
+            Self::Avg(state) => ColumnAggregateState::Avg(state).finalize(),
+        }
+    }
+}
+
+fn apply_group_aggregate_request(
+    batch: &RecordBatch,
+    row_idx: usize,
+    request: &ColumnAggregateRequest,
+    state: &mut GroupAggregateState,
+) -> Result<bool, String> {
+    match (request.op, request.distinct, state) {
+        (ColumnAggregateOp::CountAll, false, GroupAggregateState::CountAll(count)) => {
+            *count += 1;
+            Ok(true)
+        }
+        (ColumnAggregateOp::Count, false, GroupAggregateState::Count(count)) => {
+            let Some(column_index) = request.column_index else {
+                return Ok(false);
+            };
+            let Some(column) = batch.columns().get(column_index) else {
+                return Err(format!("column index {column_index} is out of bounds"));
+            };
+            if !column.is_null(row_idx) {
+                *count += 1;
+            }
+            Ok(true)
+        }
+        (ColumnAggregateOp::Count, true, GroupAggregateState::CountDistinct(values)) => {
+            let Some(column_index) = request.column_index else {
+                return Ok(false);
+            };
+            let Some(column) = batch.columns().get(column_index) else {
+                return Err(format!("column index {column_index} is out of bounds"));
+            };
+            if !column.is_null(row_idx) {
+                let value = arrow_value_to_scalar_value(column.as_ref(), row_idx);
+                values.insert(format!("{value:?}"));
+            }
+            Ok(true)
+        }
+        (ColumnAggregateOp::Sum, false, GroupAggregateState::Sum(numeric_state))
+        | (ColumnAggregateOp::Avg, false, GroupAggregateState::Avg(numeric_state)) => {
+            let Some(column_index) = request.column_index else {
+                return Ok(false);
+            };
+            let Some(column) = batch.columns().get(column_index) else {
+                return Err(format!("column index {column_index} is out of bounds"));
+            };
+            accumulate_numeric_value_at_row(numeric_state, column.as_ref(), row_idx)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn accumulate_numeric_value_at_row(
+    state: &mut NumericAggregateState,
+    array: &dyn Array,
+    row_idx: usize,
+) -> Result<bool, String> {
+    if array.is_null(row_idx) {
+        return Ok(true);
+    }
+    if let Some(int_array) = array.as_any().downcast_ref::<Int64Array>() {
+        state.add_int(int_array.value(row_idx));
+        return Ok(true);
+    }
+    if let Some(float_array) = array.as_any().downcast_ref::<Float64Array>() {
+        state.add_float(float_array.value(row_idx));
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn lookup_catalog_schema(
