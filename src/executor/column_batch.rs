@@ -23,6 +23,16 @@ pub enum TypedColumn {
 }
 
 impl ColumnBatch {
+    pub fn new(column_names: Vec<String>, columns: Vec<TypedColumn>) -> Self {
+        let row_count = columns.first().map_or(0, TypedColumn::len);
+        debug_assert!(columns.iter().all(|column| column.len() == row_count));
+        Self {
+            columns,
+            column_names,
+            row_count,
+        }
+    }
+
     pub fn empty(column_names: Vec<String>) -> Self {
         let columns = column_names
             .iter()
@@ -183,6 +193,23 @@ impl ColumnBatch {
         }
     }
 
+    pub(crate) fn with_appended_typed_column(
+        &self,
+        column_name: String,
+        column: TypedColumn,
+    ) -> Self {
+        debug_assert_eq!(column.len(), self.row_count);
+        let mut columns = self.columns.clone();
+        columns.push(column);
+        let mut column_names = self.column_names.clone();
+        column_names.push(column_name);
+        Self {
+            columns,
+            column_names,
+            row_count: self.row_count,
+        }
+    }
+
     pub(crate) fn append_batch(&mut self, other: &Self) -> Result<(), String> {
         if self.row_count == 0 {
             *self = other.clone();
@@ -203,6 +230,18 @@ impl ColumnBatch {
 }
 
 impl TypedColumn {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Bool(values, _) => values.len(),
+            Self::Int64(values, _) => values.len(),
+            Self::Float64(values, _) => values.len(),
+            Self::Date(values, _) => values.len(),
+            Self::Text(values, _) => values.len(),
+            Self::Numeric(values, _) => values.len(),
+            Self::Mixed(values) => values.len(),
+        }
+    }
+
     pub(crate) fn value_at(&self, row_idx: usize) -> ScalarValue {
         match self {
             Self::Bool(values, nulls) => {
@@ -476,7 +515,7 @@ fn date_scalar_from_days(days: i32) -> ScalarValue {
     ScalarValue::Text(format_date(date))
 }
 
-fn typed_column_from_scalars(values: Vec<ScalarValue>) -> TypedColumn {
+pub(crate) fn typed_column_from_scalars(values: Vec<ScalarValue>) -> TypedColumn {
     if let Some((typed, nulls)) = all_bools(&values) {
         return TypedColumn::Bool(typed, nulls);
     }

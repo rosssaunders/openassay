@@ -627,6 +627,7 @@ fn plan_columnar_aggregate_kind(
             let column_index = aggregate_identifier_column_index(&args[0], batch)?;
             match &batch.columns[column_index] {
                 TypedColumn::Int64(_, _) => Some(AggKind::CountDistinctInt { column_index }),
+                TypedColumn::Text(_, _) => Some(AggKind::CountDistinctText { column_index }),
                 _ => None,
             }
         }
@@ -877,6 +878,7 @@ fn agg_input_column_index(kind: &AggKind) -> Option<usize> {
         AggKind::CountStar => None,
         AggKind::Count { column_index }
         | AggKind::CountDistinctInt { column_index }
+        | AggKind::CountDistinctText { column_index }
         | AggKind::SumInt { column_index }
         | AggKind::SumFloat { column_index }
         | AggKind::SumNumeric { column_index }
@@ -896,6 +898,7 @@ fn remap_agg_kind(kind: &mut AggKind, index_map: &HashMap<usize, usize>) -> Opti
         AggKind::CountStar => return Some(()),
         AggKind::Count { column_index }
         | AggKind::CountDistinctInt { column_index }
+        | AggKind::CountDistinctText { column_index }
         | AggKind::SumInt { column_index }
         | AggKind::SumFloat { column_index }
         | AggKind::SumNumeric { column_index }
@@ -913,6 +916,7 @@ fn remap_agg_kind(kind: &mut AggKind, index_map: &HashMap<usize, usize>) -> Opti
         AggKind::CountStar => Some(()),
         AggKind::Count { column_index }
         | AggKind::CountDistinctInt { column_index }
+        | AggKind::CountDistinctText { column_index }
         | AggKind::SumInt { column_index }
         | AggKind::SumFloat { column_index }
         | AggKind::SumNumeric { column_index }
@@ -985,6 +989,24 @@ fn remap_columnar_aggregation_plan(
     Some(())
 }
 
+fn identifier_projection_indices(exprs: &[Expr], columns: &[String]) -> Option<Vec<usize>> {
+    exprs
+        .iter()
+        .map(|expr| {
+            let Expr::Identifier(parts) = expr else {
+                return None;
+            };
+            let qualified = parts.join(".");
+            columns.iter().position(|column| {
+                column.eq_ignore_ascii_case(&qualified)
+                    || parts
+                        .last()
+                        .is_some_and(|short| column.eq_ignore_ascii_case(short))
+            })
+        })
+        .collect()
+}
+
 fn columnar_group_key_indices(plan: &ColumnarAggPlan, base_column_count: usize) -> Vec<usize> {
     let mut next_derived = base_column_count;
     plan.group_key_sources
@@ -1010,6 +1032,11 @@ async fn append_derived_group_key_columns(
         let GroupKeySource::DerivedExpr(expr) = source else {
             continue;
         };
+        if let Some(column) = eval_columnar_derived_group_expr(expr, &batch) {
+            batch =
+                batch.with_appended_typed_column(format!("__derived_group_{group_idx}"), column);
+            continue;
+        }
         let mut values = Vec::with_capacity(batch.row_count);
         for row_idx in 0..batch.row_count {
             let row = batch
@@ -1023,6 +1050,180 @@ async fn append_derived_group_key_columns(
         batch = batch.with_appended_column(format!("__derived_group_{group_idx}"), values);
     }
     Ok(batch)
+}
+
+enum ColumnarTextSource {
+    Column(usize),
+    Literal(String),
+    Null,
+}
+
+fn eval_columnar_derived_group_expr(expr: &Expr, batch: &ColumnBatch) -> Option<TypedColumn> {
+    match expr {
+        Expr::CaseSearched {
+            when_then,
+            else_expr,
+        } => eval_columnar_text_case(when_then, else_expr.as_deref(), batch),
+        _ => None,
+    }
+}
+
+fn eval_columnar_text_case(
+    when_then: &[(Expr, Expr)],
+    else_expr: Option<&Expr>,
+    batch: &ColumnBatch,
+) -> Option<TypedColumn> {
+    let else_source = match else_expr {
+        Some(expr) => text_source_for_columnar_eval(expr, batch)?,
+        None => ColumnarTextSource::Null,
+    };
+    let (mut values, mut nulls) = text_source_column_values(&else_source, batch)?;
+
+    for (when_expr, then_expr) in when_then.iter().rev() {
+        let mask = eval_columnar_predicate(when_expr, batch)?;
+        let then_source = text_source_for_columnar_eval(then_expr, batch)?;
+        apply_text_source_mask(&mut values, &mut nulls, &mask, &then_source, batch)?;
+    }
+
+    Some(TypedColumn::Text(values, nulls))
+}
+
+fn text_source_for_columnar_eval(expr: &Expr, batch: &ColumnBatch) -> Option<ColumnarTextSource> {
+    match expr {
+        Expr::Identifier(parts) => {
+            let column_idx = batch.column_index(&parts.join("."))?;
+            match batch.columns.get(column_idx)? {
+                TypedColumn::Text(_, _) => Some(ColumnarTextSource::Column(column_idx)),
+                _ => None,
+            }
+        }
+        Expr::String(value) | Expr::TypedLiteral { value, .. } => {
+            Some(ColumnarTextSource::Literal(value.clone()))
+        }
+        Expr::Null => Some(ColumnarTextSource::Null),
+        Expr::Cast { expr, .. } => text_source_for_columnar_eval(expr, batch),
+        _ => None,
+    }
+}
+
+fn text_source_column_values(
+    source: &ColumnarTextSource,
+    batch: &ColumnBatch,
+) -> Option<(Vec<String>, Vec<bool>)> {
+    match source {
+        ColumnarTextSource::Column(column_idx) => match batch.columns.get(*column_idx)? {
+            TypedColumn::Text(values, nulls) => Some((values.clone(), nulls.clone())),
+            _ => None,
+        },
+        ColumnarTextSource::Literal(value) => Some((
+            vec![value.clone(); batch.row_count],
+            vec![false; batch.row_count],
+        )),
+        ColumnarTextSource::Null => Some((
+            vec![String::new(); batch.row_count],
+            vec![true; batch.row_count],
+        )),
+    }
+}
+
+fn apply_text_source_mask(
+    values: &mut [String],
+    nulls: &mut [bool],
+    mask: &[bool],
+    source: &ColumnarTextSource,
+    batch: &ColumnBatch,
+) -> Option<()> {
+    match source {
+        ColumnarTextSource::Column(column_idx) => match batch.columns.get(*column_idx)? {
+            TypedColumn::Text(source_values, source_nulls) => {
+                for row_idx in 0..values.len().min(mask.len()) {
+                    if mask[row_idx] {
+                        values[row_idx] = source_values[row_idx].clone();
+                        nulls[row_idx] = source_nulls[row_idx];
+                    }
+                }
+                Some(())
+            }
+            _ => None,
+        },
+        ColumnarTextSource::Literal(value) => {
+            for row_idx in 0..values.len().min(mask.len()) {
+                if mask[row_idx] {
+                    values[row_idx] = value.clone();
+                    nulls[row_idx] = false;
+                }
+            }
+            Some(())
+        }
+        ColumnarTextSource::Null => {
+            for row_idx in 0..values.len().min(mask.len()) {
+                if mask[row_idx] {
+                    values[row_idx].clear();
+                    nulls[row_idx] = true;
+                }
+            }
+            Some(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::eval_columnar_derived_group_expr;
+    use crate::executor::column_batch::{ColumnBatch, TypedColumn};
+    use crate::parser::ast::{BinaryOp, Expr};
+
+    #[test]
+    fn evaluates_searched_text_case_group_key_columnarly() {
+        let batch = ColumnBatch {
+            columns: vec![
+                TypedColumn::Int64(vec![0, 1, 0], vec![false, false, false]),
+                TypedColumn::Int64(vec![0, 0, 2], vec![false, false, false]),
+                TypedColumn::Text(
+                    vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
+                    vec![false, false, false],
+                ),
+            ],
+            column_names: vec![
+                "SearchEngineID".to_string(),
+                "AdvEngineID".to_string(),
+                "Referer".to_string(),
+            ],
+            row_count: 3,
+        };
+
+        let expr = Expr::CaseSearched {
+            when_then: vec![(
+                Expr::Binary {
+                    left: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Identifier(vec!["SearchEngineID".to_string()])),
+                        op: BinaryOp::Eq,
+                        right: Box::new(Expr::Integer(0)),
+                    }),
+                    op: BinaryOp::And,
+                    right: Box::new(Expr::Binary {
+                        left: Box::new(Expr::Identifier(vec!["AdvEngineID".to_string()])),
+                        op: BinaryOp::Eq,
+                        right: Box::new(Expr::Integer(0)),
+                    }),
+                },
+                Expr::Identifier(vec!["Referer".to_string()]),
+            )],
+            else_expr: Some(Box::new(Expr::String(String::new()))),
+        };
+
+        let column = eval_columnar_derived_group_expr(&expr, &batch)
+            .expect("case expression should vectorize");
+        let TypedColumn::Text(values, nulls) = column else {
+            panic!("expected text column");
+        };
+
+        assert_eq!(
+            values,
+            vec!["alpha".to_string(), String::new(), String::new()]
+        );
+        assert_eq!(nulls, vec![false, false, false]);
+    }
 }
 
 fn projection_indices_for_simple_targets(
@@ -1043,6 +1244,30 @@ fn projection_indices_for_simple_targets(
         }
     }
     Some(indices)
+}
+
+fn topn_projection_indices_for_query(
+    query: &Query,
+    batch: &ColumnBatch,
+    predicate: Option<&Expr>,
+    required_columns: &[usize],
+) -> Option<Vec<usize>> {
+    let mut projection = BTreeSet::new();
+    projection.extend(required_columns.iter().copied());
+    for spec in &query.order_by {
+        let Expr::Identifier(parts) = &spec.expr else {
+            return None;
+        };
+        projection.insert(batch.column_index(&parts.join("."))?);
+    }
+    if let Some(predicate) = predicate {
+        let mut referenced = HashSet::new();
+        collect_referenced_columns(predicate, &mut referenced);
+        for column in referenced {
+            projection.insert(batch.column_index(&column)?);
+        }
+    }
+    Some(projection.into_iter().collect())
 }
 
 fn literal_text_expr(expr: &Expr) -> Option<String> {
@@ -1131,111 +1356,184 @@ async fn try_execute_simple_columnar_select(
         && let Some(query) = query
         && stage_limit.is_none()
     {
-        let mut topn_projection = BTreeSet::new();
-        for spec in &query.order_by {
-            let Expr::Identifier(parts) = &spec.expr else {
-                topn_projection.clear();
-                break;
-            };
-            let Some(column_index) = scan_plan.schema_batch.column_index(&parts.join(".")) else {
-                topn_projection.clear();
-                break;
-            };
-            topn_projection.insert(column_index);
-        }
-        if !topn_projection.is_empty() {
-            if let Some(predicate) = &scan_plan.remaining_predicate {
-                let mut referenced = HashSet::new();
-                collect_referenced_columns(predicate, &mut referenced);
-                for column in referenced {
-                    let Some(column_index) = scan_plan.schema_batch.column_index(&column) else {
-                        topn_projection.clear();
-                        break;
-                    };
-                    topn_projection.insert(column_index);
-                }
-            }
-            if !topn_projection.is_empty() {
-                let topn_projection = topn_projection.into_iter().collect::<Vec<_>>();
-                let topn_batch = scan_plan.schema_batch.project(&topn_projection);
-                let topn_columns = topn_batch.column_names.clone();
-                if let Some(mut offset_collector) =
-                    OffsetTopNCollector::new(query, &topn_columns, params).await?
-                {
-                    let simple_like =
-                        scan_plan
-                            .remaining_predicate
-                            .as_ref()
-                            .and_then(|predicate| {
-                                classify_simple_like_predicate(predicate, &topn_batch)
-                            });
-                    with_storage_write(|storage| {
-                        storage.scan_batches_for_table_with_offsets(
-                            scan_plan.table.oid(),
-                            &scan_plan.scan_predicates,
-                            Some(topn_projection.as_slice()),
-                            &mut |batch, offsets| {
-                                if let Some((column_idx, matcher)) = &simple_like {
-                                    offset_collector.push_matching_text_rows(
-                                        &batch,
-                                        *column_idx,
-                                        &offsets,
-                                        |value| matcher.matches(value),
+        if let Some(topn_projection) = topn_projection_indices_for_query(
+            query,
+            &scan_plan.schema_batch,
+            scan_plan.remaining_predicate.as_ref(),
+            &[],
+        ) {
+            let topn_batch = scan_plan.schema_batch.project(&topn_projection);
+            let topn_columns = topn_batch.column_names.clone();
+            if let Some(mut offset_collector) =
+                OffsetTopNCollector::new(query, &topn_columns, params).await?
+            {
+                let simple_like = scan_plan
+                    .remaining_predicate
+                    .as_ref()
+                    .and_then(|predicate| classify_simple_like_predicate(predicate, &topn_batch));
+                with_storage_write(|storage| {
+                    storage.scan_batches_for_table_with_offsets(
+                        scan_plan.table.oid(),
+                        &scan_plan.scan_predicates,
+                        Some(topn_projection.as_slice()),
+                        &mut |batch, offsets| {
+                            if let Some((column_idx, matcher)) = &simple_like {
+                                offset_collector.push_matching_text_rows(
+                                    &batch,
+                                    *column_idx,
+                                    &offsets,
+                                    |value| matcher.matches(value),
+                                );
+                                return Ok(true);
+                            }
+                            if let Some(predicate) = &scan_plan.remaining_predicate {
+                                let Some(mask) = eval_columnar_predicate(predicate, &batch) else {
+                                    return Err(
+                                        "columnar predicate could not be evaluated in fused wildcard pipeline"
+                                            .to_string(),
                                     );
-                                    return Ok(true);
-                                }
-                                if let Some(predicate) = &scan_plan.remaining_predicate {
-                                    let Some(mask) = eval_columnar_predicate(predicate, &batch) else {
-                                        return Err(
-                                            "columnar predicate could not be evaluated in fused wildcard pipeline"
-                                                .to_string(),
-                                        );
-                                    };
-                                    let selected_rows = mask
-                                        .iter()
-                                        .enumerate()
-                                        .filter_map(|(row_idx, selected)| selected.then_some(row_idx))
-                                        .collect::<Vec<_>>();
-                                    let filtered_offsets = offsets
-                                        .iter()
-                                        .zip(mask.iter().copied())
-                                        .filter_map(|(offset, selected)| selected.then_some(*offset))
-                                        .collect::<Vec<_>>();
-                                    offset_collector.push_selected_rows(
-                                        &batch,
-                                        &selected_rows,
-                                        &filtered_offsets,
-                                    );
-                                    return Ok(true);
-                                }
-                                if batch.row_count == 0 {
-                                    return Ok(true);
-                                }
-                                offset_collector.push_batch(&batch, &offsets);
-                                Ok(true)
-                            },
-                        )
-                    })
-                    .map_err(|message| EngineError { message })?;
+                                };
+                                let selected_rows = mask
+                                    .iter()
+                                    .enumerate()
+                                    .filter_map(|(row_idx, selected)| selected.then_some(row_idx))
+                                    .collect::<Vec<_>>();
+                                let filtered_offsets = offsets
+                                    .iter()
+                                    .zip(mask.iter().copied())
+                                    .filter_map(|(offset, selected)| selected.then_some(*offset))
+                                    .collect::<Vec<_>>();
+                                offset_collector.push_selected_rows(
+                                    &batch,
+                                    &selected_rows,
+                                    &filtered_offsets,
+                                );
+                                return Ok(true);
+                            }
+                            if batch.row_count == 0 {
+                                return Ok(true);
+                            }
+                            offset_collector.push_batch(&batch, &offsets);
+                            Ok(true)
+                        },
+                    )
+                })
+                .map_err(|message| EngineError { message })?;
 
-                    let offsets = offset_collector.finish();
-                    let rows = with_storage_write(|storage| {
-                        storage.scan_rows_for_table(
-                            scan_plan.table.oid(),
-                            Some(&offsets),
-                            &[],
-                            None,
-                        )
-                    })
-                    .map_err(|message| EngineError { message })?;
-                    return Ok(Some(QueryResult {
-                        columns: columns.to_vec(),
-                        rows_affected: rows.len() as u64,
-                        rows,
-                        command_tag: "SELECT".to_string(),
-                    }));
-                }
+                let offsets = offset_collector.finish();
+                let rows = with_storage_write(|storage| {
+                    storage.scan_rows_for_table(scan_plan.table.oid(), Some(&offsets), &[], None)
+                })
+                .map_err(|message| EngineError { message })?;
+                return Ok(Some(QueryResult {
+                    columns: columns.to_vec(),
+                    rows_affected: rows.len() as u64,
+                    rows,
+                    command_tag: "SELECT".to_string(),
+                }));
             }
+        }
+    }
+    if !wildcard_only
+        && let Some(query) = query
+        && stage_limit.is_none()
+        && let Some(topn_projection) = topn_projection_indices_for_query(
+            query,
+            &scan_plan.schema_batch,
+            scan_plan.remaining_predicate.as_ref(),
+            &projection_indices,
+        )
+    {
+        let topn_batch = scan_plan.schema_batch.project(&topn_projection);
+        let topn_columns = topn_batch.column_names.clone();
+        let projection_index_map = topn_projection
+            .iter()
+            .enumerate()
+            .map(|(projected_idx, original_idx)| (*original_idx, projected_idx))
+            .collect::<HashMap<_, _>>();
+        let selected_positions = projection_indices
+            .iter()
+            .map(|column_idx| projection_index_map.get(column_idx).copied())
+            .collect::<Option<Vec<_>>>();
+        if let Some(mut topn_collector) =
+            SimpleTopNCollector::new(query, &topn_columns, params).await?
+            && let Some(selected_positions) = selected_positions
+        {
+            let simple_like = scan_plan
+                .remaining_predicate
+                .as_ref()
+                .and_then(|predicate| classify_simple_like_predicate(predicate, &topn_batch));
+            with_storage_write(|storage| {
+                storage.scan_batches_for_table(
+                    scan_plan.table.oid(),
+                    &scan_plan.scan_predicates,
+                    Some(topn_projection.as_slice()),
+                    &mut |batch| {
+                        if let Some((column_idx, matcher)) = &simple_like {
+                            let selected_rows = if let Some(TypedColumn::Text(values, nulls)) =
+                                batch.columns.get(*column_idx)
+                            {
+                                values
+                                    .iter()
+                                    .zip(nulls.iter().copied())
+                                    .enumerate()
+                                    .filter_map(|(row_idx, (value, is_null))| {
+                                        (!is_null && matcher.matches(value)).then_some(row_idx)
+                                    })
+                                    .collect::<Vec<_>>()
+                            } else {
+                                Vec::new()
+                            };
+                            if selected_rows.is_empty() {
+                                return Ok(true);
+                            }
+                            topn_collector.push_selected_rows(&batch, &selected_rows);
+                            return Ok(true);
+                        }
+                        if let Some(predicate) = &scan_plan.remaining_predicate {
+                            let Some(mask) = eval_columnar_predicate(predicate, &batch) else {
+                                return Err(
+                                    "columnar predicate could not be evaluated in fused projected pipeline"
+                                        .to_string(),
+                                );
+                            };
+                            let selected_rows = mask
+                                .iter()
+                                .enumerate()
+                                .filter_map(|(row_idx, selected)| selected.then_some(row_idx))
+                                .collect::<Vec<_>>();
+                            if selected_rows.is_empty() {
+                                return Ok(true);
+                            }
+                            topn_collector.push_selected_rows(&batch, &selected_rows);
+                            return Ok(true);
+                        }
+                        if batch.row_count == 0 {
+                            return Ok(true);
+                        }
+                        topn_collector.push_batch(&batch);
+                        Ok(true)
+                    },
+                )
+            })
+            .map_err(|message| EngineError { message })?;
+
+            let rows = topn_collector
+                .finish()
+                .into_iter()
+                .map(|row| {
+                    selected_positions
+                        .iter()
+                        .filter_map(|position| row.get(*position).cloned())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            return Ok(Some(QueryResult {
+                columns: columns.to_vec(),
+                rows_affected: rows.len() as u64,
+                rows,
+                command_tag: "SELECT".to_string(),
+            }));
         }
     }
     if let Some(query) = query
@@ -1430,6 +1728,43 @@ async fn try_execute_columnar_aggregation(
             .finish()?
             .unwrap_or_else(|| ColumnBatch::empty(plan.intermediate_columns.clone()))
     };
+
+    if let Some(projection_indices) =
+        identifier_projection_indices(&plan.final_target_exprs, &plan.intermediate_columns)
+    {
+        let projected_batch = result_batch.project(&projection_indices);
+        if let Some(query) = query
+            && let Some(mut topn_collector) =
+                SimpleTopNCollector::new(query, columns, params).await?
+        {
+            topn_collector.push_batch(&projected_batch);
+            let rows = topn_collector.finish();
+            return Ok(Some(QueryResult {
+                columns: columns.to_vec(),
+                rows_affected: rows.len() as u64,
+                rows,
+                command_tag: "SELECT".to_string(),
+            }));
+        }
+
+        let mut rows = projected_batch.to_rows();
+        if let Some(query) = query {
+            let mut collector = QueryRowCollector::new(query, params).await?;
+            for row in rows {
+                if !collector.push_row(columns, row, params).await? {
+                    break;
+                }
+            }
+            rows = collector.finish();
+        }
+
+        return Ok(Some(QueryResult {
+            columns: columns.to_vec(),
+            rows_affected: rows.len() as u64,
+            rows,
+            command_tag: "SELECT".to_string(),
+        }));
+    }
 
     let mut rows = Vec::with_capacity(result_batch.row_count);
     for row in result_batch.to_rows() {

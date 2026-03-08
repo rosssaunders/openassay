@@ -270,30 +270,17 @@ impl SimpleTopNCollector {
         }
 
         for row_idx in 0..batch.row_count {
-            let keys = self
-                .order_indices
-                .iter()
-                .map(|column_idx| batch.columns[*column_idx].value_at(row_idx))
-                .collect::<Vec<_>>();
-            let probe = TopNEntry::new(keys, &self.order_by, Vec::new(), self.sequence);
-            self.sequence += 1;
+            self.push_row(batch, row_idx);
+        }
+    }
 
-            if self.heap.len() < self.capacity {
-                let row = batch
-                    .columns
-                    .iter()
-                    .map(|column| column.value_at(row_idx))
-                    .collect::<Vec<_>>();
-                self.heap.push(TopNEntry { row, ..probe });
-            } else if self.heap.peek().is_some_and(|worst| probe < *worst) {
-                let row = batch
-                    .columns
-                    .iter()
-                    .map(|column| column.value_at(row_idx))
-                    .collect::<Vec<_>>();
-                let _ = self.heap.pop();
-                self.heap.push(TopNEntry { row, ..probe });
-            }
+    pub(super) fn push_selected_rows(&mut self, batch: &ColumnBatch, row_indices: &[usize]) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        for &row_idx in row_indices {
+            self.push_row(batch, row_idx);
         }
     }
 
@@ -306,6 +293,37 @@ impl SimpleTopNCollector {
             .collect::<Vec<_>>();
         apply_offset_limit_to_rows(&mut rows, self.offset, Some(self.limit));
         rows
+    }
+
+    fn push_row(&mut self, batch: &ColumnBatch, row_idx: usize) {
+        if row_idx >= batch.row_count {
+            return;
+        }
+
+        let keys = self
+            .order_indices
+            .iter()
+            .map(|column_idx| batch.columns[*column_idx].value_at(row_idx))
+            .collect::<Vec<_>>();
+        let probe = TopNEntry::new(keys, &self.order_by, Vec::new(), self.sequence);
+        self.sequence += 1;
+
+        if self.heap.len() < self.capacity {
+            let row = batch
+                .columns
+                .iter()
+                .map(|column| column.value_at(row_idx))
+                .collect::<Vec<_>>();
+            self.heap.push(TopNEntry { row, ..probe });
+        } else if self.heap.peek().is_some_and(|worst| probe < *worst) {
+            let row = batch
+                .columns
+                .iter()
+                .map(|column| column.value_at(row_idx))
+                .collect::<Vec<_>>();
+            let _ = self.heap.pop();
+            self.heap.push(TopNEntry { row, ..probe });
+        }
     }
 }
 

@@ -187,6 +187,52 @@ fn compare_column_to_literal(
     op: BinaryOp,
     target_ordering: Ordering,
 ) -> Vec<Option<bool>> {
+    match (&batch.columns[column_idx], literal) {
+        (TypedColumn::Text(values, nulls), ScalarValue::Text(text)) => {
+            return values
+                .iter()
+                .zip(nulls.iter().copied())
+                .map(|(value, is_null)| {
+                    if is_null {
+                        return None;
+                    }
+                    let ordering = value.as_str().cmp(text.as_str());
+                    Some(compare_ordering(ordering, op.clone(), target_ordering))
+                })
+                .collect();
+        }
+        (TypedColumn::Int64(values, nulls), ScalarValue::Int(literal)) => {
+            return values
+                .iter()
+                .zip(nulls.iter().copied())
+                .map(|(value, is_null)| {
+                    if is_null {
+                        return None;
+                    }
+                    Some(compare_ordering(
+                        value.cmp(literal),
+                        op.clone(),
+                        target_ordering,
+                    ))
+                })
+                .collect();
+        }
+        (TypedColumn::Float64(values, nulls), ScalarValue::Float(literal)) => {
+            return values
+                .iter()
+                .zip(nulls.iter().copied())
+                .map(|(value, is_null)| {
+                    if is_null {
+                        return None;
+                    }
+                    let ordering = value.partial_cmp(literal).unwrap_or(Ordering::Equal);
+                    Some(compare_ordering(ordering, op.clone(), target_ordering))
+                })
+                .collect();
+        }
+        _ => {}
+    }
+
     (0..batch.row_count)
         .map(|row_idx| {
             let value = batch.columns[column_idx].value_at(row_idx);
@@ -194,18 +240,19 @@ fn compare_column_to_literal(
                 return None;
             }
             let ordering = compare_values_for_predicate(&value, literal).ok()?;
-            let result = match op {
-                BinaryOp::Eq => ordering == Ordering::Equal,
-                BinaryOp::NotEq => ordering != Ordering::Equal,
-                BinaryOp::Lt | BinaryOp::Gt => ordering == target_ordering,
-                BinaryOp::Lte | BinaryOp::Gte => {
-                    ordering == target_ordering || ordering == Ordering::Equal
-                }
-                _ => return None,
-            };
-            Some(result)
+            Some(compare_ordering(ordering, op.clone(), target_ordering))
         })
         .collect()
+}
+
+fn compare_ordering(ordering: Ordering, op: BinaryOp, target_ordering: Ordering) -> bool {
+    match op {
+        BinaryOp::Eq => ordering == Ordering::Equal,
+        BinaryOp::NotEq => ordering != Ordering::Equal,
+        BinaryOp::Lt | BinaryOp::Gt => ordering == target_ordering,
+        BinaryOp::Lte | BinaryOp::Gte => ordering == target_ordering || ordering == Ordering::Equal,
+        _ => false,
+    }
 }
 
 fn compare_column_to_like_literal(
@@ -425,6 +472,20 @@ mod tests {
         assert_eq!(
             eval_columnar_predicate(&predicate, &sample_batch()),
             Some(vec![false, true, false])
+        );
+    }
+
+    #[test]
+    fn filters_text_inequality_without_scalar_fallback() {
+        let predicate = Expr::Binary {
+            left: Box::new(Expr::Identifier(vec!["name".to_string()])),
+            op: BinaryOp::NotEq,
+            right: Box::new(Expr::String("".to_string())),
+        };
+
+        assert_eq!(
+            eval_columnar_predicate(&predicate, &sample_batch()),
+            Some(vec![true, true, true])
         );
     }
 

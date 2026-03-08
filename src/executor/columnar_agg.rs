@@ -1,11 +1,10 @@
 use std::cmp::Ordering;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
 use rust_decimal::Decimal;
 
-use crate::executor::column_batch::{ColumnBatch, TypedColumn};
+use crate::executor::column_batch::{ColumnBatch, TypedColumn, typed_column_from_scalars};
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::EngineError;
 use crate::utils::adt::datetime::{datetime_from_epoch_seconds, format_date};
@@ -27,6 +26,7 @@ pub(crate) enum AggKind {
     CountStar,
     Count { column_index: usize },
     CountDistinctInt { column_index: usize },
+    CountDistinctText { column_index: usize },
     SumInt { column_index: usize },
     SumFloat { column_index: usize },
     SumNumeric { column_index: usize },
@@ -60,6 +60,11 @@ pub(crate) enum AggAccumulator {
     CountDistinctInt {
         counts: Vec<i64>,
         seen: HashSet<(usize, i64)>,
+        column_index: usize,
+    },
+    CountDistinctText {
+        counts: Vec<i64>,
+        seen: HashMap<usize, HashSet<String>>,
         column_index: usize,
     },
     SumInt {
@@ -157,28 +162,32 @@ impl ColumnarAggregator {
             self.ensure_group(Vec::new());
         }
 
-        let mut rows = Vec::with_capacity(self.group_count);
-        for group_idx in 0..self.group_count {
-            let mut row = Vec::with_capacity(self.output_exprs.len());
-            for output in &self.output_exprs {
-                match output {
-                    OutputExpr::GroupKey(key_idx) => {
-                        row.push(
+        let columns = self
+            .output_exprs
+            .iter()
+            .map(|output| match output {
+                OutputExpr::GroupKey(key_idx) => {
+                    let values = (0..self.group_count)
+                        .map(|group_idx| {
                             self.group_keys
                                 .get(group_idx)
                                 .and_then(|keys| keys.get(*key_idx))
                                 .cloned()
-                                .unwrap_or(ScalarValue::Null),
-                        );
-                    }
-                    OutputExpr::Aggregate(acc_idx) => {
-                        row.push(self.accumulators[*acc_idx].finalize(group_idx));
-                    }
+                                .unwrap_or(ScalarValue::Null)
+                        })
+                        .collect::<Vec<_>>();
+                    typed_column_from_scalars(values)
                 }
-            }
-            rows.push(row);
-        }
-        Ok(ColumnBatch::from_rows(&rows, &self.output_column_names))
+                OutputExpr::Aggregate(acc_idx) => {
+                    let values = (0..self.group_count)
+                        .map(|group_idx| self.accumulators[*acc_idx].finalize(group_idx))
+                        .collect::<Vec<_>>();
+                    typed_column_from_scalars(values)
+                }
+            })
+            .collect();
+
+        Ok(ColumnBatch::new(self.output_column_names, columns))
     }
 
     #[cfg(test)]
@@ -243,6 +252,34 @@ impl ColumnarAggregator {
     }
 }
 
+#[derive(Default)]
+struct FastHasher(u64);
+
+impl FastHasher {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn with_seed() -> Self {
+        Self(Self::OFFSET_BASIS)
+    }
+}
+
+impl Hasher for FastHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        if self.0 == 0 {
+            self.0 = Self::OFFSET_BASIS;
+        }
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(Self::PRIME);
+        }
+    }
+}
+
 impl AggAccumulator {
     fn from_spec(spec: AggSpec) -> Self {
         match spec.kind {
@@ -257,6 +294,11 @@ impl AggAccumulator {
             AggKind::CountDistinctInt { column_index } => Self::CountDistinctInt {
                 counts: Vec::new(),
                 seen: HashSet::new(),
+                column_index,
+            },
+            AggKind::CountDistinctText { column_index } => Self::CountDistinctText {
+                counts: Vec::new(),
+                seen: HashMap::new(),
                 column_index,
             },
             AggKind::SumInt { column_index } => Self::SumInt {
@@ -321,6 +363,7 @@ impl AggAccumulator {
         match self {
             Self::Count { counts, .. } => counts.push(0),
             Self::CountDistinctInt { counts, .. } => counts.push(0),
+            Self::CountDistinctText { counts, .. } => counts.push(0),
             Self::SumInt {
                 sums, saw_non_null, ..
             } => {
@@ -392,6 +435,11 @@ impl AggAccumulator {
                 seen,
                 column_index,
             } => update_count_distinct_int(batch, group_indices, *column_index, counts, seen),
+            Self::CountDistinctText {
+                counts,
+                seen,
+                column_index,
+            } => update_count_distinct_text(batch, group_indices, *column_index, counts, seen),
             Self::SumInt {
                 sums,
                 saw_non_null,
@@ -444,6 +492,7 @@ impl AggAccumulator {
         match self {
             Self::Count { counts, .. } => ScalarValue::Int(counts[group_idx]),
             Self::CountDistinctInt { counts, .. } => ScalarValue::Int(counts[group_idx]),
+            Self::CountDistinctText { counts, .. } => ScalarValue::Int(counts[group_idx]),
             Self::SumInt {
                 sums, saw_non_null, ..
             } => {
@@ -537,6 +586,32 @@ fn update_count_distinct_int(
         }
         _ => Err(EngineError {
             message: "columnar count(distinct int) expects an int8-compatible column".to_string(),
+        }),
+    }
+}
+
+fn update_count_distinct_text(
+    batch: &ColumnBatch,
+    group_indices: &[usize],
+    column_index: usize,
+    counts: &mut [i64],
+    seen: &mut HashMap<usize, HashSet<String>>,
+) -> Result<(), EngineError> {
+    match &batch.columns[column_index] {
+        TypedColumn::Text(values, nulls) => {
+            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+                if nulls[row_idx] {
+                    continue;
+                }
+                let group_seen = seen.entry(group_idx).or_default();
+                if group_seen.insert(values[row_idx].clone()) {
+                    counts[group_idx] += 1;
+                }
+            }
+            Ok(())
+        }
+        _ => Err(EngineError {
+            message: "columnar count(distinct text) expects a text-compatible column".to_string(),
         }),
     }
 }
@@ -901,7 +976,7 @@ fn is_null_at(column: &TypedColumn, row_idx: usize) -> bool {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn hash_group_key(values: &[ScalarValue]) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = FastHasher::with_seed();
     for value in values {
         hash_scalar_value(value, &mut hasher);
     }
@@ -909,7 +984,7 @@ pub(crate) fn hash_group_key(values: &[ScalarValue]) -> u64 {
 }
 
 fn hash_group_key_for_row(batch: &ColumnBatch, group_key_indices: &[usize], row_idx: usize) -> u64 {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = FastHasher::with_seed();
     for column_idx in group_key_indices {
         hash_row_value(&batch.columns[*column_idx], row_idx, &mut hasher);
     }
@@ -1215,6 +1290,85 @@ mod tests {
                 vec![ScalarValue::Text("b".to_string()), ScalarValue::Int(1)],
             ]
         );
+    }
+
+    #[test]
+    fn counts_distinct_text_per_group_without_counting_nulls() {
+        let batch = ColumnBatch::from_rows(
+            &[
+                vec![
+                    ScalarValue::Text("a".to_string()),
+                    ScalarValue::Text("x".to_string()),
+                ],
+                vec![
+                    ScalarValue::Text("a".to_string()),
+                    ScalarValue::Text("x".to_string()),
+                ],
+                vec![
+                    ScalarValue::Text("a".to_string()),
+                    ScalarValue::Text("y".to_string()),
+                ],
+                vec![
+                    ScalarValue::Text("b".to_string()),
+                    ScalarValue::Text("x".to_string()),
+                ],
+                vec![ScalarValue::Text("b".to_string()), ScalarValue::Null],
+                vec![
+                    ScalarValue::Text("b".to_string()),
+                    ScalarValue::Text("x".to_string()),
+                ],
+            ],
+            &["dept".to_string(), "phrase".to_string()],
+        );
+        let mut aggregator = ColumnarAggregator::new(
+            vec![0],
+            vec![AggSpec {
+                kind: AggKind::CountDistinctText { column_index: 1 },
+            }],
+            vec![OutputExpr::GroupKey(0), OutputExpr::Aggregate(0)],
+            vec!["dept".to_string(), "phrases".to_string()],
+        );
+
+        aggregator
+            .push_batch(&batch)
+            .expect("batch should aggregate");
+        let output = aggregator.finish().expect("finish should succeed");
+
+        assert_eq!(
+            output.to_rows(),
+            vec![
+                vec![ScalarValue::Text("a".to_string()), ScalarValue::Int(2)],
+                vec![ScalarValue::Text("b".to_string()), ScalarValue::Int(1)],
+            ]
+        );
+    }
+
+    #[test]
+    fn counts_distinct_text_without_counting_nulls() {
+        let batch = ColumnBatch::from_rows(
+            &[
+                vec![ScalarValue::Text("alpha".to_string())],
+                vec![ScalarValue::Text("beta".to_string())],
+                vec![ScalarValue::Text("alpha".to_string())],
+                vec![ScalarValue::Null],
+            ],
+            &["phrase".to_string()],
+        );
+        let mut aggregator = ColumnarAggregator::new(
+            Vec::new(),
+            vec![AggSpec {
+                kind: AggKind::CountDistinctText { column_index: 0 },
+            }],
+            vec![OutputExpr::Aggregate(0)],
+            vec!["phrases".to_string()],
+        );
+
+        aggregator
+            .push_batch(&batch)
+            .expect("batch should aggregate");
+        let output = aggregator.finish().expect("finish should succeed");
+
+        assert_eq!(output.to_rows(), vec![vec![ScalarValue::Int(2)]]);
     }
 
     #[test]
