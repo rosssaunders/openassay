@@ -2,6 +2,7 @@
 use super::*;
 use crate::parser::ast::{BinaryOp, UnaryOp};
 use crate::storage::heap::{ScanPredicate, ScanPredicateOp};
+use crate::utils::adt::misc::parse_like_escape_char;
 
 #[derive(Debug, Clone)]
 pub struct TableEval {
@@ -349,6 +350,54 @@ pub(super) async fn extract_relation_scan_predicate(
     column_indexes: &HashMap<String, usize>,
     params: &[Option<String>],
 ) -> Result<Option<ScanPredicate>, EngineError> {
+    if let Expr::Like {
+        expr,
+        pattern,
+        case_insensitive,
+        negated,
+        escape,
+    } = predicate
+    {
+        let Some(column_name) = relation_column_from_identifier(expr, qualifiers, table_columns)
+        else {
+            return Ok(None);
+        };
+        if !expr_is_scan_predicate_constant(pattern)
+            || escape
+                .as_deref()
+                .is_some_and(|escape| !expr_is_scan_predicate_constant(escape))
+        {
+            return Ok(None);
+        }
+        let mut value = eval_expr(pattern, &EvalScope::default(), params).await?;
+        let escape = if let Some(escape_expr) = escape.as_deref() {
+            let escape_value = eval_expr(escape_expr, &EvalScope::default(), params).await?;
+            if matches!(escape_value, ScalarValue::Null) {
+                value = ScalarValue::Null;
+                None
+            } else {
+                parse_like_escape_char(Some(&escape_value))?
+            }
+        } else {
+            None
+        };
+        return Ok(Some(ScanPredicate {
+            column_index: *column_indexes
+                .get(&column_name)
+                .ok_or_else(|| EngineError {
+                    message: format!("column index for \"{column_name}\" is missing"),
+                })?,
+            op: match (*case_insensitive, *negated) {
+                (false, false) => ScanPredicateOp::Like,
+                (false, true) => ScanPredicateOp::NotLike,
+                (true, false) => ScanPredicateOp::ILike,
+                (true, true) => ScanPredicateOp::NotILike,
+            },
+            value,
+            escape,
+        }));
+    }
+
     let Expr::Binary { left, op, right } = predicate else {
         return Ok(None);
     };
@@ -369,6 +418,7 @@ pub(super) async fn extract_relation_scan_predicate(
                 })?,
             op: scan_op,
             value,
+            escape: None,
         }));
     }
     if let Some(column_name) = relation_column_from_identifier(right, qualifiers, table_columns) {
@@ -384,6 +434,7 @@ pub(super) async fn extract_relation_scan_predicate(
                 })?,
             op: reverse_scan_predicate_op(scan_op),
             value,
+            escape: None,
         }));
     }
     Ok(None)
@@ -409,6 +460,10 @@ fn reverse_scan_predicate_op(op: ScanPredicateOp) -> ScanPredicateOp {
         ScanPredicateOp::Lte => ScanPredicateOp::Gte,
         ScanPredicateOp::Gt => ScanPredicateOp::Lt,
         ScanPredicateOp::Gte => ScanPredicateOp::Lte,
+        ScanPredicateOp::Like
+        | ScanPredicateOp::NotLike
+        | ScanPredicateOp::ILike
+        | ScanPredicateOp::NotILike => op,
     }
 }
 
@@ -592,6 +647,7 @@ mod tests {
                 column_index: 0,
                 op: ScanPredicateOp::Gte,
                 value: ScalarValue::Int(10),
+                escape: None,
             })
         );
     }
@@ -620,6 +676,7 @@ mod tests {
                 column_index: 0,
                 op: ScanPredicateOp::Gt,
                 value: ScalarValue::Int(10),
+                escape: None,
             })
         );
     }
@@ -683,6 +740,41 @@ mod tests {
                 column_index: 0,
                 op: ScanPredicateOp::Eq,
                 value: ScalarValue::Int(-7),
+                escape: None,
+            })
+        );
+    }
+
+    #[test]
+    fn extracts_relation_like_scan_predicate() {
+        let (table_columns, column_indexes) = table_columns();
+        let predicate = Expr::Like {
+            expr: Box::new(Expr::Identifier(vec![
+                "hits".to_string(),
+                "name".to_string(),
+            ])),
+            pattern: Box::new(Expr::String("%abc%".to_string())),
+            negated: false,
+            case_insensitive: false,
+            escape: None,
+        };
+
+        let extracted = block_on(extract_relation_scan_predicate(
+            &predicate,
+            &["hits".to_string()],
+            &table_columns,
+            &column_indexes,
+            &[],
+        ))
+        .expect("predicate extraction should succeed");
+
+        assert_eq!(
+            extracted,
+            Some(ScanPredicate {
+                column_index: 1,
+                op: ScanPredicateOp::Like,
+                value: ScalarValue::Text("%abc%".to_string()),
+                escape: None,
             })
         );
     }

@@ -12,7 +12,7 @@ use crate::storage::btree::{BTreeIndex, CompositeKey};
 use crate::storage::tuple::{
     ScalarValue, append_scalar_value_to_builder, arrow_value_to_scalar_value, scalar_values_schema,
 };
-use crate::utils::adt::misc::compare_values_for_predicate;
+use crate::utils::adt::misc::{compare_values_for_predicate, like_matches};
 
 pub(crate) const DEFAULT_BTREE_ORDER: usize = 48;
 pub(crate) const COLUMNAR_BATCH_SIZE: usize = 8_192;
@@ -55,6 +55,10 @@ pub(crate) enum ScanPredicateOp {
     Lte,
     Gt,
     Gte,
+    Like,
+    NotLike,
+    ILike,
+    NotILike,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +66,7 @@ pub(crate) struct ScanPredicate {
     pub(crate) column_index: usize,
     pub(crate) op: ScanPredicateOp,
     pub(crate) value: ScalarValue,
+    pub(crate) escape: Option<char>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -414,6 +419,40 @@ impl InMemoryStorage {
         }
     }
 
+    pub(crate) fn count_rows_for_table(
+        &mut self,
+        table_oid: Oid,
+        offsets: Option<&[usize]>,
+        predicates: &[ScanPredicate],
+    ) -> Result<usize, String> {
+        self.ensure_table(table_oid)?;
+        self.flush_pending(table_oid)?;
+        let Some(table) = self.columnar_by_table.get(&table_oid) else {
+            return Ok(0);
+        };
+        if table.batches.is_empty() {
+            return Ok(0);
+        }
+
+        match offsets {
+            Some(offsets) => self.count_rows_by_offsets(table, offsets, predicates),
+            None if predicates.is_empty() => Ok(table
+                .batches
+                .iter()
+                .map(|batch| {
+                    batch.record_batch.num_rows().saturating_sub(
+                        batch
+                            .deleted_rows
+                            .iter()
+                            .filter(|deleted| **deleted)
+                            .count(),
+                    )
+                })
+                .sum()),
+            None => self.count_all_rows(table, predicates),
+        }
+    }
+
     pub(crate) fn index_for_table(&self, table_oid: Oid, index_name: &str) -> Option<&StoredIndex> {
         self.indexes_by_table
             .get(&(table_oid, index_name.to_ascii_lowercase()))
@@ -607,6 +646,52 @@ impl InMemoryStorage {
             .collect())
     }
 
+    fn count_all_rows(
+        &self,
+        table: &ColumnarTable,
+        predicates: &[ScanPredicate],
+    ) -> Result<usize, String> {
+        let mut count = 0usize;
+        for batch in &table.batches {
+            count += count_matching_rows_in_batch(batch, predicates, None)?;
+        }
+        Ok(count)
+    }
+
+    fn count_rows_by_offsets(
+        &self,
+        table: &ColumnarTable,
+        offsets: &[usize],
+        predicates: &[ScanPredicate],
+    ) -> Result<usize, String> {
+        let requested_offsets = offsets.iter().copied().collect::<HashSet<_>>();
+        let mut count = 0usize;
+        let mut batch_start = 0usize;
+
+        for batch in &table.batches {
+            let batch_len = batch.record_batch.num_rows();
+            let batch_end = batch_start + batch_len;
+            let relevant = requested_offsets
+                .iter()
+                .copied()
+                .filter(|offset| *offset >= batch_start && *offset < batch_end)
+                .collect::<Vec<_>>();
+            if relevant.is_empty() {
+                batch_start = batch_end;
+                continue;
+            }
+
+            let mut selected_rows = vec![false; batch_len];
+            for offset in &relevant {
+                selected_rows[*offset - batch_start] = true;
+            }
+            count += count_matching_rows_in_batch(batch, predicates, Some(&selected_rows))?;
+            batch_start = batch_end;
+        }
+
+        Ok(count)
+    }
+
     fn index_names_for_table(&self, table_oid: Oid) -> Vec<String> {
         let mut names = self
             .indexes_by_table
@@ -725,6 +810,28 @@ fn filter_batch(
     Ok((filtered, surviving_offsets))
 }
 
+fn count_matching_rows_in_batch(
+    batch: &ColumnarBatch,
+    predicates: &[ScanPredicate],
+    selected_rows: Option<&[bool]>,
+) -> Result<usize, String> {
+    let row_count = batch.record_batch.num_rows();
+    let mut count = 0usize;
+
+    for row_idx in 0..row_count {
+        let selected = selected_rows.is_none_or(|rows| rows.get(row_idx).copied().unwrap_or(false));
+        let deleted = batch.deleted_rows.get(row_idx).copied().unwrap_or(false);
+        if !selected || deleted {
+            continue;
+        }
+        if record_batch_row_matches_predicates(&batch.record_batch, row_idx, predicates)? {
+            count += 1;
+        }
+    }
+
+    Ok(count)
+}
+
 fn record_batch_to_rows(
     batch: &RecordBatch,
     projected_columns: Option<&[usize]>,
@@ -793,6 +900,45 @@ fn scan_predicate_matches(left: &ScalarValue, predicate: &ScanPredicate) -> Resu
         ScanPredicateOp::Lte => matches!(ord, Ordering::Less | Ordering::Equal),
         ScanPredicateOp::Gt => ord == Ordering::Greater,
         ScanPredicateOp::Gte => matches!(ord, Ordering::Greater | Ordering::Equal),
+        ScanPredicateOp::Like
+        | ScanPredicateOp::NotLike
+        | ScanPredicateOp::ILike
+        | ScanPredicateOp::NotILike => {
+            let text_storage;
+            let text = match left {
+                ScalarValue::Text(value) => value.as_str(),
+                other => {
+                    text_storage = other.render();
+                    text_storage.as_str()
+                }
+            };
+            let pattern_storage;
+            let pattern = match &predicate.value {
+                ScalarValue::Text(value) => value.as_str(),
+                other => {
+                    pattern_storage = other.render();
+                    pattern_storage.as_str()
+                }
+            };
+            let case_insensitive = matches!(
+                predicate.op,
+                ScanPredicateOp::ILike | ScanPredicateOp::NotILike
+            );
+            let matched = if case_insensitive {
+                like_matches(
+                    &text.to_ascii_lowercase(),
+                    &pattern.to_ascii_lowercase(),
+                    predicate.escape,
+                )
+            } else {
+                like_matches(text, pattern, predicate.escape)
+            };
+            match predicate.op {
+                ScanPredicateOp::Like | ScanPredicateOp::ILike => matched,
+                ScanPredicateOp::NotLike | ScanPredicateOp::NotILike => !matched,
+                _ => unreachable!(),
+            }
+        }
     })
 }
 
@@ -823,6 +969,7 @@ mod tests {
                     column_index: 0,
                     op: ScanPredicateOp::Gt,
                     value: ScalarValue::Int(1),
+                    escape: None,
                 }],
                 None,
             )
@@ -859,6 +1006,7 @@ mod tests {
                     column_index: 0,
                     op: ScanPredicateOp::NotEq,
                     value: ScalarValue::Int(1),
+                    escape: None,
                 }],
                 None,
             )

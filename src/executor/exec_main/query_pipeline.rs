@@ -78,14 +78,22 @@ pub fn execute_query_with_outer<'a>(
                 limit: None,
                 offset: None,
             };
-            let mut result = with_scan_projection_hints(&execution_query, async {
+            let mut result = if scan_projection_hints_active() {
                 if let QueryExpr::Select(select) = &body {
                     execute_select_with_query(select, query, params, outer_scope).await
                 } else {
                     execute_query_expr_with_outer(&body, params, outer_scope).await
                 }
-            })
-            .await?;
+            } else {
+                with_scan_projection_hints(&execution_query, async {
+                    if let QueryExpr::Select(select) = &body {
+                        execute_select_with_query(select, query, params, outer_scope).await
+                    } else {
+                        execute_query_expr_with_outer(&body, params, outer_scope).await
+                    }
+                })
+                .await
+            }?;
 
             // Strip hidden ORDER BY columns
             if num_hidden > 0 {
@@ -348,6 +356,146 @@ async fn execute_select_with_query(
     execute_select_internal(select, Some(query), params, outer_scope).await
 }
 
+async fn try_execute_simple_count_star(
+    select: &SelectStatement,
+    query: Option<&Query>,
+    params: &[Option<String>],
+    outer_scope: Option<&EvalScope>,
+    columns: &[String],
+) -> Result<Option<QueryResult>, EngineError> {
+    if outer_scope.is_some()
+        || select.targets.len() != 1
+        || select.from.len() != 1
+        || !select.group_by.is_empty()
+        || select.having.is_some()
+        || !select.window_definitions.is_empty()
+        || select.quantifier.is_some()
+    {
+        return Ok(None);
+    }
+
+    if let Some(query) = query
+        && (!query.order_by.is_empty() || query.limit.is_some() || query.offset.is_some())
+    {
+        return Ok(None);
+    }
+
+    let target = &select.targets[0];
+    let Expr::FunctionCall {
+        name,
+        args,
+        distinct,
+        order_by,
+        within_group,
+        filter,
+        over,
+    } = &target.expr
+    else {
+        return Ok(None);
+    };
+    if name.len() != 1
+        || !name[0].eq_ignore_ascii_case("count")
+        || args.len() != 1
+        || !matches!(args[0], Expr::Wildcard)
+        || *distinct
+        || !order_by.is_empty()
+        || !within_group.is_empty()
+        || filter.is_some()
+        || over.is_some()
+    {
+        return Ok(None);
+    }
+
+    let TableExpression::Relation(rel) = &select.from[0] else {
+        return Ok(None);
+    };
+
+    if rel.name.len() == 1 && current_cte_binding(&rel.name[0]).is_some() {
+        return Ok(None);
+    }
+    if lookup_virtual_relation(&rel.name).is_some() {
+        return Ok(None);
+    }
+
+    let table = with_catalog_read(|catalog| {
+        catalog
+            .resolve_table(&rel.name, &SearchPath::default())
+            .cloned()
+    })
+    .map_err(|err| EngineError {
+        message: err.message,
+    })?;
+
+    if !matches!(table.kind(), TableKind::Heap | TableKind::MaterializedView) {
+        return Ok(None);
+    }
+
+    require_relation_privilege(&table, TablePrivilege::Select)?;
+    let role = security::current_role();
+    let evaluation = security::rls_evaluation_for_role(&role, table.oid(), RlsCommand::Select);
+    if evaluation.enabled && !evaluation.bypass {
+        return Ok(None);
+    }
+
+    let qualifiers = if let Some(alias) = &rel.alias {
+        vec![alias.to_ascii_lowercase()]
+    } else {
+        vec![table.name().to_string(), table.qualified_name()]
+    };
+    let column_indexes = table
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(idx, column)| (column.name().to_string(), idx))
+        .collect::<HashMap<_, _>>();
+    let table_columns = column_indexes.keys().cloned().collect::<HashSet<_>>();
+    let relation_predicates = select
+        .where_clause
+        .as_ref()
+        .map_or_else(Vec::new, decompose_and_conjuncts);
+
+    let mut scan_predicates = Vec::with_capacity(relation_predicates.len());
+    for predicate in &relation_predicates {
+        let Some(scan_predicate) = extract_relation_scan_predicate(
+            predicate,
+            &qualifiers,
+            &table_columns,
+            &column_indexes,
+            params,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        scan_predicates.push(scan_predicate);
+    }
+
+    let index_offsets = if relation_predicates.is_empty() {
+        None
+    } else {
+        relation_index_offsets_for_predicates(
+            &table,
+            &qualifiers,
+            &relation_predicates,
+            params,
+            outer_scope,
+        )
+        .await?
+    };
+
+    let count = crate::tcop::engine::with_storage_write(|storage| {
+        storage.count_rows_for_table(table.oid(), index_offsets.as_deref(), &scan_predicates)
+    })
+    .map_err(|message| EngineError { message })?;
+
+    Ok(Some(QueryResult {
+        columns: columns.to_vec(),
+        rows: vec![vec![ScalarValue::Int(count as i64)]],
+        command_tag: "SELECT".to_string(),
+        rows_affected: 1,
+    }))
+}
+
 async fn execute_select_internal(
     select: &SelectStatement,
     query: Option<&Query>,
@@ -373,6 +521,11 @@ async fn execute_select_internal(
     } else {
         derive_select_columns(select, &cte_columns)?
     };
+    if let Some(result) =
+        try_execute_simple_count_star(select, query, params, outer_scope, &columns).await?
+    {
+        return Ok(result);
+    }
     let mut row_collector = if let Some(query) = query {
         Some(QueryRowCollector::new(query, params).await?)
     } else {

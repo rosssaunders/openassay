@@ -39,8 +39,9 @@ use crate::utils::adt::json::{
 };
 use crate::utils::adt::math_functions::{NumericOperand, numeric_mod, parse_numeric_operand};
 use crate::utils::adt::misc::{
-    compare_values_for_predicate, parse_bool_scalar, parse_f64_numeric_scalar, parse_f64_scalar,
-    parse_i64_scalar, parse_nullable_bool, parse_pg_array_literal, truthy,
+    compare_values_for_predicate, like_matches, parse_bool_scalar, parse_f64_numeric_scalar,
+    parse_f64_scalar, parse_i64_scalar, parse_like_escape_char, parse_nullable_bool,
+    parse_pg_array_literal, truthy,
 };
 use crate::utils::adt::vector::coerce_scalar_to_vector;
 use crate::utils::fmgr::eval_scalar_function;
@@ -2020,23 +2021,13 @@ pub(crate) fn eval_like_predicate(
         return Ok(ScalarValue::Null);
     }
 
-    // Handle escape character
-    let escape_char = if let Some(escape_val) = escape {
-        if matches!(escape_val, ScalarValue::Null) {
-            return Ok(ScalarValue::Null);
-        }
-        let escape_str = escape_val.render();
-        if escape_str.len() != 1 {
-            return Err(EngineError {
-                message: "ESCAPE string must be a single character".to_string(),
-            });
-        }
-        Some(escape_str.chars().next().ok_or_else(|| EngineError {
-            message: "ESCAPE string must not be empty".to_string(),
-        })?)
-    } else {
-        None
-    };
+    if escape
+        .as_ref()
+        .is_some_and(|value| matches!(value, ScalarValue::Null))
+    {
+        return Ok(ScalarValue::Null);
+    }
+    let escape_char = parse_like_escape_char(escape.as_ref())?;
 
     let mut text = value.render();
     let mut pattern_text = pattern.render();
@@ -2044,7 +2035,7 @@ pub(crate) fn eval_like_predicate(
         text = text.to_ascii_lowercase();
         pattern_text = pattern_text.to_ascii_lowercase();
     }
-    let matched = like_match(&text, &pattern_text, escape_char);
+    let matched = like_matches(&text, &pattern_text, escape_char);
     Ok(ScalarValue::Bool(if negated { !matched } else { matched }))
 }
 
@@ -2267,69 +2258,6 @@ pub(crate) fn eval_cast_scalar(
         },
         _ => Ok(value),
     }
-}
-
-fn like_match(value: &str, pattern: &str, escape: Option<char>) -> bool {
-    let value_chars = value.chars().collect::<Vec<_>>();
-    let pattern_chars = pattern.chars().collect::<Vec<_>>();
-    let mut memo = HashMap::new();
-    let escape_char = escape.unwrap_or('\\');
-    like_match_recursive(&value_chars, &pattern_chars, 0, 0, escape_char, &mut memo)
-}
-
-fn like_match_recursive(
-    value: &[char],
-    pattern: &[char],
-    vi: usize,
-    pi: usize,
-    escape: char,
-    memo: &mut HashMap<(usize, usize), bool>,
-) -> bool {
-    if let Some(cached) = memo.get(&(vi, pi)) {
-        return *cached;
-    }
-
-    let result = if pi >= pattern.len() {
-        vi >= value.len()
-    } else {
-        match pattern[pi] {
-            '%' => {
-                let mut i = vi;
-                let mut matched = false;
-                while i <= value.len() {
-                    if like_match_recursive(value, pattern, i, pi + 1, escape, memo) {
-                        matched = true;
-                        break;
-                    }
-                    i += 1;
-                }
-                matched
-            }
-            '_' => {
-                vi < value.len()
-                    && like_match_recursive(value, pattern, vi + 1, pi + 1, escape, memo)
-            }
-            c if c == escape => {
-                if pi + 1 >= pattern.len() {
-                    vi < value.len()
-                        && value[vi] == escape
-                        && like_match_recursive(value, pattern, vi + 1, pi + 1, escape, memo)
-                } else {
-                    vi < value.len()
-                        && value[vi] == pattern[pi + 1]
-                        && like_match_recursive(value, pattern, vi + 1, pi + 2, escape, memo)
-                }
-            }
-            ch => {
-                vi < value.len()
-                    && value[vi] == ch
-                    && like_match_recursive(value, pattern, vi + 1, pi + 1, escape, memo)
-            }
-        }
-    };
-
-    memo.insert((vi, pi), result);
-    result
 }
 
 fn parse_param(index: i32, params: &[Option<String>]) -> Result<ScalarValue, EngineError> {
