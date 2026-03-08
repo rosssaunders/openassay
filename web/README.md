@@ -37,8 +37,11 @@ HTTP helpers:
 
 Behavior in `web/index.html`:
 
+- the browser harness has two persisted UI modes: `basic` keeps the global URL/preset/path header with results, raw response, and history; `advanced` switches to a full-height workspace with results plus SQL/response/history tabs and compact in-panel mode/status chrome
 - successful SQL runs auto-save a snapshot into `localStorage`
 - load-time auto-restore replays the saved snapshot
-- toolbar buttons support manual export/import/reset
 - SQL execution prefers `execute_sql_http` when available
 - `web/index.html` also renders tabular result sets into AG Grid when a structured JSON runner is available
+- URL runs in Basic mode still generate the backing `json_table(...)` SQL so switching to Advanced immediately shows the current query
+- Dockview layouts are stored per mode in `localStorage`, and the last selected mode is restored on reload
+- persistence keys were bumped to `v2`, so older `v1` browser layout/UI state is intentionally ignored
