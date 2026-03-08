@@ -433,12 +433,21 @@ impl InMemoryStorage {
 
         let mut combined = ColumnBatch::empty(output_column_names);
         for batch in &table.batches {
-            let (filtered_batch, _) = filter_batch(batch, predicates, None)?;
-            let mut batch_columns =
-                ColumnBatch::from_record_batch(&filtered_batch, &table.column_names);
-            if let Some(projected_columns) = projected_columns {
-                batch_columns = batch_columns.project(projected_columns);
-            }
+            let batch_columns =
+                if predicates.is_empty() && batch.deleted_rows.iter().all(|deleted| !*deleted) {
+                    ColumnBatch::from_record_batch_projected(
+                        &batch.record_batch,
+                        &table.column_names,
+                        projected_columns,
+                    )
+                } else {
+                    let (filtered_batch, _) = filter_batch(batch, predicates, None)?;
+                    ColumnBatch::from_record_batch_projected(
+                        &filtered_batch,
+                        &table.column_names,
+                        projected_columns,
+                    )
+                };
             combined.append_batch(&batch_columns)?;
         }
         Ok(combined)
@@ -461,15 +470,76 @@ impl InMemoryStorage {
         }
 
         for batch in &table.batches {
-            let (filtered_batch, _) = filter_batch(batch, predicates, None)?;
-            let mut batch_columns =
-                ColumnBatch::from_record_batch(&filtered_batch, &table.column_names);
-            if let Some(projected_columns) = projected_columns {
-                batch_columns = batch_columns.project(projected_columns);
-            }
+            let batch_columns =
+                if predicates.is_empty() && batch.deleted_rows.iter().all(|deleted| !*deleted) {
+                    ColumnBatch::from_record_batch_projected(
+                        &batch.record_batch,
+                        &table.column_names,
+                        projected_columns,
+                    )
+                } else {
+                    let (filtered_batch, _) = filter_batch(batch, predicates, None)?;
+                    ColumnBatch::from_record_batch_projected(
+                        &filtered_batch,
+                        &table.column_names,
+                        projected_columns,
+                    )
+                };
             if !callback(batch_columns)? {
                 break;
             }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn scan_batches_for_table_with_offsets(
+        &mut self,
+        table_oid: Oid,
+        predicates: &[ScanPredicate],
+        projected_columns: Option<&[usize]>,
+        callback: &mut dyn FnMut(ColumnBatch, Vec<usize>) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        self.ensure_table(table_oid)?;
+        self.flush_pending(table_oid)?;
+        let Some(table) = self.columnar_by_table.get(&table_oid) else {
+            return Ok(());
+        };
+        if table.batches.is_empty() {
+            return Ok(());
+        }
+
+        let mut batch_start = 0usize;
+        for batch in &table.batches {
+            let batch_len = batch.record_batch.num_rows();
+            let (batch_columns, global_offsets) = if predicates.is_empty()
+                && batch.deleted_rows.iter().all(|deleted| !*deleted)
+            {
+                (
+                    ColumnBatch::from_record_batch_projected(
+                        &batch.record_batch,
+                        &table.column_names,
+                        projected_columns,
+                    ),
+                    (batch_start..batch_start + batch_len).collect::<Vec<_>>(),
+                )
+            } else {
+                let (filtered_batch, surviving_offsets) = filter_batch(batch, predicates, None)?;
+                (
+                    ColumnBatch::from_record_batch_projected(
+                        &filtered_batch,
+                        &table.column_names,
+                        projected_columns,
+                    ),
+                    surviving_offsets
+                        .into_iter()
+                        .map(|local_offset| batch_start + local_offset)
+                        .collect::<Vec<_>>(),
+                )
+            };
+            if !callback(batch_columns, global_offsets)? {
+                break;
+            }
+            batch_start += batch_len;
         }
         Ok(())
     }
@@ -982,6 +1052,32 @@ mod tests {
 
         assert_eq!(seen_batches, 1);
         assert_eq!(seen_rows, COLUMNAR_BATCH_SIZE);
+    }
+
+    #[test]
+    fn scan_batches_for_table_with_offsets_reports_global_offsets() {
+        let mut storage = InMemoryStorage::default();
+        storage
+            .replace_rows_for_table(
+                78,
+                (0..=COLUMNAR_BATCH_SIZE as i64)
+                    .map(|value| vec![ScalarValue::Int(value)])
+                    .collect(),
+            )
+            .expect("replace rows");
+
+        let mut seen = Vec::new();
+        storage
+            .scan_batches_for_table_with_offsets(78, &[], None, &mut |batch, offsets| {
+                seen.push((batch.row_count, offsets));
+                Ok(false)
+            })
+            .expect("streaming scan with offsets should succeed");
+
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, COLUMNAR_BATCH_SIZE);
+        assert_eq!(seen[0].1.first().copied(), Some(0));
+        assert_eq!(seen[0].1.last().copied(), Some(COLUMNAR_BATCH_SIZE - 1));
     }
 
     #[test]

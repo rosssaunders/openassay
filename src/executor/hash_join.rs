@@ -190,6 +190,7 @@ impl ColumnBuilder {
             TypedColumn::Bool(_, _) => Self::Bool(Vec::new(), Vec::new()),
             TypedColumn::Int64(_, _) => Self::Int64(Vec::new(), Vec::new()),
             TypedColumn::Float64(_, _) => Self::Float64(Vec::new(), Vec::new()),
+            TypedColumn::Date(_, _) => Self::Mixed(Vec::new()),
             TypedColumn::Text(_, _) => Self::Text(Vec::new(), Vec::new()),
             TypedColumn::Numeric(_, _) => Self::Numeric(Vec::new(), Vec::new()),
             TypedColumn::Mixed(_) => Self::Mixed(Vec::new()),
@@ -521,6 +522,14 @@ fn hash_typed_value(column: &TypedColumn, row_idx: usize, hasher: &mut DefaultHa
                 values[row_idx].to_bits().hash(hasher);
             }
         }
+        TypedColumn::Date(values, nulls) => {
+            if nulls[row_idx] {
+                0u8.hash(hasher);
+            } else {
+                6u8.hash(hasher);
+                values[row_idx].hash(hasher);
+            }
+        }
         TypedColumn::Text(values, nulls) => {
             if nulls[row_idx] {
                 0u8.hash(hasher);
@@ -660,6 +669,18 @@ fn scalar_value_at(column: &TypedColumn, row_idx: usize) -> ScalarValue {
                 ScalarValue::Float(values[row_idx])
             }
         }
+        TypedColumn::Date(values, nulls) => {
+            if nulls[row_idx] {
+                ScalarValue::Null
+            } else {
+                ScalarValue::Text(crate::utils::adt::datetime::format_date(
+                    crate::utils::adt::datetime::datetime_from_epoch_seconds(
+                        i64::from(values[row_idx]).saturating_mul(86_400),
+                    )
+                    .date,
+                ))
+            }
+        }
         TypedColumn::Text(values, nulls) => {
             if nulls[row_idx] {
                 ScalarValue::Null
@@ -683,6 +704,7 @@ fn is_null_at(column: &TypedColumn, row_idx: usize) -> bool {
         TypedColumn::Bool(_, nulls)
         | TypedColumn::Int64(_, nulls)
         | TypedColumn::Float64(_, nulls)
+        | TypedColumn::Date(_, nulls)
         | TypedColumn::Text(_, nulls)
         | TypedColumn::Numeric(_, nulls) => nulls[row_idx],
         TypedColumn::Mixed(values) => matches!(values[row_idx], ScalarValue::Null),

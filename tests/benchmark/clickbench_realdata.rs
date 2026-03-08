@@ -3,7 +3,8 @@
 /// Run with: cargo test --test benchmark clickbench_realdata -- --nocapture
 ///
 /// Requires: data/clickbench/hits_subset.tsv (run scripts/load_clickbench.sh first)
-use std::fs;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::time::Instant;
 
@@ -48,66 +49,100 @@ fn error_message(out: &[BackendMessage]) -> String {
         .join("; ")
 }
 
-/// Load TSV data via batch INSERT statements (since COPY requires stdin pipe).
-fn load_tsv_data(session: &mut PostgresSession, tsv_path: &Path, max_rows: usize) -> usize {
-    let content = fs::read_to_string(tsv_path).expect("Failed to read TSV file");
-    let mut loaded = 0;
-    let batch_size = 100;
-    let mut batch_values: Vec<String> = Vec::with_capacity(batch_size);
+const CLICKBENCH_TEXT_COLS: &[usize] = &[
+    2, 13, 14, 25, 29, 34, 35, 39, 50, 56, 63, 75, 76, 77, 78, 84, 87, 88, 91, 92, 93, 94, 95, 96,
+    97, 98, 99, 100,
+];
+const CLICKBENCH_DATE_COL: usize = 5;
+const CLICKBENCH_EXPECTED_COLUMNS: usize = 105;
+const COPY_CHUNK_BYTES: usize = 1 << 20;
 
-    for line in content.lines() {
-        if loaded >= max_rows {
+fn sanitize_copy_line(fields: &[&str]) -> String {
+    let mut out = String::with_capacity(512);
+    for (idx, field) in fields.iter().enumerate().take(CLICKBENCH_EXPECTED_COLUMNS) {
+        if idx > 0 {
+            out.push('\t');
+        }
+        if idx == CLICKBENCH_DATE_COL {
+            out.push_str(field);
+        } else if CLICKBENCH_TEXT_COLS.contains(&idx) {
+            out.push_str(&field.replace('\0', ""));
+        } else {
+            let trimmed = field.trim();
+            if trimmed.is_empty() || trimmed.parse::<f64>().is_err() {
+                out.push('0');
+            } else {
+                out.push_str(trimmed);
+            }
+        }
+    }
+    out.push('\n');
+    out
+}
+
+/// Load TSV data via PostgreSQL COPY FROM STDIN using raw TSV lines.
+fn load_tsv_data(session: &mut PostgresSession, tsv_path: &Path, max_rows: usize) -> usize {
+    let start = session.run_sync([FrontendMessage::Query {
+        sql: "COPY hits FROM STDIN".to_string(),
+    }]);
+    assert!(
+        start
+            .iter()
+            .any(|msg| matches!(msg, BackendMessage::CopyInResponse { .. })),
+        "COPY did not enter COPY IN mode: {start:?}"
+    );
+
+    let file = File::open(tsv_path).expect("Failed to open TSV file");
+    let mut reader = BufReader::new(file);
+    let mut loaded = 0;
+    let mut payload = Vec::with_capacity(1 << 20);
+    let mut line = Vec::with_capacity(4096);
+
+    loop {
+        line.clear();
+        let bytes = reader
+            .read_until(b'\n', &mut line)
+            .expect("Failed to read TSV line");
+        if bytes == 0 || loaded >= max_rows {
             break;
         }
-        let fields: Vec<&str> = line.split('\t').collect();
-        if fields.len() < 105 {
+
+        let line_str = std::str::from_utf8(&line).expect("TSV data should be valid UTF-8");
+        let fields = line_str
+            .trim_end_matches('\n')
+            .split('\t')
+            .collect::<Vec<_>>();
+        if fields.len() < CLICKBENCH_EXPECTED_COLUMNS {
             continue;
         }
 
-        // Build a VALUES row, quoting text fields and handling empty strings
-        let mut vals = Vec::with_capacity(105);
-        // Column type map: TEXT columns by index (0-based)
-        let text_cols: &[usize] = &[
-            2, 13, 14, 25, 29, 34, 35, 39, 50, 56, 63, 75, 76, 77, 78, 84, 87, 88, 91, 92, 93, 94,
-            95, 96, 97, 98, 99, 100,
-        ];
-
-        for (i, field) in fields.iter().enumerate().take(105) {
-            if i == 5 {
-                // EventDate — DATE column
-                vals.push(format!("DATE '{}'", field.replace('\'', "''")));
-            } else if text_cols.contains(&i) {
-                // Escape single quotes and backslashes for SQL string literals
-                let escaped = field
-                    .replace('\\', "\\\\")
-                    .replace('\'', "''")
-                    .replace('\0', "");
-                vals.push(format!("E'{}'", escaped));
-            } else {
-                // Numeric — handle empty as 0
-                let trimmed = field.trim();
-                if trimmed.is_empty() || trimmed.parse::<f64>().is_err() {
-                    vals.push("0".to_string());
-                } else {
-                    vals.push(trimmed.to_string());
-                }
-            }
-        }
-        batch_values.push(format!("({})", vals.join(",")));
+        let sanitized = sanitize_copy_line(&fields);
+        payload.extend_from_slice(sanitized.as_bytes());
         loaded += 1;
 
-        if batch_values.len() >= batch_size {
-            let sql = format!("INSERT INTO hits VALUES {}", batch_values.join(","));
-            exec(session, &sql);
-            batch_values.clear();
+        if payload.len() >= COPY_CHUNK_BYTES {
+            let out = session.run_sync([FrontendMessage::CopyData {
+                data: std::mem::take(&mut payload),
+            }]);
+            assert_ok(&out);
         }
     }
 
-    // Flush remaining
-    if !batch_values.is_empty() {
-        let sql = format!("INSERT INTO hits VALUES {}", batch_values.join(","));
-        exec(session, &sql);
+    if !payload.is_empty() {
+        let out = session.run_sync([FrontendMessage::CopyData { data: payload }]);
+        assert_ok(&out);
     }
+
+    let finish = session.run_sync([FrontendMessage::CopyDone]);
+    assert_ok(&finish);
+    assert!(
+        finish.iter().any(|msg| matches!(
+            msg,
+            BackendMessage::CommandComplete { tag, rows }
+                if tag == "COPY" && *rows == loaded as u64
+        )),
+        "COPY did not report inserted row count: {finish:?}"
+    );
 
     loaded
 }

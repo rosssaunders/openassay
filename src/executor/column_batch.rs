@@ -1,7 +1,8 @@
-use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, RecordBatch};
+use arrow::array::{Array, BooleanArray, Date32Array, Float64Array, Int64Array, RecordBatch};
 use rust_decimal::Decimal;
 
 use crate::storage::tuple::{ScalarValue, arrow_value_to_scalar_value};
+use crate::utils::adt::datetime::{datetime_from_epoch_seconds, format_date};
 
 #[derive(Debug, Clone)]
 pub struct ColumnBatch {
@@ -15,6 +16,7 @@ pub enum TypedColumn {
     Bool(Vec<bool>, Vec<bool>),
     Int64(Vec<i64>, Vec<bool>),
     Float64(Vec<f64>, Vec<bool>),
+    Date(Vec<i32>, Vec<bool>),
     Text(Vec<String>, Vec<bool>),
     Numeric(Vec<Decimal>, Vec<bool>),
     Mixed(Vec<ScalarValue>),
@@ -34,15 +36,39 @@ impl ColumnBatch {
     }
 
     pub fn from_record_batch(rb: &RecordBatch, column_names: &[String]) -> Self {
-        let columns = rb
-            .columns()
-            .iter()
-            .map(|column| typed_column_from_array(column.as_ref(), rb.num_rows()))
-            .collect();
-        Self {
-            columns,
-            column_names: column_names.to_vec(),
-            row_count: rb.num_rows(),
+        Self::from_record_batch_projected(rb, column_names, None)
+    }
+
+    pub fn from_record_batch_projected(
+        rb: &RecordBatch,
+        column_names: &[String],
+        projected_columns: Option<&[usize]>,
+    ) -> Self {
+        match projected_columns {
+            Some(projection) => Self {
+                columns: projection
+                    .iter()
+                    .filter_map(|idx| {
+                        rb.columns()
+                            .get(*idx)
+                            .map(|column| typed_column_from_array(column.as_ref(), rb.num_rows()))
+                    })
+                    .collect(),
+                column_names: projection
+                    .iter()
+                    .filter_map(|idx| column_names.get(*idx).cloned())
+                    .collect(),
+                row_count: rb.num_rows(),
+            },
+            None => Self {
+                columns: rb
+                    .columns()
+                    .iter()
+                    .map(|column| typed_column_from_array(column.as_ref(), rb.num_rows()))
+                    .collect(),
+                column_names: column_names.to_vec(),
+                row_count: rb.num_rows(),
+            },
         }
     }
 
@@ -141,6 +167,22 @@ impl ColumnBatch {
         }
     }
 
+    pub(crate) fn with_appended_column(
+        &self,
+        column_name: String,
+        values: Vec<ScalarValue>,
+    ) -> Self {
+        let mut columns = self.columns.clone();
+        columns.push(typed_column_from_scalars(values));
+        let mut column_names = self.column_names.clone();
+        column_names.push(column_name);
+        Self {
+            columns,
+            column_names,
+            row_count: self.row_count,
+        }
+    }
+
     pub(crate) fn append_batch(&mut self, other: &Self) -> Result<(), String> {
         if self.row_count == 0 {
             *self = other.clone();
@@ -184,6 +226,13 @@ impl TypedColumn {
                     ScalarValue::Float(values[row_idx])
                 }
             }
+            Self::Date(values, nulls) => {
+                if nulls.get(row_idx).copied().unwrap_or(true) {
+                    ScalarValue::Null
+                } else {
+                    date_scalar_from_days(values[row_idx])
+                }
+            }
             Self::Text(values, nulls) => {
                 if nulls.get(row_idx).copied().unwrap_or(true) {
                     ScalarValue::Null
@@ -216,6 +265,10 @@ impl TypedColumn {
                 let (values, nulls) = filter_typed(values, nulls, mask);
                 Self::Float64(values, nulls)
             }
+            Self::Date(values, nulls) => {
+                let (values, nulls) = filter_typed(values, nulls, mask);
+                Self::Date(values, nulls)
+            }
             Self::Text(values, nulls) => {
                 let (values, nulls) = filter_typed(values, nulls, mask);
                 Self::Text(values, nulls)
@@ -246,6 +299,9 @@ impl TypedColumn {
             Self::Float64(values, nulls) => {
                 Self::Float64(values[offset..end].to_vec(), nulls[offset..end].to_vec())
             }
+            Self::Date(values, nulls) => {
+                Self::Date(values[offset..end].to_vec(), nulls[offset..end].to_vec())
+            }
             Self::Text(values, nulls) => {
                 Self::Text(values[offset..end].to_vec(), nulls[offset..end].to_vec())
             }
@@ -267,6 +323,10 @@ impl TypedColumn {
                 left_nulls.extend(right_nulls.iter().copied());
             }
             (Self::Float64(left_values, left_nulls), Self::Float64(right_values, right_nulls)) => {
+                left_values.extend(right_values.iter().copied());
+                left_nulls.extend(right_nulls.iter().copied());
+            }
+            (Self::Date(left_values, left_nulls), Self::Date(right_values, right_nulls)) => {
                 left_values.extend(right_values.iter().copied());
                 left_nulls.extend(right_nulls.iter().copied());
             }
@@ -321,6 +381,17 @@ impl TypedColumn {
                         ScalarValue::Null
                     } else {
                         ScalarValue::Float(*value)
+                    }
+                })
+                .collect(),
+            Self::Date(values, nulls) => values
+                .iter()
+                .zip(nulls)
+                .map(|(value, is_null)| {
+                    if *is_null {
+                        ScalarValue::Null
+                    } else {
+                        date_scalar_from_days(*value)
                     }
                 })
                 .collect(),
@@ -382,11 +453,27 @@ fn typed_column_from_array(array: &dyn Array, row_count: usize) -> TypedColumn {
         }
         return TypedColumn::Float64(out, nulls);
     }
+    if let Some(values) = array.as_any().downcast_ref::<Date32Array>() {
+        let mut out = Vec::with_capacity(row_count);
+        let mut nulls = Vec::with_capacity(row_count);
+        for idx in 0..row_count {
+            let is_null = values.is_null(idx);
+            nulls.push(is_null);
+            out.push(if is_null { 0 } else { values.value(idx) });
+        }
+        return TypedColumn::Date(out, nulls);
+    }
 
     let values = (0..row_count)
         .map(|row_idx| arrow_value_to_scalar_value(array, row_idx))
         .collect::<Vec<_>>();
     typed_column_from_scalars(values)
+}
+
+fn date_scalar_from_days(days: i32) -> ScalarValue {
+    let epoch_seconds = i64::from(days).saturating_mul(86_400);
+    let date = datetime_from_epoch_seconds(epoch_seconds).date;
+    ScalarValue::Text(format_date(date))
 }
 
 fn typed_column_from_scalars(values: Vec<ScalarValue>) -> TypedColumn {
@@ -589,6 +676,38 @@ mod tests {
                 vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())],
                 vec![ScalarValue::Null, ScalarValue::Text("b".to_string())],
                 vec![ScalarValue::Int(3), ScalarValue::Null],
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_projected_batch_from_record_batch() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1), None, Some(3)])),
+                Arc::new(StringArray::from(vec![Some("a"), Some("b"), None])),
+            ],
+        )
+        .expect("record batch should build");
+
+        let projected = ColumnBatch::from_record_batch_projected(
+            &batch,
+            &["id".to_string(), "name".to_string()],
+            Some(&[1]),
+        );
+
+        assert_eq!(projected.column_names, vec!["name".to_string()]);
+        assert_eq!(
+            projected.to_rows(),
+            vec![
+                vec![ScalarValue::Text("a".to_string())],
+                vec![ScalarValue::Text("b".to_string())],
+                vec![ScalarValue::Null],
             ]
         );
     }

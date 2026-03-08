@@ -10,8 +10,10 @@ use crate::executor::window_eval::{
     WindowArgumentKind, WindowColumnPlan, WindowPartitions, eval_window_function_columnar,
     expr_references_columns, resolve_window_spec,
 };
+use crate::parser::ast::WindowSpec;
 use crate::storage::heap::ScanPredicate;
 use crate::tcop::engine::with_storage_write;
+use std::collections::BTreeSet;
 
 pub async fn execute_query(
     query: &Query,
@@ -366,10 +368,18 @@ fn can_use_simple_columnar_projection(
 }
 
 #[derive(Debug, Clone)]
+enum GroupKeySource {
+    Column(usize),
+    DerivedExpr(Expr),
+}
+
+#[derive(Debug, Clone)]
 struct ColumnarAggPlan {
-    group_key_indices: Vec<usize>,
+    group_key_sources: Vec<GroupKeySource>,
     agg_specs: Vec<AggSpec>,
     output_exprs: Vec<OutputExpr>,
+    intermediate_columns: Vec<String>,
+    final_target_exprs: Vec<Expr>,
 }
 
 fn can_use_columnar_aggregation(
@@ -417,6 +427,24 @@ struct ColumnarRelationScanPlan {
     schema_batch: ColumnBatch,
 }
 
+enum SimpleLikeMatcher {
+    Exact(String),
+    Prefix(String),
+    Suffix(String),
+    Contains(String),
+}
+
+impl SimpleLikeMatcher {
+    fn matches(&self, value: &str) -> bool {
+        match self {
+            Self::Exact(literal) => value == literal,
+            Self::Prefix(literal) => value.starts_with(literal),
+            Self::Suffix(literal) => value.ends_with(literal),
+            Self::Contains(literal) => value.contains(literal),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum ColumnarWindowTargetPlan {
     InputColumn(usize),
@@ -441,9 +469,8 @@ fn empty_typed_column(signature: TypeSignature) -> TypedColumn {
         TypeSignature::Int8 => TypedColumn::Int64(Vec::new(), Vec::new()),
         TypeSignature::Float8 => TypedColumn::Float64(Vec::new(), Vec::new()),
         TypeSignature::Numeric => TypedColumn::Numeric(Vec::new(), Vec::new()),
-        TypeSignature::Text | TypeSignature::Date | TypeSignature::Timestamp => {
-            TypedColumn::Text(Vec::new(), Vec::new())
-        }
+        TypeSignature::Date => TypedColumn::Date(Vec::new(), Vec::new()),
+        TypeSignature::Text | TypeSignature::Timestamp => TypedColumn::Text(Vec::new(), Vec::new()),
         _ => TypedColumn::Mixed(Vec::new()),
     }
 }
@@ -556,6 +583,223 @@ fn aggregate_identifier_column_index(expr: &Expr, batch: &ColumnBatch) -> Option
     batch.column_index(&parts.join("."))
 }
 
+fn aggregate_cast_identifier_column_index<'a>(
+    expr: &'a Expr,
+    expected_types: &[&str],
+    batch: &ColumnBatch,
+) -> Option<usize> {
+    let Expr::Cast { expr, type_name } = expr else {
+        return None;
+    };
+    if !expected_types
+        .iter()
+        .any(|expected| type_name.eq_ignore_ascii_case(expected))
+    {
+        return None;
+    }
+    aggregate_identifier_column_index(expr, batch)
+}
+
+fn plan_columnar_aggregate_kind(
+    name: &[String],
+    args: &[Expr],
+    distinct: bool,
+    order_by: &[OrderByExpr],
+    within_group: &[OrderByExpr],
+    filter: Option<&Expr>,
+    over: Option<&WindowSpec>,
+    batch: &ColumnBatch,
+) -> Option<AggKind> {
+    if !order_by.is_empty() || !within_group.is_empty() || filter.is_some() || over.is_some() {
+        return None;
+    }
+
+    let fn_name = name.last()?.to_ascii_lowercase();
+    match fn_name.as_str() {
+        "count" if args.len() == 1 && matches!(args[0], Expr::Wildcard) => {
+            if distinct {
+                None
+            } else {
+                Some(AggKind::CountStar)
+            }
+        }
+        "count" if args.len() == 1 && distinct => {
+            let column_index = aggregate_identifier_column_index(&args[0], batch)?;
+            match &batch.columns[column_index] {
+                TypedColumn::Int64(_, _) => Some(AggKind::CountDistinctInt { column_index }),
+                _ => None,
+            }
+        }
+        "count" if args.len() == 1 => Some(AggKind::Count {
+            column_index: aggregate_identifier_column_index(&args[0], batch)?,
+        }),
+        "sum" if args.len() == 1 && !distinct => {
+            let column_index = aggregate_identifier_column_index(&args[0], batch)?;
+            match &batch.columns[column_index] {
+                TypedColumn::Int64(_, _) => Some(AggKind::SumInt { column_index }),
+                TypedColumn::Float64(_, _) => Some(AggKind::SumFloat { column_index }),
+                TypedColumn::Numeric(_, _) => Some(AggKind::SumNumeric { column_index }),
+                _ => None,
+            }
+        }
+        "avg" if args.len() == 1 && !distinct => {
+            if let Some(column_index) = aggregate_identifier_column_index(&args[0], batch) {
+                match &batch.columns[column_index] {
+                    TypedColumn::Int64(_, _) => Some(AggKind::AvgInt { column_index }),
+                    TypedColumn::Float64(_, _) => Some(AggKind::AvgFloat { column_index }),
+                    TypedColumn::Numeric(_, _) => Some(AggKind::AvgNumeric { column_index }),
+                    _ => None,
+                }
+            } else if let Some(column_index) =
+                aggregate_cast_identifier_column_index(&args[0], &["numeric"], batch)
+            {
+                match &batch.columns[column_index] {
+                    TypedColumn::Int64(_, _) => Some(AggKind::AvgNumericInt { column_index }),
+                    TypedColumn::Numeric(_, _) => Some(AggKind::AvgNumeric { column_index }),
+                    _ => None,
+                }
+            } else if let Some(column_index) = aggregate_cast_identifier_column_index(
+                &args[0],
+                &["float8", "double precision", "float4", "real"],
+                batch,
+            ) {
+                match &batch.columns[column_index] {
+                    TypedColumn::Int64(_, _) => Some(AggKind::AvgInt { column_index }),
+                    TypedColumn::Float64(_, _) => Some(AggKind::AvgFloat { column_index }),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        "min" if args.len() == 1 && !distinct => Some(AggKind::Min {
+            column_index: aggregate_identifier_column_index(&args[0], batch)?,
+        })
+        .and_then(|kind| match kind {
+            AggKind::Min { column_index } => match &batch.columns[column_index] {
+                TypedColumn::Date(_, _) => Some(AggKind::MinDate { column_index }),
+                _ => Some(AggKind::Min { column_index }),
+            },
+            _ => None,
+        }),
+        "max" if args.len() == 1 && !distinct => Some(AggKind::Max {
+            column_index: aggregate_identifier_column_index(&args[0], batch)?,
+        })
+        .and_then(|kind| match kind {
+            AggKind::Max { column_index } => match &batch.columns[column_index] {
+                TypedColumn::Date(_, _) => Some(AggKind::MaxDate { column_index }),
+                _ => Some(AggKind::Max { column_index }),
+            },
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+fn rewrite_columnar_agg_target_expr(
+    expr: &Expr,
+    group_output_names: &HashMap<String, String>,
+    group_expr_outputs: &[(Expr, String)],
+    agg_specs: &mut Vec<AggSpec>,
+    output_exprs: &mut Vec<OutputExpr>,
+    intermediate_columns: &mut Vec<String>,
+    batch: &ColumnBatch,
+) -> Option<Expr> {
+    if let Some((_, name)) = group_expr_outputs
+        .iter()
+        .find(|(group_expr, _)| group_expr == expr)
+    {
+        return Some(Expr::Identifier(vec![name.clone()]));
+    }
+    match expr {
+        Expr::Identifier(parts) => {
+            let key = parts.join(".").to_ascii_lowercase();
+            Some(Expr::Identifier(vec![
+                group_output_names.get(&key)?.clone(),
+            ]))
+        }
+        Expr::String(_)
+        | Expr::Integer(_)
+        | Expr::Float(_)
+        | Expr::Boolean(_)
+        | Expr::Null
+        | Expr::Parameter(_)
+        | Expr::TypedLiteral { .. } => Some(expr.clone()),
+        Expr::Cast { expr, type_name } => Some(Expr::Cast {
+            expr: Box::new(rewrite_columnar_agg_target_expr(
+                expr,
+                group_output_names,
+                group_expr_outputs,
+                agg_specs,
+                output_exprs,
+                intermediate_columns,
+                batch,
+            )?),
+            type_name: type_name.clone(),
+        }),
+        Expr::Unary { op, expr } => Some(Expr::Unary {
+            op: op.clone(),
+            expr: Box::new(rewrite_columnar_agg_target_expr(
+                expr,
+                group_output_names,
+                group_expr_outputs,
+                agg_specs,
+                output_exprs,
+                intermediate_columns,
+                batch,
+            )?),
+        }),
+        Expr::Binary { left, op, right } => Some(Expr::Binary {
+            left: Box::new(rewrite_columnar_agg_target_expr(
+                left,
+                group_output_names,
+                group_expr_outputs,
+                agg_specs,
+                output_exprs,
+                intermediate_columns,
+                batch,
+            )?),
+            op: op.clone(),
+            right: Box::new(rewrite_columnar_agg_target_expr(
+                right,
+                group_output_names,
+                group_expr_outputs,
+                agg_specs,
+                output_exprs,
+                intermediate_columns,
+                batch,
+            )?),
+        }),
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+            order_by,
+            within_group,
+            filter,
+            over,
+        } => {
+            let kind = plan_columnar_aggregate_kind(
+                name,
+                args,
+                *distinct,
+                order_by,
+                within_group,
+                filter.as_deref(),
+                over.as_deref(),
+                batch,
+            )?;
+            let agg_index = agg_specs.len();
+            agg_specs.push(AggSpec { kind });
+            output_exprs.push(OutputExpr::Aggregate(agg_index));
+            let temp_name = format!("__agg_{agg_index}");
+            intermediate_columns.push(temp_name.clone());
+            Some(Expr::Identifier(vec![temp_name]))
+        }
+        _ => None,
+    }
+}
+
 fn plan_columnar_aggregation(
     select: &SelectStatement,
     batch: &ColumnBatch,
@@ -580,86 +824,205 @@ fn plan_columnar_aggregation(
         })
         .collect::<Option<Vec<_>>>()?;
 
-    let mut group_key_indices = Vec::with_capacity(grouping_exprs.len());
-    let mut group_positions = HashMap::new();
-    for (idx, expr) in grouping_exprs.iter().enumerate() {
-        let key = identifier_key(expr)?;
-        let column_idx = batch.column_index(&key)?;
-        group_key_indices.push(column_idx);
-        group_positions.insert(key, idx);
-    }
-
-    let mut agg_specs = Vec::new();
-    let mut output_exprs = Vec::with_capacity(select.targets.len());
-    for target in &select.targets {
-        match &target.expr {
-            Expr::Identifier(parts) => {
-                let key = parts.join(".").to_ascii_lowercase();
-                output_exprs.push(OutputExpr::GroupKey(*group_positions.get(&key)?));
-            }
-            Expr::FunctionCall {
-                name,
-                args,
-                distinct,
-                order_by,
-                within_group,
-                filter,
-                over,
-            } => {
-                if *distinct
-                    || !order_by.is_empty()
-                    || !within_group.is_empty()
-                    || filter.is_some()
-                    || over.is_some()
-                {
-                    return None;
-                }
-                let fn_name = name.last()?.to_ascii_lowercase();
-                let kind = match fn_name.as_str() {
-                    "count" if args.len() == 1 && matches!(args[0], Expr::Wildcard) => {
-                        AggKind::CountStar
-                    }
-                    "count" if args.len() == 1 => AggKind::Count {
-                        column_index: aggregate_identifier_column_index(&args[0], batch)?,
-                    },
-                    "sum" if args.len() == 1 => {
-                        let column_index = aggregate_identifier_column_index(&args[0], batch)?;
-                        match &batch.columns[column_index] {
-                            TypedColumn::Int64(_, _) => AggKind::SumInt { column_index },
-                            TypedColumn::Float64(_, _) => AggKind::SumFloat { column_index },
-                            TypedColumn::Numeric(_, _) => AggKind::SumNumeric { column_index },
-                            _ => return None,
-                        }
-                    }
-                    "avg" if args.len() == 1 => {
-                        let column_index = aggregate_identifier_column_index(&args[0], batch)?;
-                        match &batch.columns[column_index] {
-                            TypedColumn::Int64(_, _) => AggKind::AvgInt { column_index },
-                            TypedColumn::Float64(_, _) => AggKind::AvgFloat { column_index },
-                            TypedColumn::Numeric(_, _) => AggKind::AvgNumeric { column_index },
-                            _ => return None,
-                        }
-                    }
-                    "min" if args.len() == 1 => AggKind::Min {
-                        column_index: aggregate_identifier_column_index(&args[0], batch)?,
-                    },
-                    "max" if args.len() == 1 => AggKind::Max {
-                        column_index: aggregate_identifier_column_index(&args[0], batch)?,
-                    },
-                    _ => return None,
-                };
-                output_exprs.push(OutputExpr::Aggregate(agg_specs.len()));
-                agg_specs.push(AggSpec { kind });
-            }
-            _ => return None,
+    let mut group_key_sources = Vec::with_capacity(grouping_exprs.len());
+    for expr in &grouping_exprs {
+        if let Some(key) = identifier_key(expr) {
+            group_key_sources.push(GroupKeySource::Column(batch.column_index(&key)?));
+        } else {
+            group_key_sources.push(GroupKeySource::DerivedExpr((*expr).clone()));
         }
     }
 
+    let mut agg_specs = Vec::new();
+    let mut output_exprs = Vec::new();
+    let mut intermediate_columns = Vec::new();
+    let mut group_output_names = HashMap::new();
+    let mut group_expr_outputs = Vec::new();
+    for (idx, expr) in grouping_exprs.iter().enumerate() {
+        let temp_name = format!("__group_{idx}");
+        if let Some(key) = identifier_key(expr) {
+            group_output_names.insert(key, temp_name.clone());
+        }
+        group_expr_outputs.push(((*expr).clone(), temp_name.clone()));
+        output_exprs.push(OutputExpr::GroupKey(idx));
+        intermediate_columns.push(temp_name);
+    }
+    let mut final_target_exprs = Vec::with_capacity(select.targets.len());
+    for target in &select.targets {
+        let Some(rewritten) = rewrite_columnar_agg_target_expr(
+            &target.expr,
+            &group_output_names,
+            &group_expr_outputs,
+            &mut agg_specs,
+            &mut output_exprs,
+            &mut intermediate_columns,
+            batch,
+        ) else {
+            return None;
+        };
+        final_target_exprs.push(rewritten);
+    }
+
     Some(ColumnarAggPlan {
-        group_key_indices,
+        group_key_sources,
         agg_specs,
         output_exprs,
+        intermediate_columns,
+        final_target_exprs,
     })
+}
+
+fn agg_input_column_index(kind: &AggKind) -> Option<usize> {
+    match kind {
+        AggKind::CountStar => None,
+        AggKind::Count { column_index }
+        | AggKind::CountDistinctInt { column_index }
+        | AggKind::SumInt { column_index }
+        | AggKind::SumFloat { column_index }
+        | AggKind::SumNumeric { column_index }
+        | AggKind::AvgInt { column_index }
+        | AggKind::AvgFloat { column_index }
+        | AggKind::AvgNumericInt { column_index }
+        | AggKind::AvgNumeric { column_index }
+        | AggKind::MinDate { column_index }
+        | AggKind::MaxDate { column_index }
+        | AggKind::Min { column_index }
+        | AggKind::Max { column_index } => Some(*column_index),
+    }
+}
+
+fn remap_agg_kind(kind: &mut AggKind, index_map: &HashMap<usize, usize>) -> Option<()> {
+    let remapped = match kind {
+        AggKind::CountStar => return Some(()),
+        AggKind::Count { column_index }
+        | AggKind::CountDistinctInt { column_index }
+        | AggKind::SumInt { column_index }
+        | AggKind::SumFloat { column_index }
+        | AggKind::SumNumeric { column_index }
+        | AggKind::AvgInt { column_index }
+        | AggKind::AvgFloat { column_index }
+        | AggKind::AvgNumericInt { column_index }
+        | AggKind::AvgNumeric { column_index }
+        | AggKind::MinDate { column_index }
+        | AggKind::MaxDate { column_index }
+        | AggKind::Min { column_index }
+        | AggKind::Max { column_index } => index_map.get(column_index).copied()?,
+    };
+
+    match kind {
+        AggKind::CountStar => Some(()),
+        AggKind::Count { column_index }
+        | AggKind::CountDistinctInt { column_index }
+        | AggKind::SumInt { column_index }
+        | AggKind::SumFloat { column_index }
+        | AggKind::SumNumeric { column_index }
+        | AggKind::AvgInt { column_index }
+        | AggKind::AvgFloat { column_index }
+        | AggKind::AvgNumericInt { column_index }
+        | AggKind::AvgNumeric { column_index }
+        | AggKind::MinDate { column_index }
+        | AggKind::MaxDate { column_index }
+        | AggKind::Min { column_index }
+        | AggKind::Max { column_index } => {
+            *column_index = remapped;
+            Some(())
+        }
+    }
+}
+
+fn projected_columns_for_columnar_aggregation(
+    plan: &ColumnarAggPlan,
+    batch: &ColumnBatch,
+    remaining_predicate: Option<&Expr>,
+) -> Option<Vec<usize>> {
+    let mut projected = BTreeSet::new();
+    for source in &plan.group_key_sources {
+        match source {
+            GroupKeySource::Column(column_index) => {
+                projected.insert(*column_index);
+            }
+            GroupKeySource::DerivedExpr(expr) => {
+                let mut referenced = HashSet::new();
+                collect_referenced_columns(expr, &mut referenced);
+                for column in referenced {
+                    projected.insert(batch.column_index(&column)?);
+                }
+            }
+        }
+    }
+    projected.extend(
+        plan.agg_specs
+            .iter()
+            .filter_map(|spec| agg_input_column_index(&spec.kind)),
+    );
+    if let Some(predicate) = remaining_predicate {
+        let mut referenced = HashSet::new();
+        collect_referenced_columns(predicate, &mut referenced);
+        for column in referenced {
+            projected.insert(batch.column_index(&column)?);
+        }
+    }
+    Some(projected.into_iter().collect())
+}
+
+fn remap_columnar_aggregation_plan(
+    plan: &mut ColumnarAggPlan,
+    projected_columns: &[usize],
+) -> Option<()> {
+    let index_map = projected_columns
+        .iter()
+        .enumerate()
+        .map(|(projected_idx, original_idx)| (*original_idx, projected_idx))
+        .collect::<HashMap<_, _>>();
+    for source in &mut plan.group_key_sources {
+        if let GroupKeySource::Column(column_index) = source {
+            *column_index = index_map.get(column_index).copied()?;
+        }
+    }
+    for spec in &mut plan.agg_specs {
+        remap_agg_kind(&mut spec.kind, &index_map)?;
+    }
+    Some(())
+}
+
+fn columnar_group_key_indices(plan: &ColumnarAggPlan, base_column_count: usize) -> Vec<usize> {
+    let mut next_derived = base_column_count;
+    plan.group_key_sources
+        .iter()
+        .map(|source| match source {
+            GroupKeySource::Column(column_index) => *column_index,
+            GroupKeySource::DerivedExpr(_) => {
+                let derived_index = next_derived;
+                next_derived += 1;
+                derived_index
+            }
+        })
+        .collect()
+}
+
+async fn append_derived_group_key_columns(
+    plan: &ColumnarAggPlan,
+    batch: ColumnBatch,
+    params: &[Option<String>],
+) -> Result<ColumnBatch, EngineError> {
+    let mut batch = batch;
+    for (group_idx, source) in plan.group_key_sources.iter().enumerate() {
+        let GroupKeySource::DerivedExpr(expr) = source else {
+            continue;
+        };
+        let mut values = Vec::with_capacity(batch.row_count);
+        for row_idx in 0..batch.row_count {
+            let row = batch
+                .columns
+                .iter()
+                .map(|column| column.value_at(row_idx))
+                .collect::<Vec<_>>();
+            let scope = EvalScope::from_output_row(&batch.column_names, &row);
+            values.push(eval_expr(expr, &scope, params).await?);
+        }
+        batch = batch.with_appended_column(format!("__derived_group_{group_idx}"), values);
+    }
+    Ok(batch)
 }
 
 fn projection_indices_for_simple_targets(
@@ -682,6 +1045,64 @@ fn projection_indices_for_simple_targets(
     Some(indices)
 }
 
+fn literal_text_expr(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::String(value) => Some(value.clone()),
+        Expr::TypedLiteral { value, .. } => Some(value.clone()),
+        Expr::Cast { expr, .. } => literal_text_expr(expr),
+        _ => None,
+    }
+}
+
+fn classify_simple_like_predicate(
+    expr: &Expr,
+    batch: &ColumnBatch,
+) -> Option<(usize, SimpleLikeMatcher)> {
+    let Expr::Like {
+        expr,
+        pattern,
+        case_insensitive,
+        negated,
+        escape,
+    } = expr
+    else {
+        return None;
+    };
+    if *case_insensitive || *negated || escape.is_some() {
+        return None;
+    }
+    let Expr::Identifier(parts) = expr.as_ref() else {
+        return None;
+    };
+    let column_idx = batch.column_index(&parts.join("."))?;
+    let pattern = literal_text_expr(pattern)?;
+
+    if !pattern.contains('_') {
+        if let Some(literal) = pattern
+            .strip_prefix('%')
+            .and_then(|value| value.strip_suffix('%'))
+            && !literal.contains('%')
+        {
+            return Some((column_idx, SimpleLikeMatcher::Contains(literal.to_string())));
+        }
+        if let Some(literal) = pattern.strip_prefix('%')
+            && !literal.contains('%')
+        {
+            return Some((column_idx, SimpleLikeMatcher::Suffix(literal.to_string())));
+        }
+        if let Some(literal) = pattern.strip_suffix('%')
+            && !literal.contains('%')
+        {
+            return Some((column_idx, SimpleLikeMatcher::Prefix(literal.to_string())));
+        }
+        if !pattern.contains('%') {
+            return Some((column_idx, SimpleLikeMatcher::Exact(pattern)));
+        }
+    }
+
+    None
+}
+
 async fn try_execute_simple_columnar_select(
     select: &SelectStatement,
     query: Option<&Query>,
@@ -700,8 +1121,167 @@ async fn try_execute_simple_columnar_select(
     else {
         return Ok(None);
     };
+    let wildcard_only = select
+        .targets
+        .iter()
+        .all(|target| matches!(target.expr, Expr::Wildcard | Expr::QualifiedWildcard(_)));
 
     let stage_limit = stage_limit_spec(query, params).await?;
+    if wildcard_only
+        && let Some(query) = query
+        && stage_limit.is_none()
+    {
+        let mut topn_projection = BTreeSet::new();
+        for spec in &query.order_by {
+            let Expr::Identifier(parts) = &spec.expr else {
+                topn_projection.clear();
+                break;
+            };
+            let Some(column_index) = scan_plan.schema_batch.column_index(&parts.join(".")) else {
+                topn_projection.clear();
+                break;
+            };
+            topn_projection.insert(column_index);
+        }
+        if !topn_projection.is_empty() {
+            if let Some(predicate) = &scan_plan.remaining_predicate {
+                let mut referenced = HashSet::new();
+                collect_referenced_columns(predicate, &mut referenced);
+                for column in referenced {
+                    let Some(column_index) = scan_plan.schema_batch.column_index(&column) else {
+                        topn_projection.clear();
+                        break;
+                    };
+                    topn_projection.insert(column_index);
+                }
+            }
+            if !topn_projection.is_empty() {
+                let topn_projection = topn_projection.into_iter().collect::<Vec<_>>();
+                let topn_batch = scan_plan.schema_batch.project(&topn_projection);
+                let topn_columns = topn_batch.column_names.clone();
+                if let Some(mut offset_collector) =
+                    OffsetTopNCollector::new(query, &topn_columns, params).await?
+                {
+                    let simple_like =
+                        scan_plan
+                            .remaining_predicate
+                            .as_ref()
+                            .and_then(|predicate| {
+                                classify_simple_like_predicate(predicate, &topn_batch)
+                            });
+                    with_storage_write(|storage| {
+                        storage.scan_batches_for_table_with_offsets(
+                            scan_plan.table.oid(),
+                            &scan_plan.scan_predicates,
+                            Some(topn_projection.as_slice()),
+                            &mut |batch, offsets| {
+                                if let Some((column_idx, matcher)) = &simple_like {
+                                    offset_collector.push_matching_text_rows(
+                                        &batch,
+                                        *column_idx,
+                                        &offsets,
+                                        |value| matcher.matches(value),
+                                    );
+                                    return Ok(true);
+                                }
+                                if let Some(predicate) = &scan_plan.remaining_predicate {
+                                    let Some(mask) = eval_columnar_predicate(predicate, &batch) else {
+                                        return Err(
+                                            "columnar predicate could not be evaluated in fused wildcard pipeline"
+                                                .to_string(),
+                                        );
+                                    };
+                                    let selected_rows = mask
+                                        .iter()
+                                        .enumerate()
+                                        .filter_map(|(row_idx, selected)| selected.then_some(row_idx))
+                                        .collect::<Vec<_>>();
+                                    let filtered_offsets = offsets
+                                        .iter()
+                                        .zip(mask.iter().copied())
+                                        .filter_map(|(offset, selected)| selected.then_some(*offset))
+                                        .collect::<Vec<_>>();
+                                    offset_collector.push_selected_rows(
+                                        &batch,
+                                        &selected_rows,
+                                        &filtered_offsets,
+                                    );
+                                    return Ok(true);
+                                }
+                                if batch.row_count == 0 {
+                                    return Ok(true);
+                                }
+                                offset_collector.push_batch(&batch, &offsets);
+                                Ok(true)
+                            },
+                        )
+                    })
+                    .map_err(|message| EngineError { message })?;
+
+                    let offsets = offset_collector.finish();
+                    let rows = with_storage_write(|storage| {
+                        storage.scan_rows_for_table(
+                            scan_plan.table.oid(),
+                            Some(&offsets),
+                            &[],
+                            None,
+                        )
+                    })
+                    .map_err(|message| EngineError { message })?;
+                    return Ok(Some(QueryResult {
+                        columns: columns.to_vec(),
+                        rows_affected: rows.len() as u64,
+                        rows,
+                        command_tag: "SELECT".to_string(),
+                    }));
+                }
+            }
+        }
+    }
+    if let Some(query) = query
+        && stage_limit.is_none()
+        && let Some(mut topn_collector) = SimpleTopNCollector::new(query, columns, params).await?
+    {
+        with_storage_write(|storage| {
+            storage.scan_batches_for_table(
+                scan_plan.table.oid(),
+                &scan_plan.scan_predicates,
+                None,
+                &mut |batch| {
+                    let filtered = if let Some(predicate) = &scan_plan.remaining_predicate {
+                        let Some(mask) = eval_columnar_predicate(predicate, &batch) else {
+                            return Err(
+                                "columnar predicate could not be evaluated in fused pipeline"
+                                    .to_string(),
+                            );
+                        };
+                        batch.filter(&mask)
+                    } else {
+                        batch
+                    };
+                    if filtered.row_count == 0 {
+                        return Ok(true);
+                    }
+                    let projected = filtered.project(&projection_indices);
+                    if projected.row_count == 0 {
+                        return Ok(true);
+                    }
+                    topn_collector.push_batch(&projected);
+                    Ok(true)
+                },
+            )
+        })
+        .map_err(|message| EngineError { message })?;
+
+        let rows = topn_collector.finish();
+        return Ok(Some(QueryResult {
+            columns: columns.to_vec(),
+            rows_affected: rows.len() as u64,
+            rows,
+            command_tag: "SELECT".to_string(),
+        }));
+    }
+
     let mut pipeline: Box<dyn PipelineStage> = Box::new(ProjectStage::new(
         projection_indices,
         Box::new(BatchCollector::new(columns.to_vec())),
@@ -774,43 +1354,92 @@ async fn try_execute_columnar_aggregation(
     else {
         return Ok(None);
     };
-    let Some(plan) = plan_columnar_aggregation(select, &scan_plan.schema_batch) else {
+    let Some(mut plan) = plan_columnar_aggregation(select, &scan_plan.schema_batch) else {
         return Ok(None);
     };
-
-    let aggregator = ColumnarAggregator::new(
-        plan.group_key_indices,
-        plan.agg_specs,
-        plan.output_exprs,
-        columns.to_vec(),
-    );
-    let mut pipeline: Box<dyn PipelineStage> = Box::new(AggregateSink::new(aggregator));
-    if let Some(predicate) = scan_plan.remaining_predicate.clone() {
-        if eval_columnar_predicate(&predicate, &scan_plan.schema_batch).is_none() {
-            return Ok(None);
-        }
-        pipeline = Box::new(FilterStage::new(predicate, pipeline));
+    let Some(projected_columns) = projected_columns_for_columnar_aggregation(
+        &plan,
+        &scan_plan.schema_batch,
+        scan_plan.remaining_predicate.as_ref(),
+    ) else {
+        return Ok(None);
+    };
+    if remap_columnar_aggregation_plan(&mut plan, &projected_columns).is_none() {
+        return Ok(None);
     }
+    let has_derived_group_keys = plan
+        .group_key_sources
+        .iter()
+        .any(|source| matches!(source, GroupKeySource::DerivedExpr(_)));
 
-    with_storage_write(|storage| {
-        storage.scan_batches_for_table(
-            scan_plan.table.oid(),
-            &scan_plan.scan_predicates,
-            None,
-            &mut |batch| {
-                pipeline
-                    .push_batch(&batch)
-                    .map(|_| true)
-                    .map_err(|err| err.message)
-            },
-        )
-    })
-    .map_err(|message| EngineError { message })?;
+    let result_batch = if has_derived_group_keys {
+        let mut batch = with_storage_write(|storage| {
+            storage.scan_columnar_for_table(
+                scan_plan.table.oid(),
+                &scan_plan.scan_predicates,
+                Some(projected_columns.as_slice()),
+            )
+        })
+        .map_err(|message| EngineError { message })?;
+        if let Some(predicate) = &scan_plan.remaining_predicate {
+            let Some(mask) = eval_columnar_predicate(predicate, &batch) else {
+                return Ok(None);
+            };
+            batch = batch.filter(&mask);
+        }
+        batch = append_derived_group_key_columns(&plan, batch, params).await?;
+        let mut aggregator = ColumnarAggregator::new(
+            columnar_group_key_indices(&plan, projected_columns.len()),
+            plan.agg_specs,
+            plan.output_exprs,
+            plan.intermediate_columns.clone(),
+        );
+        aggregator.push_batch(&batch)?;
+        aggregator.finish()?
+    } else {
+        let aggregator = ColumnarAggregator::new(
+            columnar_group_key_indices(&plan, projected_columns.len()),
+            plan.agg_specs,
+            plan.output_exprs,
+            plan.intermediate_columns.clone(),
+        );
+        let mut pipeline: Box<dyn PipelineStage> = Box::new(AggregateSink::new(aggregator));
+        if let Some(predicate) = scan_plan.remaining_predicate.clone() {
+            if eval_columnar_predicate(&predicate, &scan_plan.schema_batch).is_none() {
+                return Ok(None);
+            }
+            pipeline = Box::new(FilterStage::new(predicate, pipeline));
+        }
 
-    let result_batch = pipeline
-        .finish()?
-        .unwrap_or_else(|| ColumnBatch::empty(columns.to_vec()));
-    let mut rows = result_batch.to_rows();
+        with_storage_write(|storage| {
+            storage.scan_batches_for_table(
+                scan_plan.table.oid(),
+                &scan_plan.scan_predicates,
+                Some(projected_columns.as_slice()),
+                &mut |batch| {
+                    pipeline
+                        .push_batch(&batch)
+                        .map(|_| true)
+                        .map_err(|err| err.message)
+                },
+            )
+        })
+        .map_err(|message| EngineError { message })?;
+
+        pipeline
+            .finish()?
+            .unwrap_or_else(|| ColumnBatch::empty(plan.intermediate_columns.clone()))
+    };
+
+    let mut rows = Vec::with_capacity(result_batch.row_count);
+    for row in result_batch.to_rows() {
+        let scope = EvalScope::from_output_row(&plan.intermediate_columns, &row);
+        let mut projected = Vec::with_capacity(plan.final_target_exprs.len());
+        for expr in &plan.final_target_exprs {
+            projected.push(eval_expr(expr, &scope, params).await?);
+        }
+        rows.push(projected);
+    }
 
     if let Some(query) = query {
         let mut collector = QueryRowCollector::new(query, params).await?;

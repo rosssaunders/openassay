@@ -1,9 +1,39 @@
 use std::cmp::Ordering;
 
-use crate::executor::column_batch::ColumnBatch;
+use crate::executor::column_batch::{ColumnBatch, TypedColumn};
+use crate::executor::exec_expr::like_match;
 use crate::parser::ast::{BinaryOp, Expr, UnaryOp};
 use crate::storage::tuple::ScalarValue;
 use crate::utils::adt::misc::compare_values_for_predicate;
+
+enum LikeLiteralMatcher {
+    All,
+    Exact(String),
+    Prefix(String),
+    Suffix(String),
+    Contains(String),
+    Generic {
+        pattern: String,
+        escape: Option<char>,
+    },
+}
+
+impl LikeLiteralMatcher {
+    fn new(pattern: String, escape: Option<char>) -> Self {
+        classify_like_pattern(&pattern, escape).unwrap_or(Self::Generic { pattern, escape })
+    }
+
+    fn matches(&self, value: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Exact(literal) => value == literal,
+            Self::Prefix(literal) => value.starts_with(literal),
+            Self::Suffix(literal) => value.ends_with(literal),
+            Self::Contains(literal) => value.contains(literal),
+            Self::Generic { pattern, escape } => like_match(value, pattern, *escape),
+        }
+    }
+}
 
 pub(crate) fn eval_columnar_predicate(expr: &Expr, batch: &ColumnBatch) -> Option<Vec<bool>> {
     eval_predicate(expr, batch).map(|truths| {
@@ -80,6 +110,30 @@ fn eval_predicate(expr: &Expr, batch: &ColumnBatch) -> Option<Vec<Option<bool>>>
                     .collect(),
             )
         }
+        Expr::Like {
+            expr,
+            pattern,
+            case_insensitive,
+            negated,
+            escape,
+        } => {
+            let column_idx = column_ref_index(expr, batch)?;
+            let pattern = literal_scalar(pattern)?;
+            let escape_char = escape
+                .as_deref()
+                .map(literal_scalar)
+                .flatten()
+                .map(extract_escape_char)
+                .flatten();
+            Some(compare_column_to_like_literal(
+                batch,
+                column_idx,
+                &pattern,
+                *case_insensitive,
+                *negated,
+                escape_char,
+            ))
+        }
         Expr::Unary {
             op: UnaryOp::Not,
             expr,
@@ -152,6 +206,131 @@ fn compare_column_to_literal(
             Some(result)
         })
         .collect()
+}
+
+fn compare_column_to_like_literal(
+    batch: &ColumnBatch,
+    column_idx: usize,
+    pattern: &ScalarValue,
+    case_insensitive: bool,
+    negated: bool,
+    escape: Option<char>,
+) -> Vec<Option<bool>> {
+    let pattern_text = match pattern {
+        ScalarValue::Null => return vec![None; batch.row_count],
+        ScalarValue::Text(text) => {
+            if case_insensitive {
+                text.to_ascii_lowercase()
+            } else {
+                text.clone()
+            }
+        }
+        other => {
+            let rendered = other.render();
+            if case_insensitive {
+                rendered.to_ascii_lowercase()
+            } else {
+                rendered
+            }
+        }
+    };
+    let matcher = LikeLiteralMatcher::new(pattern_text, escape);
+
+    if let TypedColumn::Text(values, nulls) = &batch.columns[column_idx] {
+        return values
+            .iter()
+            .zip(nulls.iter().copied())
+            .map(|(value, is_null)| {
+                if is_null {
+                    return None;
+                }
+                let matched = if case_insensitive {
+                    matcher.matches(&value.to_ascii_lowercase())
+                } else {
+                    matcher.matches(value)
+                };
+                Some(if negated { !matched } else { matched })
+            })
+            .collect();
+    }
+
+    (0..batch.row_count)
+        .map(|row_idx| {
+            let value = batch.columns[column_idx].value_at(row_idx);
+            if matches!(value, ScalarValue::Null) {
+                return None;
+            }
+            let text = value.render();
+            let haystack = if case_insensitive {
+                text.to_ascii_lowercase()
+            } else {
+                text
+            };
+            let matched = matcher.matches(&haystack);
+            Some(if negated { !matched } else { matched })
+        })
+        .collect()
+}
+
+fn classify_like_pattern(pattern: &str, escape: Option<char>) -> Option<LikeLiteralMatcher> {
+    let escape_char = escape.unwrap_or('\\');
+    let mut chars = pattern.chars().peekable();
+    let mut literal = String::with_capacity(pattern.len());
+    let mut has_prefix_wildcard = false;
+    let mut has_suffix_wildcard = false;
+    let mut wildcard_count = 0usize;
+
+    while let Some(ch) = chars.next() {
+        if ch == escape_char {
+            let escaped = chars.next()?;
+            literal.push(escaped);
+            continue;
+        }
+        match ch {
+            '%' => {
+                wildcard_count += 1;
+                let at_start = literal.is_empty() && wildcard_count == 1;
+                let only_suffix_remaining = chars.clone().all(|next| next == '%');
+                if at_start {
+                    has_prefix_wildcard = true;
+                } else if only_suffix_remaining {
+                    has_suffix_wildcard = true;
+                    break;
+                } else {
+                    return None;
+                }
+            }
+            '_' => return None,
+            _ => literal.push(ch),
+        }
+    }
+
+    if wildcard_count == 0 {
+        return Some(LikeLiteralMatcher::Exact(literal));
+    }
+    if literal.is_empty() {
+        return Some(LikeLiteralMatcher::All);
+    }
+    match (has_prefix_wildcard, has_suffix_wildcard) {
+        (true, true) => Some(LikeLiteralMatcher::Contains(literal)),
+        (true, false) => Some(LikeLiteralMatcher::Suffix(literal)),
+        (false, true) => Some(LikeLiteralMatcher::Prefix(literal)),
+        (false, false) => None,
+    }
+}
+
+fn extract_escape_char(value: ScalarValue) -> Option<char> {
+    match value {
+        ScalarValue::Null => None,
+        other => {
+            let text = other.render();
+            if text.chars().count() == 1 {
+                text.chars().next()
+            } else {
+                None
+            }
+        }
+    }
 }
 
 fn column_ref_index(expr: &Expr, batch: &ColumnBatch) -> Option<usize> {
@@ -262,6 +441,30 @@ mod tests {
 
         assert_eq!(
             eval_columnar_predicate(&predicate, &sample_batch()),
+            Some(vec![true, false, false])
+        );
+    }
+
+    #[test]
+    fn filters_like_predicate_columnarly() {
+        let batch = ColumnBatch::from_rows(
+            &[
+                vec![ScalarValue::Text("https://google.com".to_string())],
+                vec![ScalarValue::Text("https://example.com".to_string())],
+                vec![ScalarValue::Null],
+            ],
+            &["url".to_string()],
+        );
+        let predicate = Expr::Like {
+            expr: Box::new(Expr::Identifier(vec!["url".to_string()])),
+            pattern: Box::new(Expr::String("%google%".to_string())),
+            case_insensitive: false,
+            negated: false,
+            escape: None,
+        };
+
+        assert_eq!(
+            eval_columnar_predicate(&predicate, &batch),
             Some(vec![true, false, false])
         );
     }

@@ -75,12 +75,13 @@ use aggregation::{
     identifier_key, project_select_row, project_select_row_with_window, resolve_group_by_alias,
 };
 use from_clause::{
-    decompose_and_conjuncts, evaluate_from_clause_with_pushdown, extract_relation_scan_predicate,
-    relation_index_offsets_for_predicates, remaining_predicate_from_applied,
+    collect_referenced_columns, decompose_and_conjuncts, evaluate_from_clause_with_pushdown,
+    extract_relation_scan_predicate, relation_index_offsets_for_predicates,
+    remaining_predicate_from_applied,
 };
 use order_limit::{
-    QueryRowCollector, apply_offset_limit, apply_order_by, augment_select_for_order_by,
-    collect_extra_order_by_columns, scalar_cmp,
+    OffsetTopNCollector, QueryRowCollector, SimpleTopNCollector, apply_offset_limit,
+    apply_order_by, augment_select_for_order_by, collect_extra_order_by_columns, scalar_cmp,
 };
 use query_pipeline::execute_query_expr_with_outer;
 use scope_utils::scope_from_row;

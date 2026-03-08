@@ -1,9 +1,30 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::executor::column_batch::{ColumnBatch, TypedColumn};
 use std::collections::BinaryHeap;
 
 pub(super) struct QueryRowCollector {
     strategy: RowCollectionStrategy,
+}
+
+pub(super) struct SimpleTopNCollector {
+    heap: BinaryHeap<TopNEntry>,
+    order_by: Vec<OrderByExpr>,
+    order_indices: Vec<usize>,
+    capacity: usize,
+    offset: usize,
+    limit: usize,
+    sequence: usize,
+}
+
+pub(super) struct OffsetTopNCollector {
+    heap: BinaryHeap<OffsetTopNEntry>,
+    order_by: Vec<OrderByExpr>,
+    order_indices: Vec<usize>,
+    capacity: usize,
+    offset: usize,
+    limit: usize,
+    sequence: usize,
 }
 
 enum RowCollectionStrategy {
@@ -31,6 +52,12 @@ enum RowCollectionStrategy {
 struct TopNEntry {
     keys: Vec<TopNKeyPart>,
     row: Vec<ScalarValue>,
+    sequence: usize,
+}
+
+struct OffsetTopNEntry {
+    keys: Vec<TopNKeyPart>,
+    row_offset: usize,
     sequence: usize,
 }
 
@@ -183,6 +210,211 @@ impl QueryRowCollector {
     }
 }
 
+impl SimpleTopNCollector {
+    pub(super) async fn new(
+        query: &Query,
+        columns: &[String],
+        params: &[Option<String>],
+    ) -> Result<Option<Self>, EngineError> {
+        if query.order_by.is_empty() {
+            return Ok(None);
+        }
+        let Some(limit_expr) = &query.limit else {
+            return Ok(None);
+        };
+
+        let offset = if let Some(expr) = &query.offset {
+            parse_non_negative_int(
+                &eval_expr(expr, &EvalScope::default(), params).await?,
+                "OFFSET",
+            )?
+        } else {
+            0usize
+        };
+        let limit = parse_non_negative_int(
+            &eval_expr(limit_expr, &EvalScope::default(), params).await?,
+            "LIMIT",
+        )?;
+        let order_indices = query
+            .order_by
+            .iter()
+            .map(|spec| match &spec.expr {
+                Expr::Identifier(parts) => columns.iter().position(|column| {
+                    column.eq_ignore_ascii_case(&parts.join("."))
+                        || parts
+                            .last()
+                            .is_some_and(|short| column.eq_ignore_ascii_case(short))
+                }),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>();
+
+        let Some(order_indices) = order_indices else {
+            return Ok(None);
+        };
+
+        Ok(Some(Self {
+            heap: BinaryHeap::new(),
+            order_by: query.order_by.clone(),
+            order_indices,
+            capacity: offset.saturating_add(limit),
+            offset,
+            limit,
+            sequence: 0,
+        }))
+    }
+
+    pub(super) fn push_batch(&mut self, batch: &ColumnBatch) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        for row_idx in 0..batch.row_count {
+            let keys = self
+                .order_indices
+                .iter()
+                .map(|column_idx| batch.columns[*column_idx].value_at(row_idx))
+                .collect::<Vec<_>>();
+            let probe = TopNEntry::new(keys, &self.order_by, Vec::new(), self.sequence);
+            self.sequence += 1;
+
+            if self.heap.len() < self.capacity {
+                let row = batch
+                    .columns
+                    .iter()
+                    .map(|column| column.value_at(row_idx))
+                    .collect::<Vec<_>>();
+                self.heap.push(TopNEntry { row, ..probe });
+            } else if self.heap.peek().is_some_and(|worst| probe < *worst) {
+                let row = batch
+                    .columns
+                    .iter()
+                    .map(|column| column.value_at(row_idx))
+                    .collect::<Vec<_>>();
+                let _ = self.heap.pop();
+                self.heap.push(TopNEntry { row, ..probe });
+            }
+        }
+    }
+
+    pub(super) fn finish(self) -> Vec<Vec<ScalarValue>> {
+        let mut rows = self
+            .heap
+            .into_sorted_vec()
+            .into_iter()
+            .map(|entry| entry.row)
+            .collect::<Vec<_>>();
+        apply_offset_limit_to_rows(&mut rows, self.offset, Some(self.limit));
+        rows
+    }
+}
+
+impl OffsetTopNCollector {
+    pub(super) async fn new(
+        query: &Query,
+        columns: &[String],
+        params: &[Option<String>],
+    ) -> Result<Option<Self>, EngineError> {
+        let Some(base) = SimpleTopNCollector::new(query, columns, params).await? else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            heap: BinaryHeap::new(),
+            order_by: base.order_by,
+            order_indices: base.order_indices,
+            capacity: base.capacity,
+            offset: base.offset,
+            limit: base.limit,
+            sequence: 0,
+        }))
+    }
+
+    pub(super) fn push_batch(&mut self, batch: &ColumnBatch, offsets: &[usize]) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        for row_idx in 0..batch.row_count.min(offsets.len()) {
+            self.push_row(batch, row_idx, offsets[row_idx]);
+        }
+    }
+
+    pub(super) fn push_selected_rows(
+        &mut self,
+        batch: &ColumnBatch,
+        row_indices: &[usize],
+        offsets: &[usize],
+    ) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        for (&row_idx, &row_offset) in row_indices.iter().zip(offsets.iter()) {
+            self.push_row(batch, row_idx, row_offset);
+        }
+    }
+
+    pub(super) fn push_matching_text_rows<F>(
+        &mut self,
+        batch: &ColumnBatch,
+        column_idx: usize,
+        offsets: &[usize],
+        mut matches: F,
+    ) where
+        F: FnMut(&str) -> bool,
+    {
+        let Some(TypedColumn::Text(values, nulls)) = batch.columns.get(column_idx) else {
+            return;
+        };
+        for (row_idx, ((value, is_null), row_offset)) in values
+            .iter()
+            .zip(nulls.iter().copied())
+            .zip(offsets.iter().copied())
+            .enumerate()
+        {
+            if !is_null && matches(value) {
+                self.push_row(batch, row_idx, row_offset);
+            }
+        }
+    }
+
+    fn push_row(&mut self, batch: &ColumnBatch, row_idx: usize, row_offset: usize) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        if row_idx >= batch.row_count {
+            return;
+        }
+
+        let keys = self
+            .order_indices
+            .iter()
+            .map(|column_idx| batch.columns[*column_idx].value_at(row_idx))
+            .collect::<Vec<_>>();
+        let probe = OffsetTopNEntry::new(keys, &self.order_by, row_offset, self.sequence);
+        self.sequence += 1;
+
+        if self.heap.len() < self.capacity {
+            self.heap.push(probe);
+        } else if self.heap.peek().is_some_and(|worst| probe < *worst) {
+            let _ = self.heap.pop();
+            self.heap.push(probe);
+        }
+    }
+
+    pub(super) fn finish(self) -> Vec<usize> {
+        let mut offsets = self
+            .heap
+            .into_sorted_vec()
+            .into_iter()
+            .map(|entry| entry.row_offset)
+            .collect::<Vec<_>>();
+        apply_offset_limit_items(&mut offsets, self.offset, Some(self.limit));
+        offsets
+    }
+}
+
 impl TopNEntry {
     fn new(
         keys: Vec<ScalarValue>,
@@ -201,6 +433,29 @@ impl TopNEntry {
         Self {
             keys,
             row,
+            sequence,
+        }
+    }
+}
+
+impl OffsetTopNEntry {
+    fn new(
+        keys: Vec<ScalarValue>,
+        order_by: &[OrderByExpr],
+        row_offset: usize,
+        sequence: usize,
+    ) -> Self {
+        let keys = keys
+            .into_iter()
+            .enumerate()
+            .map(|(idx, value)| TopNKeyPart {
+                value,
+                descending: order_by[idx].ascending == Some(false),
+            })
+            .collect();
+        Self {
+            keys,
+            row_offset,
             sequence,
         }
     }
@@ -233,6 +488,33 @@ impl Ord for TopNEntry {
     }
 }
 
+impl PartialEq for OffsetTopNEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for OffsetTopNEntry {}
+
+impl PartialOrd for OffsetTopNEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OffsetTopNEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        for (left, right) in self.keys.iter().zip(&other.keys) {
+            let ord = scalar_cmp(&left.value, &right.value);
+            let ord = if left.descending { ord.reverse() } else { ord };
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        self.sequence.cmp(&other.sequence)
+    }
+}
+
 async fn resolve_order_keys(
     order_by: &[OrderByExpr],
     columns: &[String],
@@ -247,24 +529,28 @@ async fn resolve_order_keys(
     Ok(keys)
 }
 
+fn apply_offset_limit_items<T>(items: &mut Vec<T>, offset: usize, limit: Option<usize>) {
+    if offset > 0 {
+        if offset >= items.len() {
+            items.clear();
+            return;
+        }
+        items.drain(0..offset);
+    }
+
+    if let Some(limit) = limit
+        && limit < items.len()
+    {
+        items.truncate(limit);
+    }
+}
+
 fn apply_offset_limit_to_rows(
     rows: &mut Vec<Vec<ScalarValue>>,
     offset: usize,
     limit: Option<usize>,
 ) {
-    if offset > 0 {
-        if offset >= rows.len() {
-            rows.clear();
-            return;
-        }
-        rows.drain(0..offset);
-    }
-
-    if let Some(limit) = limit
-        && limit < rows.len()
-    {
-        rows.truncate(limit);
-    }
+    apply_offset_limit_items(rows, offset, limit);
 }
 
 /// Collect identifiers from ORDER BY that are not present in the SELECT output columns.
