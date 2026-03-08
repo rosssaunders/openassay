@@ -701,6 +701,12 @@
         return text;
       }
 
+      function getIdleEmptyStateMessage(mode = state.uiMode) {
+        return normalizeMode(mode) === "advanced"
+          ? "Switch to Basic to start from a URL, or use SQL on the right."
+          : "Enter a URL above to get started";
+      }
+
       function syncModeButtons() {
         for (const button of state.modeButtons) {
           const buttonMode = normalizeMode(button.getAttribute("data-mode-target"));
@@ -1308,7 +1314,7 @@
 
         const overlay = document.createElement("div");
         overlay.className = "results-overlay";
-        overlay.textContent = "Enter a URL above to get started";
+        overlay.textContent = getIdleEmptyStateMessage();
 
         root.append(grid, overlay);
 
@@ -1684,6 +1690,14 @@
 
         state.uiMode = nextMode;
         applyModeChrome();
+        if (
+          state.currentRows === 0 &&
+          state.gridOverlayMode === "empty" &&
+          (state.gridOverlayMessage === "Enter a URL above to get started" ||
+            state.gridOverlayMessage === "Switch to Basic to start from a URL, or use SQL on the right.")
+        ) {
+          setGridOverlay("empty", getIdleEmptyStateMessage(nextMode));
+        }
         if (state.dockview) {
           restoreDockviewLayout(nextMode);
         }
@@ -2134,7 +2148,7 @@
           nodes.pathInput.value = first.path;
         }
 
-        setGridOverlay("empty", "Enter a URL above to get started");
+        setGridOverlay("empty", getIdleEmptyStateMessage());
         setFooterStats(0, 0);
         updateStatus("loading");
 
