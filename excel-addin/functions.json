@@ -1,0 +1,28 @@
+{
+  "functions": [
+    {
+      "id": "SQL",
+      "name": "SQL",
+      "description": "Run a PostgreSQL query and return results as a spilled array. Pass a cell range as the second argument — it becomes the 'input' table (first row = headers).",
+      "parameters": [
+        {
+          "name": "query",
+          "description": "SQL query string. Use 'input' as the table name for the data range.",
+          "type": "string",
+          "dimensionality": "scalar"
+        },
+        {
+          "name": "data",
+          "description": "Cell range to query (first row = column headers). Available as the 'input' table in SQL.",
+          "type": "any",
+          "dimensionality": "matrix",
+          "optional": true
+        }
+      ],
+      "result": {
+        "type": "any",
+        "dimensionality": "matrix"
+      }
+    }
+  ]
+}

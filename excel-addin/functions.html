@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>openassay Custom Functions</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1.1/hosted/office.js"></script>
+</head>
+<body>
+  <!--
+    This page is loaded by the Custom Functions runtime (hidden, no UI).
+    It initialises the WASM engine and registers OPENASSAY.SQL().
+  -->
+  <script type="module">
+    import init, { execute_sql_json } from './pkg/openassay.js';
+
+    let wasmReady = false;
+
+    // ── helpers ────────────────────────────────────────────────────────
+
+    function sanitizeName(name) {
+      return name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^[0-9]/, '_$&');
+    }
+
+    async function runSQL(sql) {
+      if (!wasmReady) throw new Error('WASM engine not ready');
+      const json = await execute_sql_json(sql);
+      return JSON.parse(json);
+    }
+
+    /**
+     * Import a matrix (first row = headers) into openassay as a table.
+     */
+    async function importMatrix(tableName, matrix) {
+      if (!matrix || matrix.length < 2) {
+        throw new Error('Need at least a header row and one data row');
+      }
+
+      const headers = matrix[0].map((h, i) =>
+        sanitizeName(String(h || `col_${i + 1}`))
+      );
+      const rows = matrix.slice(1);
+
+      // Infer column types from first 10 data rows
+      const types = headers.map((_, colIdx) => {
+        for (const row of rows.slice(0, 10)) {
+          const val = row[colIdx];
+          if (val === null || val === undefined || val === '') continue;
+          if (typeof val === 'number') {
+            return Number.isInteger(val) ? 'BIGINT' : 'DOUBLE PRECISION';
+          }
+          if (typeof val === 'boolean') return 'BOOLEAN';
+        }
+        return 'TEXT';
+      });
+
+      try { await runSQL(`DROP TABLE IF EXISTS "${tableName}"`); } catch {}
+
+      const colDefs = headers.map((h, i) => `"${h}" ${types[i]}`).join(', ');
+      await runSQL(`CREATE TABLE "${tableName}" (${colDefs})`);
+
+      // Insert in batches
+      const batchSize = 100;
+      for (let i = 0; i < rows.length; i += batchSize) {
+        const batch = rows.slice(i, i + batchSize);
+        const valueClauses = batch.map(row => {
+          const vals = row.map((v, colIdx) => {
+            if (v === null || v === undefined || v === '') return 'NULL';
+            if (typeof v === 'number') return String(v);
+            if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
+            return `'${String(v).replace(/'/g, "''")}'`;
+          });
+          return `(${vals.join(', ')})`;
+        }).join(', ');
+        await runSQL(`INSERT INTO "${tableName}" VALUES ${valueClauses}`);
+      }
+    }
+
+    // ── Custom Function: OPENASSAY.SQL ─────────────────────────────────
+
+    /**
+     * =OPENASSAY.SQL(query, [data])
+     *
+     * Runs a PostgreSQL query via the WASM engine and returns a dynamic
+     * array (spill) including a header row.
+     *
+     * If `data` is provided (a cell range), it is imported as the table
+     * named "input" before the query runs.
+     */
+    async function sql(query, data) {
+      if (!wasmReady) throw new Error('Engine still loading -- try again in a moment.');
+
+      // If a data range was passed, import it as "input"
+      if (data && Array.isArray(data) && data.length > 0) {
+        await importMatrix('input', data);
+      }
+
+      const result = await runSQL(query);
+
+      if (result.error) throw new Error(result.error);
+
+      // Support both flat and nested result formats
+      let res = result;
+      if (result.results && result.results.length > 0) {
+        res = result.results.slice().reverse().find(r => r.columns && r.columns.length > 0)
+              || result.results[result.results.length - 1];
+      }
+
+      const columns = res.columns || [];
+      const rows    = res.rows    || [];
+
+      if (columns.length === 0) return [['(no results)']];
+
+      // Return header + data as a 2-D array (spill)
+      return [columns, ...rows.map(r => r.map(v => (v === null ? '' : v)))];
+    }
+
+    // ── Registration ───────────────────────────────────────────────────
+
+    Office.onReady(async () => {
+      await init();
+      wasmReady = true;
+      CustomFunctions.associate('SQL', sql);
+    });
+  </script>
+</body>
+</html>
