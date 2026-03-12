@@ -410,9 +410,25 @@ impl Parser {
                 check_constraint,
             }));
         }
+        // CREATE FOREIGN TABLE ... or fall through to CREATE TABLE
+        if self.consume_keyword(Keyword::Foreign) {
+            if temporary || unlogged {
+                return Err(
+                    self.error_at_current("unexpected modifier before CREATE FOREIGN TABLE")
+                );
+            }
+            return self.parse_create_foreign_table();
+        }
+        // CREATE SERVER ...
+        if self.consume_ident("server") {
+            if temporary || unlogged {
+                return Err(self.error_at_current("unexpected modifier before CREATE SERVER"));
+            }
+            return self.parse_create_server();
+        }
         self.expect_keyword(
             Keyword::Table,
-            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, FUNCTION, TRIGGER, CAST, TYPE, DOMAIN, or SUBSCRIPTION after CREATE",
+            "expected TABLE, SCHEMA, INDEX, SEQUENCE, VIEW, FUNCTION, TRIGGER, CAST, TYPE, DOMAIN, SUBSCRIPTION, SERVER, or FOREIGN TABLE after CREATE",
         )?;
 
         // Parse optional IF NOT EXISTS clause
@@ -2292,5 +2308,148 @@ impl Parser {
             )),
             is_trigger,
         ))
+    }
+
+    // -----------------------------------------------------------------------
+    // CREATE SERVER <name> FOREIGN DATA WRAPPER <fdw_name> OPTIONS (...)
+    // -----------------------------------------------------------------------
+
+    fn parse_create_server(&mut self) -> Result<Statement, ParseError> {
+        let if_not_exists = if self.consume_keyword(Keyword::If) {
+            self.expect_keyword(Keyword::Not, "expected NOT after IF in CREATE SERVER")?;
+            self.expect_keyword(
+                Keyword::Exists,
+                "expected EXISTS after IF NOT in CREATE SERVER",
+            )?;
+            true
+        } else {
+            false
+        };
+        let name = self.parse_identifier()?;
+        self.expect_keyword(
+            Keyword::Foreign,
+            "expected FOREIGN after CREATE SERVER <name>",
+        )?;
+        self.expect_keyword(
+            Keyword::Data,
+            "expected DATA after FOREIGN in CREATE SERVER",
+        )?;
+        if !self.consume_ident("wrapper") {
+            return Err(
+                self.error_at_current("expected WRAPPER after FOREIGN DATA in CREATE SERVER")
+            );
+        }
+        let fdw_name = self.parse_identifier()?;
+        let options = self.parse_generic_options()?;
+        Ok(Statement::CreateServer(CreateServerStatement {
+            name,
+            fdw_name,
+            options,
+            if_not_exists,
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // CREATE FOREIGN TABLE <name> (columns) SERVER <server> OPTIONS (...)
+    // -----------------------------------------------------------------------
+
+    fn parse_create_foreign_table(&mut self) -> Result<Statement, ParseError> {
+        self.expect_keyword(Keyword::Table, "expected TABLE after CREATE FOREIGN")?;
+        let if_not_exists = if self.consume_keyword(Keyword::If) {
+            self.expect_keyword(
+                Keyword::Not,
+                "expected NOT after IF in CREATE FOREIGN TABLE",
+            )?;
+            self.expect_keyword(
+                Keyword::Exists,
+                "expected EXISTS after IF NOT in CREATE FOREIGN TABLE",
+            )?;
+            true
+        } else {
+            false
+        };
+        let name = self.parse_qualified_name()?;
+
+        // Parse column definitions in parentheses.
+        self.expect_token(
+            |k| matches!(k, TokenKind::LParen),
+            "expected '(' after CREATE FOREIGN TABLE name",
+        )?;
+        let mut columns = Vec::new();
+        loop {
+            if matches!(self.current_kind(), TokenKind::RParen) {
+                break;
+            }
+            let col = self.parse_column_definition()?;
+            columns.push(col);
+            if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                break;
+            }
+        }
+        self.expect_token(
+            |k| matches!(k, TokenKind::RParen),
+            "expected ')' after column definitions in CREATE FOREIGN TABLE",
+        )?;
+
+        // SERVER <name>
+        if !self.consume_ident("server") {
+            return Err(
+                self.error_at_current("expected SERVER after column list in CREATE FOREIGN TABLE")
+            );
+        }
+        let server_name = self.parse_identifier()?;
+
+        // Optional OPTIONS (...)
+        let options = self.parse_generic_options()?;
+
+        Ok(Statement::CreateForeignTable(CreateForeignTableStatement {
+            name,
+            columns,
+            server_name,
+            options,
+            if_not_exists,
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // Shared: parse OPTIONS (key 'value', key 'value', ...)
+    // -----------------------------------------------------------------------
+
+    fn parse_generic_options(&mut self) -> Result<Vec<(String, String)>, ParseError> {
+        if !self.consume_ident("options") {
+            return Ok(Vec::new());
+        }
+        self.expect_token(
+            |k| matches!(k, TokenKind::LParen),
+            "expected '(' after OPTIONS",
+        )?;
+        let mut options = Vec::new();
+        loop {
+            if matches!(self.current_kind(), TokenKind::RParen) {
+                break;
+            }
+            let key = self.parse_identifier()?;
+            let value = match self.current_kind() {
+                TokenKind::String(v) => {
+                    let s = v.clone();
+                    self.advance();
+                    s
+                }
+                _ => {
+                    return Err(
+                        self.error_at_current("expected string value for option in OPTIONS clause")
+                    );
+                }
+            };
+            options.push((key, value));
+            if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                break;
+            }
+        }
+        self.expect_token(
+            |k| matches!(k, TokenKind::RParen),
+            "expected ')' after OPTIONS list",
+        )?;
+        Ok(options)
     }
 }

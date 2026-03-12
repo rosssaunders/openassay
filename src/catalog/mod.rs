@@ -116,6 +116,10 @@ impl Catalog {
         Ok(())
     }
 
+    pub fn next_oid(&mut self) -> Result<Oid, CatalogError> {
+        self.oid_gen.next_oid()
+    }
+
     pub fn create_table(
         &mut self,
         schema_name: &str,
@@ -369,6 +373,18 @@ impl Catalog {
         );
         schema.insert_table(table);
         Ok(table_oid)
+    }
+
+    /// Set the foreign server name for a table identified by OID.
+    pub fn set_table_server_name(&mut self, oid: Oid, server_name: String) {
+        for schema in self.schemas.values_mut() {
+            for table in schema.tables_mut() {
+                if table.oid() == oid {
+                    table.set_server_name(Some(server_name));
+                    return;
+                }
+            }
+        }
     }
 
     pub fn create_view(

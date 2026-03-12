@@ -103,10 +103,17 @@ pub struct LogicalSubquery {
     pub lateral: bool,
 }
 
+/// Scan of a foreign table via the FDW interface.
+#[derive(Debug, Clone)]
+pub struct LogicalForeignScan {
+    pub table: TableRef,
+}
+
 #[derive(Debug, Clone)]
 pub enum LogicalPlan {
     Result,
     Scan(LogicalScan),
+    ForeignScan(LogicalForeignScan),
     FunctionScan(LogicalFunctionScan),
     CteScan(LogicalCteScan),
     Subquery(LogicalSubquery),
@@ -557,6 +564,7 @@ fn plan_has_window(plan: &LogicalPlan) -> bool {
         LogicalPlan::Cte(cte) => plan_has_window(&cte.input),
         LogicalPlan::Result
         | LogicalPlan::Scan(_)
+        | LogicalPlan::ForeignScan(_)
         | LogicalPlan::FunctionScan(_)
         | LogicalPlan::CteScan(_) => false,
     }

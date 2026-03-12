@@ -268,6 +268,13 @@ pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError>
         Statement::CreateDomain(_) => (Vec::new(), Vec::new(), false, "CREATE DOMAIN".to_string()),
         Statement::DropType(_) => (Vec::new(), Vec::new(), false, "DROP TYPE".to_string()),
         Statement::DropDomain(_) => (Vec::new(), Vec::new(), false, "DROP DOMAIN".to_string()),
+        Statement::CreateServer(_) => (Vec::new(), Vec::new(), false, "CREATE SERVER".to_string()),
+        Statement::CreateForeignTable(_) => (
+            Vec::new(),
+            Vec::new(),
+            false,
+            "CREATE FOREIGN TABLE".to_string(),
+        ),
     };
     Ok(PlannedQuery {
         plan,

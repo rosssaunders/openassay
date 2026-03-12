@@ -1277,6 +1277,15 @@ async fn evaluate_relation_with_predicates_impl(
             }
             (columns, result.rows, None)
         }
+        TableKind::Foreign => {
+            let columns = table
+                .columns()
+                .iter()
+                .map(|column| column.name().to_string())
+                .collect::<Vec<_>>();
+            let rows = crate::foreign::execute_foreign_scan(&table)?;
+            (columns, rows, None)
+        }
     };
     if table.kind() != TableKind::VirtualDual {
         require_relation_privilege(&table, TablePrivilege::Select)?;
@@ -2158,6 +2167,7 @@ pub(super) fn pg_relkind_for_table(kind: TableKind) -> &'static str {
         TableKind::VirtualDual | TableKind::Heap => "r",
         TableKind::View => "v",
         TableKind::MaterializedView => "m",
+        TableKind::Foreign => "f",
     }
 }
 
@@ -2166,6 +2176,7 @@ pub(super) fn information_schema_table_type(kind: TableKind) -> &'static str {
         TableKind::VirtualDual | TableKind::Heap => "BASE TABLE",
         TableKind::View => "VIEW",
         TableKind::MaterializedView => "MATERIALIZED VIEW",
+        TableKind::Foreign => "FOREIGN TABLE",
     }
 }
 

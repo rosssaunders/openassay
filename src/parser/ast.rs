@@ -48,6 +48,8 @@ pub enum Statement {
     CreateDomain(CreateDomainStatement),
     DropType(DropTypeStatement),
     DropDomain(DropDomainStatement),
+    CreateServer(CreateServerStatement),
+    CreateForeignTable(CreateForeignTableStatement),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1144,4 +1146,27 @@ pub struct CreateTriggerStatement {
     pub timing: TriggerTiming,
     pub events: Vec<TriggerEvent>,
     pub function_name: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Foreign Data Wrapper statements
+// ---------------------------------------------------------------------------
+
+/// `CREATE SERVER <name> FOREIGN DATA WRAPPER <fdw_name> OPTIONS (...)`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateServerStatement {
+    pub name: String,
+    pub fdw_name: String,
+    pub options: Vec<(String, String)>,
+    pub if_not_exists: bool,
+}
+
+/// `CREATE FOREIGN TABLE <name> (...) SERVER <server> OPTIONS (...)`
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateForeignTableStatement {
+    pub name: Vec<String>,
+    pub columns: Vec<ColumnDefinition>,
+    pub server_name: String,
+    pub options: Vec<(String, String)>,
+    pub if_not_exists: bool,
 }

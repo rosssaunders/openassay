@@ -192,7 +192,10 @@ pub fn expand_relation_dependency_set(
     for relation_oid in initial_relation_oids {
         let ident = describe_table(catalog, *relation_oid)?;
         match ident.kind {
-            TableKind::Heap | TableKind::View | TableKind::MaterializedView => {
+            TableKind::Heap
+            | TableKind::View
+            | TableKind::MaterializedView
+            | TableKind::Foreign => {
                 set.insert(*relation_oid);
             }
             TableKind::VirtualDual => {
