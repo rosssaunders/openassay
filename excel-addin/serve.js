@@ -57,7 +57,8 @@ const server = https.createServer(
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
 
-    let filePath = req.url === '/' ? '/taskpane.html' : req.url;
+    const urlPath = req.url.split('?')[0];
+    let filePath = urlPath === '/' ? '/taskpane.html' : urlPath;
     filePath = path.join(DIR, filePath);
 
     // Security: prevent directory traversal

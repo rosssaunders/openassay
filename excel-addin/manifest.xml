@@ -1,16 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
            xsi:type="TaskPaneApp">
-  <Id>a1b2c3d4-e5f6-7890-abcd-postrustsql01</Id>
-  <Version>1.0.0</Version>
-  <ProviderName>postrust</ProviderName>
+  <Id>a1b2c3d4-e5f6-7890-abcd-ef1234567890</Id>
+  <Version>1.1.0</Version>
+  <ProviderName>openassay</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
-  <DisplayName DefaultValue="postrust SQL" />
+  <DisplayName DefaultValue="openassay SQL" />
   <Description DefaultValue="Run SQL queries over Excel data using an in-memory PostgreSQL engine" />
-  <IconUrl DefaultValue="https://localhost:3000/icon-32.png" />
-  <HighResolutionIconUrl DefaultValue="https://localhost:3000/icon-64.png" />
-  <SupportUrl DefaultValue="https://github.com/rosssaunders/postrust" />
+  <SupportUrl DefaultValue="https://github.com/rosssaunders/openassay" />
   <Hosts>
     <Host Name="Workbook" />
   </Hosts>
@@ -18,4 +17,36 @@
     <SourceLocation DefaultValue="https://localhost:3000/taskpane.html" />
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
+
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+                    xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Workbook">
+        <AllFormFactors>
+          <ExtensionPoint xsi:type="CustomFunctions">
+            <Script>
+              <SourceLocation resid="Functions.Script.Url" />
+            </Script>
+            <Page>
+              <SourceLocation resid="Functions.Page.Url" />
+            </Page>
+            <Metadata>
+              <SourceLocation resid="Functions.Metadata.Url" />
+            </Metadata>
+            <Namespace resid="Functions.Namespace" />
+          </ExtensionPoint>
+        </AllFormFactors>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Urls>
+        <bt:Url id="Functions.Script.Url" DefaultValue="https://localhost:3000/functions.js" />
+        <bt:Url id="Functions.Page.Url" DefaultValue="https://localhost:3000/functions.html" />
+        <bt:Url id="Functions.Metadata.Url" DefaultValue="https://localhost:3000/functions.json" />
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Functions.Namespace" DefaultValue="OPENASSAY" />
+      </bt:ShortStrings>
+    </Resources>
+  </VersionOverrides>
 </OfficeApp>
