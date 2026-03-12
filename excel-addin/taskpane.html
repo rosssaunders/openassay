@@ -113,18 +113,12 @@
   </p>
 
   <div class="section">
-    <label>📊 Import Data</label>
-    <button id="btn-import-selection" class="secondary">Import Selected Range</button>
-    <button id="btn-import-tables" class="secondary" style="margin-top:4px;">Import All Tables</button>
-    <div id="imported-tables" class="tables-list"></div>
-  </div>
-
-  <div class="section">
     <label>🔍 SQL Query</label>
-    <textarea id="sql-input" placeholder="SELECT * FROM sheet1 WHERE amount > 100&#10;&#10;-- Tables are named after sheet/table names"></textarea>
+    <textarea id="sql-input" placeholder="SELECT * FROM sheet1 WHERE amount > 100&#10;&#10;-- Sheets are auto-imported as tables"></textarea>
     <button id="btn-run">▶ Run Query</button>
     <button id="btn-to-sheet" class="secondary" style="margin-top:4px;" disabled>📋 Results → New Sheet</button>
   </div>
+  <div id="imported-tables" class="tables-list"></div>
 
   <div id="status"></div>
   <div id="results"></div>
@@ -241,75 +235,25 @@
         ).join(' ');
     }
 
-    // Import selected range
-    document.getElementById('btn-import-selection').addEventListener('click', async () => {
-      try {
-        setStatus('Importing selection...');
-        await Excel.run(async (context) => {
-          const range = context.workbook.getSelectedRange();
-          range.load(['values', 'address', 'worksheet']);
-          await context.sync();
+    // Auto-import all sheets
+    async function autoImportSheets() {
+      await Excel.run(async (context) => {
+        const sheets = context.workbook.worksheets;
+        sheets.load('items');
+        await context.sync();
 
-          const sheetName = range.worksheet.name || 'selection';
-          const result = await importRange(sheetName, range.values);
-          setStatus(
-            `Imported ${result.rowCount} rows as "${result.tableName}" ✓`,
-            'success'
-          );
-        });
-      } catch (err) {
-        setStatus(`Import error: ${err.message}`, 'error');
-      }
-    });
-
-    // Import all Excel tables
-    document.getElementById('btn-import-tables').addEventListener('click', async () => {
-      try {
-        setStatus('Importing all tables...');
-        await Excel.run(async (context) => {
-          const tables = context.workbook.tables;
-          tables.load('items');
-          await context.sync();
-
-          if (tables.items.length === 0) {
-            // Fall back to importing all sheets
-            const sheets = context.workbook.worksheets;
-            sheets.load('items');
+        for (const sheet of sheets.items) {
+          try {
+            const range = sheet.getUsedRange();
+            range.load('values');
             await context.sync();
-
-            for (const sheet of sheets.items) {
-              const range = sheet.getUsedRange();
-              range.load('values');
-              await context.sync();
-              if (range.values && range.values.length > 1) {
-                await importRange(sheet.name, range.values);
-              }
+            if (range.values && range.values.length > 1) {
+              await importRange(sheet.name, range.values);
             }
-            setStatus(
-              `Imported ${importedTables.size} sheets ✓`,
-              'success'
-            );
-            return;
-          }
-
-          for (const table of tables.items) {
-            const headerRange = table.getHeaderRowRange();
-            const bodyRange = table.getDataBodyRange();
-            headerRange.load('values');
-            bodyRange.load('values');
-            await context.sync();
-            const allValues = [headerRange.values[0], ...bodyRange.values];
-            await importRange(table.name, allValues);
-          }
-          setStatus(
-            `Imported ${tables.items.length} tables ✓`,
-            'success'
-          );
-        });
-      } catch (err) {
-        setStatus(`Import error: ${err.message}`, 'error');
-      }
-    });
+          } catch {}
+        }
+      });
+    }
 
     // Run query
     document.getElementById('btn-run').addEventListener('click', async () => {
@@ -317,6 +261,8 @@
       if (!sql) return;
 
       try {
+        setStatus('Importing sheets...');
+        await autoImportSheets();
         setStatus('Running query...');
         const t0 = performance.now();
         const result = await runSQL(sql);
