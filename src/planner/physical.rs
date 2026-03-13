@@ -414,6 +414,11 @@ fn plan_with_context(
         LogicalPlan::Scan(scan) => plan_scan(scan, None, ctx),
         LogicalPlan::ForeignScan(scan) => Ok(PhysicalPlan::ForeignScan(ForeignScanPlan {
             table: scan.table.clone(),
+            // Placeholder cost — in PostgreSQL the FDW provides estimates via
+            // GetForeignRelSize / GetForeignPaths.  For now we use a moderate
+            // default that makes foreign scans slightly more expensive than
+            // local heap scans so the planner prefers local tables when both
+            // are available.
             cost: PlanCost::new(10.0, 0.0, 100.0),
         })),
         LogicalPlan::FunctionScan(scan) => Ok(PhysicalPlan::FunctionScan(FunctionScanPlan {

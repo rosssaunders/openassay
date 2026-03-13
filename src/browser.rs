@@ -563,6 +563,10 @@ pub fn register_fdw(name: &str, callback: js_sys::Function) -> String {
                 })?;
 
             // Expect result to be an array of arrays of strings.
+            // Values are returned as ScalarValue::Text — the executor handles
+            // type coercion (implicit casts) when evaluating expressions, similar
+            // to how PostgreSQL's file_fdw reads everything as text and relies
+            // on input functions for conversion.
             let outer = js_sys::Array::from(&result);
             let mut rows = Vec::new();
             for i in 0..outer.length() {

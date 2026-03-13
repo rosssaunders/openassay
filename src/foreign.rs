@@ -554,6 +554,38 @@ mod tests {
     }
 
     #[test]
+    fn create_foreign_table_duplicate_errors() {
+        with_isolated_state(|| {
+            with_fdw_write(|reg| {
+                reg.register_wrapper(Arc::new(TestFdw { rows: vec![] }));
+            });
+            run_sql("CREATE SERVER testserver FOREIGN DATA WRAPPER test_fdw");
+            run_sql("CREATE FOREIGN TABLE ft (id int8) SERVER testserver");
+            let statement =
+                parse_statement("CREATE FOREIGN TABLE ft (id int8) SERVER testserver").unwrap();
+            let planned = plan_statement(statement).unwrap();
+            let result = block_on(execute_planned_query(&planned, &[]));
+            assert!(result.is_err());
+            assert!(result.unwrap_err().message.contains("already exists"));
+        });
+    }
+
+    #[test]
+    fn create_foreign_table_if_not_exists_succeeds() {
+        with_isolated_state(|| {
+            with_fdw_write(|reg| {
+                reg.register_wrapper(Arc::new(TestFdw { rows: vec![] }));
+            });
+            run_sql("CREATE SERVER testserver FOREIGN DATA WRAPPER test_fdw");
+            run_sql("CREATE FOREIGN TABLE ft (id int8) SERVER testserver");
+            let result = run_sql(
+                "CREATE FOREIGN TABLE IF NOT EXISTS ft (id int8) SERVER testserver",
+            );
+            assert_eq!(result.command_tag, "CREATE FOREIGN TABLE");
+        });
+    }
+
+    #[test]
     fn explain_foreign_scan() {
         with_isolated_state(|| {
             with_fdw_write(|reg| {

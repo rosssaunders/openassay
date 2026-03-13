@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::catalog::{ColumnSpec, TableKind, with_catalog_write};
+use crate::catalog::search_path::SearchPath;
 use crate::commands::create_table::{column_spec_from_ast, relation_name_for_create};
 use crate::foreign::{ForeignServer, ForeignTableDef, with_fdw_write};
 use crate::parser::ast::{CreateForeignTableStatement, CreateServerStatement};
@@ -68,6 +69,30 @@ pub async fn execute_create_foreign_table(
         .collect::<Result<Vec<_>, _>>()?;
 
     let server_name = create.server_name.to_ascii_lowercase();
+
+    // Handle IF NOT EXISTS.
+    let table_exists = with_catalog_write(|catalog| {
+        let search_path = SearchPath::new(vec![schema_name.clone()]);
+        catalog
+            .resolve_table(&create.name, &search_path)
+            .is_ok()
+    });
+    if table_exists {
+        if create.if_not_exists {
+            return Ok(QueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                command_tag: "CREATE FOREIGN TABLE".to_string(),
+                rows_affected: 0,
+            });
+        }
+        return Err(EngineError {
+            message: format!(
+                "relation \"{}\" already exists",
+                table_name
+            ),
+        });
+    }
 
     // Verify the server exists.
     let server_exists = with_fdw_write(|reg| reg.get_server(&server_name).is_some());
