@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::catalog::{ColumnSpec, TableKind, with_catalog_write};
 use crate::catalog::search_path::SearchPath;
+use crate::catalog::{ColumnSpec, TableKind, with_catalog_write};
 use crate::commands::create_table::{column_spec_from_ast, relation_name_for_create};
 use crate::foreign::{ForeignServer, ForeignTableDef, with_fdw_write};
 use crate::parser::ast::{CreateForeignTableStatement, CreateServerStatement};
@@ -73,9 +73,7 @@ pub async fn execute_create_foreign_table(
     // Handle IF NOT EXISTS.
     let table_exists = with_catalog_write(|catalog| {
         let search_path = SearchPath::new(vec![schema_name.clone()]);
-        catalog
-            .resolve_table(&create.name, &search_path)
-            .is_ok()
+        catalog.resolve_table(&create.name, &search_path).is_ok()
     });
     if table_exists {
         if create.if_not_exists {
@@ -87,10 +85,7 @@ pub async fn execute_create_foreign_table(
             });
         }
         return Err(EngineError {
-            message: format!(
-                "relation \"{}\" already exists",
-                table_name
-            ),
+            message: format!("relation \"{}\" already exists", table_name),
         });
     }
 

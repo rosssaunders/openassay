@@ -578,9 +578,8 @@ mod tests {
             });
             run_sql("CREATE SERVER testserver FOREIGN DATA WRAPPER test_fdw");
             run_sql("CREATE FOREIGN TABLE ft (id int8) SERVER testserver");
-            let result = run_sql(
-                "CREATE FOREIGN TABLE IF NOT EXISTS ft (id int8) SERVER testserver",
-            );
+            let result =
+                run_sql("CREATE FOREIGN TABLE IF NOT EXISTS ft (id int8) SERVER testserver");
             assert_eq!(result.command_tag, "CREATE FOREIGN TABLE");
         });
     }
