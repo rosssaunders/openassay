@@ -287,10 +287,7 @@ pub fn execute_foreign_scan(
     // 2. Get the wrapper implementation.
     let wrapper = with_fdw_read(|reg| reg.get_wrapper(&server_fdw_name)).ok_or_else(|| {
         crate::tcop::engine::EngineError {
-            message: format!(
-                "foreign data wrapper \"{}\" is not registered",
-                server_fdw_name
-            ),
+            message: format!("foreign data wrapper \"{server_fdw_name}\" is not registered"),
         }
     })?;
 

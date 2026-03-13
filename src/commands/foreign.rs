@@ -25,7 +25,7 @@ pub async fn execute_create_server(
             });
         }
         return Err(EngineError {
-            message: format!("server \"{}\" already exists", server_name),
+            message: format!("server \"{server_name}\" already exists"),
         });
     }
 
@@ -85,7 +85,7 @@ pub async fn execute_create_foreign_table(
             });
         }
         return Err(EngineError {
-            message: format!("relation \"{}\" already exists", table_name),
+            message: format!("relation \"{table_name}\" already exists"),
         });
     }
 
@@ -93,10 +93,7 @@ pub async fn execute_create_foreign_table(
     let server_exists = with_fdw_write(|reg| reg.get_server(&server_name).is_some());
     if !server_exists {
         return Err(EngineError {
-            message: format!(
-                "server \"{}\" does not exist for CREATE FOREIGN TABLE",
-                server_name
-            ),
+            message: format!("server \"{server_name}\" does not exist for CREATE FOREIGN TABLE"),
         });
     }
 
