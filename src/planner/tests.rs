@@ -68,7 +68,8 @@ where
         LogicalPlan::Result
         | LogicalPlan::Scan(_)
         | LogicalPlan::FunctionScan(_)
-        | LogicalPlan::CteScan(_) => false,
+        | LogicalPlan::CteScan(_)
+        | LogicalPlan::ForeignScan(_) => false,
     }
 }
 
@@ -104,7 +105,8 @@ where
         PhysicalPlan::Result(_)
         | PhysicalPlan::Scan(_)
         | PhysicalPlan::FunctionScan(_)
-        | PhysicalPlan::CteScan(_) => false,
+        | PhysicalPlan::CteScan(_)
+        | PhysicalPlan::ForeignScan(_) => false,
     }
 }
 

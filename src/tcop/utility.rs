@@ -1,8 +1,8 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::commands::subscription;
 use crate::commands::{
-    alter, create_table, do_block, drop, explain, extension, function, index, matview, schema,
-    sequence, trigger, typecmd, variable, view,
+    alter, create_table, do_block, drop, explain, extension, foreign, function, index, matview,
+    schema, sequence, trigger, typecmd, variable, view,
 };
 use crate::parser::ast::Statement;
 use crate::tcop::engine::{EngineError, QueryResult};
@@ -109,6 +109,10 @@ pub async fn execute_utility_statement(
         Statement::CreateDomain(create) => typecmd::execute_create_domain(create).await,
         Statement::DropType(drop_type) => typecmd::execute_drop_type(drop_type).await,
         Statement::DropDomain(drop_domain) => typecmd::execute_drop_domain(drop_domain).await,
+        Statement::CreateServer(create) => foreign::execute_create_server(create).await,
+        Statement::CreateForeignTable(create) => {
+            foreign::execute_create_foreign_table(create).await
+        }
         _ => Err(EngineError {
             message: "statement is not a utility command".to_string(),
         }),
@@ -154,5 +158,7 @@ pub fn is_utility_statement(statement: &Statement) -> bool {
             | Statement::CreateDomain(_)
             | Statement::DropType(_)
             | Statement::DropDomain(_)
+            | Statement::CreateServer(_)
+            | Statement::CreateForeignTable(_)
     )
 }

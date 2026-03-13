@@ -4,6 +4,7 @@ pub mod do_block;
 pub mod drop;
 pub mod explain;
 pub mod extension;
+pub mod foreign;
 pub mod function;
 pub mod index;
 pub mod matview;
