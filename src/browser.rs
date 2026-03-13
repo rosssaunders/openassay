@@ -27,7 +27,7 @@ thread_local! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BrowserQueryResult {
     columns: Vec<String>,
-    rows: Vec<Vec<String>>,
+    rows: Vec<Vec<Option<String>>>,
     command_tag: String,
     rows_affected: u64,
 }
@@ -218,7 +218,7 @@ async fn execute_simple_query(sql: &str) -> Result<Vec<BrowserQueryResult>, Stri
 
     let mut results = Vec::new();
     let mut current_columns: Option<Vec<String>> = None;
-    let mut current_rows: Vec<Vec<String>> = Vec::new();
+    let mut current_rows: Vec<Vec<Option<String>>> = Vec::new();
 
     for message in messages {
         match message {
@@ -227,20 +227,25 @@ async fn execute_simple_query(sql: &str) -> Result<Vec<BrowserQueryResult>, Stri
                 current_rows.clear();
             }
             BackendMessage::DataRow { values } => {
-                current_rows.push(values);
+                current_rows.push(values.into_iter().map(Some).collect());
             }
             BackendMessage::DataRowBinary { values } => {
                 current_rows.push(
                     values
                         .into_iter()
                         .map(|value| match value {
-                            None => "NULL".to_string(),
-                            Some(bytes) => String::from_utf8(bytes.clone()).unwrap_or_else(|_| {
-                                format!(
-                                    "\\x{}",
-                                    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-                                )
-                            }),
+                            None => None,
+                            Some(bytes) => {
+                                Some(String::from_utf8(bytes.clone()).unwrap_or_else(|_| {
+                                    format!(
+                                        "\\x{}",
+                                        bytes
+                                            .iter()
+                                            .map(|b| format!("{b:02x}"))
+                                            .collect::<String>()
+                                    )
+                                }))
+                            }
                         })
                         .collect(),
                 );
@@ -386,9 +391,12 @@ fn render_query_result(result: &BrowserQueryResult) -> String {
         .iter()
         .map(|row| {
             if row.len() <= 1 {
-                row.first().cloned().unwrap_or_default()
+                row.first().and_then(|v| v.clone()).unwrap_or_default()
             } else {
-                row.join("\t")
+                row.iter()
+                    .map(|v| v.as_deref().unwrap_or("NULL"))
+                    .collect::<Vec<_>>()
+                    .join("\t")
             }
         })
         .collect::<Vec<_>>()
