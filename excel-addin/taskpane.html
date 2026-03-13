@@ -124,11 +124,15 @@
   <div id="results"></div>
 
   <script type="module">
-    import init, { execute_sql_json } from './pkg/openassay.js';
+    import init, { execute_sql_json, register_fdw } from './pkg/openassay.js';
 
     let wasmReady = false;
+    let fdwReady = false;
+    let excelServerReady = false;
     let lastResult = null;
-    const importedTables = new Map(); // name -> {columns, rowCount}
+    const importedTables = new Map(); // sheet name -> {columns, rowCount}
+    const registeredTables = new Map(); // sheet name -> {signature}
+    const sheetDataCache = new Map(); // sheet name -> string[][]
 
     // Status helpers
     const status = document.getElementById('status');
@@ -137,11 +141,123 @@
       status.className = type;
     };
 
+    function quoteIdent(name) {
+      return `"${String(name).replace(/"/g, '""')}"`;
+    }
+
+    function quoteLiteral(value) {
+      return `'${String(value).replace(/'/g, "''")}'`;
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function normalizeHeader(header, index) {
+      if (header === null || header === undefined || header === '') {
+        return `col_${index + 1}`;
+      }
+      return String(header);
+    }
+
+    function toFdwCell(value) {
+      if (value === null || value === undefined) {
+        return null;
+      }
+      return String(value);
+    }
+
+    function inferColumnTypes(headers, rows) {
+      return headers.map((_, colIdx) => {
+        for (const row of rows.slice(0, 10)) {
+          const value = row[colIdx];
+          if (value === null || value === undefined) {
+            continue;
+          }
+          if (typeof value === 'number') {
+            return Number.isInteger(value) ? 'BIGINT' : 'DOUBLE PRECISION';
+          }
+          if (typeof value === 'boolean') {
+            return 'BOOLEAN';
+          }
+          if (value instanceof Date) {
+            return 'TIMESTAMP';
+          }
+        }
+        return 'TEXT';
+      });
+    }
+
+    function buildSheetDefinition(sheetName, values) {
+      if (!Array.isArray(values) || values.length === 0) {
+        return null;
+      }
+
+      const hasAnyContent = values.some(row =>
+        Array.isArray(row) && row.some(cell => cell !== null && cell !== undefined && cell !== '')
+      );
+      if (!hasAnyContent) {
+        return null;
+      }
+
+      const headers = (values[0] || []).map((header, index) =>
+        normalizeHeader(header, index)
+      );
+      if (headers.length === 0) {
+        return null;
+      }
+
+      const rows = values.slice(1);
+      const types = inferColumnTypes(headers, rows);
+      return {
+        tableName: sheetName,
+        headers,
+        rows,
+        types,
+        signature: JSON.stringify({ headers, types }),
+      };
+    }
+
+    function cacheRows(cacheKey, definition) {
+      sheetDataCache.set(
+        cacheKey,
+        definition.rows.map(row =>
+          definition.headers.map((_, columnIndex) => toFdwCell(row[columnIndex]))
+        )
+      );
+    }
+
+    function registerExcelFdw() {
+      if (fdwReady) {
+        return;
+      }
+      register_fdw('excel', (_tableName, optionsJson) => {
+        const options = JSON.parse(optionsJson || '{}');
+        const cacheKey = options.cache_key ?? options.sheet ?? '';
+        return sheetDataCache.get(cacheKey) ?? [];
+      });
+      fdwReady = true;
+    }
+
+    async function ensureExcelServer() {
+      if (excelServerReady) {
+        return;
+      }
+      await runSQL('CREATE SERVER IF NOT EXISTS excel_server FOREIGN DATA WRAPPER excel');
+      excelServerReady = true;
+    }
+
     // Initialize WASM
     async function initWasm() {
       setStatus('Loading SQL engine...');
       try {
         await init();
+        registerExcelFdw();
         wasmReady = true;
         setStatus('SQL engine ready ✓', 'success');
       } catch (err) {
@@ -156,71 +272,39 @@
       return JSON.parse(resultJson);
     }
 
-    // Sanitize name for SQL table
-    function sanitizeName(name) {
-      return name.toLowerCase().replace(/[^a-z0-9_]/g, '_').replace(/^[0-9]/, '_$&');
-    }
+    async function ensureForeignTable(definition) {
+      await ensureExcelServer();
 
-    // Import a range from Excel into openassay
-    async function importRange(name, values) {
-      if (!values || values.length < 2) {
-        throw new Error('Need at least a header row and one data row');
+      const existing = registeredTables.get(definition.tableName);
+      if (existing && existing.signature === definition.signature) {
+        importedTables.set(definition.tableName, {
+          columns: definition.headers,
+          rowCount: definition.rows.length,
+        });
+        return;
       }
 
-      const headers = values[0].map((h, i) =>
-        sanitizeName(String(h || `col_${i + 1}`))
+      if (existing) {
+        await runSQL(`DROP TABLE IF EXISTS ${quoteIdent(definition.tableName)}`);
+      }
+
+      const columnDefs = definition.headers
+        .map((header, index) => `${quoteIdent(header)} ${definition.types[index]}`)
+        .join(', ');
+
+      await runSQL(
+        `CREATE FOREIGN TABLE IF NOT EXISTS ${quoteIdent(definition.tableName)} (${columnDefs}) ` +
+        `SERVER excel_server OPTIONS (` +
+        `sheet ${quoteLiteral(definition.tableName)}, ` +
+        `cache_key ${quoteLiteral(definition.tableName)}` +
+        ')'
       );
-      const rows = values.slice(1);
 
-      // Infer types from first few data rows
-      const types = headers.map((_, colIdx) => {
-        for (const row of rows.slice(0, 10)) {
-          const val = row[colIdx];
-          if (val === null || val === undefined || val === '') continue;
-          if (typeof val === 'number') {
-            return Number.isInteger(val) ? 'BIGINT' : 'DOUBLE PRECISION';
-          }
-          if (typeof val === 'boolean') return 'BOOLEAN';
-          if (val instanceof Date) return 'TIMESTAMP';
-        }
-        return 'TEXT';
+      registeredTables.set(definition.tableName, { signature: definition.signature });
+      importedTables.set(definition.tableName, {
+        columns: definition.headers,
+        rowCount: definition.rows.length,
       });
-
-      const tableName = sanitizeName(name);
-
-      // Drop if exists
-      try { await runSQL(`DROP TABLE IF EXISTS "${tableName}"`); } catch {}
-
-      // Create table
-      const colDefs = headers.map((h, i) => `"${h}" ${types[i]}`).join(', ');
-      await runSQL(`CREATE TABLE "${tableName}" (${colDefs})`);
-
-      // Insert rows in batches
-      const batchSize = 100;
-      for (let i = 0; i < rows.length; i += batchSize) {
-        const batch = rows.slice(i, i + batchSize);
-        const valueClauses = batch.map(row => {
-          const vals = row.map((v, colIdx) => {
-            if (v === null || v === undefined || v === '') return 'NULL';
-            if (typeof v === 'number') return String(v);
-            if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
-            // Escape single quotes
-            const escaped = String(v).replace(/'/g, "''");
-            return `'${escaped}'`;
-          });
-          return `(${vals.join(', ')})`;
-        }).join(', ');
-
-        await runSQL(`INSERT INTO "${tableName}" VALUES ${valueClauses}`);
-      }
-
-      importedTables.set(tableName, {
-        columns: headers,
-        rowCount: rows.length,
-      });
-
-      updateTablesList();
-      return { tableName, columns: headers, rowCount: rows.length };
     }
 
     function updateTablesList() {
@@ -231,28 +315,44 @@
       }
       el.innerHTML = Array.from(importedTables.entries())
         .map(([name, info]) =>
-          `<span>${name} <span class="row-count">(${info.rowCount} rows)</span></span>`
-        ).join(' ');
+          `<span>${escapeHtml(quoteIdent(name))} <span class="row-count">(${info.rowCount} rows)</span></span>`
+        )
+        .join(' ');
     }
 
-    // Auto-import all sheets
-    async function autoImportSheets() {
+    async function autoRegisterSheets() {
+      const definitions = [];
+      importedTables.clear();
+      sheetDataCache.clear();
+
       await Excel.run(async (context) => {
         const sheets = context.workbook.worksheets;
-        sheets.load('items');
+        sheets.load('items/name');
         await context.sync();
 
-        for (const sheet of sheets.items) {
-          try {
-            const range = sheet.getUsedRange();
-            range.load('values');
-            await context.sync();
-            if (range.values && range.values.length > 1) {
-              await importRange(sheet.name, range.values);
-            }
-          } catch {}
+        const sheetRanges = sheets.items.map(sheet => {
+          const range = sheet.getUsedRange();
+          range.load('values');
+          return { sheet, range };
+        });
+
+        await context.sync();
+
+        for (const { sheet, range } of sheetRanges) {
+          const definition = buildSheetDefinition(sheet.name, range.values);
+          if (!definition) {
+            continue;
+          }
+          cacheRows(definition.tableName, definition);
+          definitions.push(definition);
         }
       });
+
+      for (const definition of definitions) {
+        await ensureForeignTable(definition);
+      }
+
+      updateTablesList();
     }
 
     // Run query
@@ -261,8 +361,8 @@
       if (!sql) return;
 
       try {
-        setStatus('Importing sheets...');
-        await autoImportSheets();
+        setStatus('Registering sheets...');
+        await autoRegisterSheets();
         setStatus('Running query...');
         const t0 = performance.now();
         const result = await runSQL(sql);
@@ -296,11 +396,13 @@
 
         // Render table
         let html = '<table><thead><tr>';
-        html += columns.map(c => `<th>${c}</th>`).join('');
+        html += columns.map(column => `<th>${escapeHtml(column)}</th>`).join('');
         html += '</tr></thead><tbody>';
         for (const row of rows.slice(0, 500)) {
           html += '<tr>';
-          html += row.map(v => `<td>${v === null ? '<i style="color:#999">NULL</i>' : v}</td>`).join('');
+          html += row.map(value =>
+            `<td>${value === null ? '<i style="color:#999">NULL</i>' : escapeHtml(value)}</td>`
+          ).join('');
           html += '</tr>';
         }
         if (rows.length > 500) {
@@ -334,7 +436,7 @@
           if (rows.length > 0) {
             const dataRange = sheet.getRangeByIndexes(1, 0, rows.length, columns.length);
             dataRange.values = rows.map(row =>
-              row.map(v => v === null ? '' : v)
+              row.map(value => (value === null ? null : value))
             );
           }
 
