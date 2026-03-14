@@ -14,6 +14,12 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::ServerConnection;
 
 fn main() {
+    // Install the default CryptoProvider so rustls doesn't panic when both
+    // aws-lc-rs and ring features are enabled.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .ok(); // ignore AlreadyInstalled
+
     let addr = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:55432".to_string());
