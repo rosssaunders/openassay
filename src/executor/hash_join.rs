@@ -126,6 +126,7 @@ impl HashJoinExecutor {
                 .cloned()
                 .collect(),
             row_count: row_pairs.len(),
+            record_batch: None,
         };
 
         Ok(HashJoinResult { batch, row_pairs })

@@ -2,8 +2,9 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use arrow::array::{Array, BooleanArray, BooleanBuilder, Float64Array, Int64Array, RecordBatch};
-use arrow::compute::filter_record_batch;
+use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray};
+use arrow::compute::kernels::cmp;
+use arrow::compute::{and_kleene, filter_record_batch, ilike, like, nilike, nlike};
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 
 use crate::catalog::oid::Oid;
@@ -16,7 +17,7 @@ use crate::storage::tuple::{
 use crate::utils::adt::misc::{compare_values_for_predicate, like_matches};
 
 pub(crate) const DEFAULT_BTREE_ORDER: usize = 48;
-pub(crate) const COLUMNAR_BATCH_SIZE: usize = 8_192;
+pub(crate) const COLUMNAR_BATCH_SIZE: usize = 1_024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ColumnarBatch {
@@ -1312,26 +1313,12 @@ fn filter_batch(
     predicates: &[ScanPredicate],
     selected_rows: Option<&[bool]>,
 ) -> Result<(RecordBatch, Vec<usize>), String> {
-    let row_count = batch.record_batch.num_rows();
-    let mut mask_builder = BooleanBuilder::with_capacity(row_count);
-    let mut surviving_offsets = Vec::new();
-
-    for row_idx in 0..row_count {
-        let selected = selected_rows.is_none_or(|rows| rows.get(row_idx).copied().unwrap_or(false));
-        let deleted = batch.deleted_rows.get(row_idx).copied().unwrap_or(false);
-        if !selected || deleted {
-            mask_builder.append_value(false);
-            continue;
-        }
-        if record_batch_row_matches_predicates(&batch.record_batch, row_idx, predicates)? {
-            mask_builder.append_value(true);
-            surviving_offsets.push(row_idx);
-        } else {
-            mask_builder.append_value(false);
-        }
-    }
-
-    let mask: BooleanArray = mask_builder.finish();
+    let mask = build_filter_mask(batch, predicates, selected_rows)?;
+    let surviving_offsets = mask
+        .iter()
+        .enumerate()
+        .filter_map(|(row_idx, selected)| matches!(selected, Some(true)).then_some(row_idx))
+        .collect::<Vec<_>>();
     let filtered =
         filter_record_batch(&batch.record_batch, &mask).map_err(|err| err.to_string())?;
     Ok((filtered, surviving_offsets))
@@ -1342,21 +1329,149 @@ fn count_matching_rows_in_batch(
     predicates: &[ScanPredicate],
     selected_rows: Option<&[bool]>,
 ) -> Result<usize, String> {
-    let row_count = batch.record_batch.num_rows();
-    let mut count = 0usize;
+    Ok(build_filter_mask(batch, predicates, selected_rows)?
+        .iter()
+        .filter(|selected| matches!(selected, Some(true)))
+        .count())
+}
 
-    for row_idx in 0..row_count {
-        let selected = selected_rows.is_none_or(|rows| rows.get(row_idx).copied().unwrap_or(false));
-        let deleted = batch.deleted_rows.get(row_idx).copied().unwrap_or(false);
-        if !selected || deleted {
-            continue;
-        }
-        if record_batch_row_matches_predicates(&batch.record_batch, row_idx, predicates)? {
-            count += 1;
-        }
+fn build_filter_mask(
+    batch: &ColumnarBatch,
+    predicates: &[ScanPredicate],
+    selected_rows: Option<&[bool]>,
+) -> Result<BooleanArray, String> {
+    if let Some(mask) = try_build_arrow_filter_mask(batch, predicates, selected_rows)? {
+        return Ok(mask);
     }
+    build_filter_mask_row(batch, predicates, selected_rows)
+}
 
-    Ok(count)
+fn try_build_arrow_filter_mask(
+    batch: &ColumnarBatch,
+    predicates: &[ScanPredicate],
+    selected_rows: Option<&[bool]>,
+) -> Result<Option<BooleanArray>, String> {
+    let mut mask = visibility_mask(batch, selected_rows);
+    for predicate in predicates {
+        let Some(column) = batch.record_batch.columns().get(predicate.column_index) else {
+            return Err(format!(
+                "row does not have predicate column offset {}",
+                predicate.column_index
+            ));
+        };
+        let Some(predicate_mask) = try_eval_arrow_scan_predicate(column.as_ref(), predicate)?
+        else {
+            return Ok(None);
+        };
+        mask = and_kleene(&mask, &predicate_mask).map_err(|err| err.to_string())?;
+    }
+    Ok(Some(mask))
+}
+
+fn build_filter_mask_row(
+    batch: &ColumnarBatch,
+    predicates: &[ScanPredicate],
+    selected_rows: Option<&[bool]>,
+) -> Result<BooleanArray, String> {
+    let row_count = batch.record_batch.num_rows();
+    let values = (0..row_count)
+        .map(|row_idx| {
+            let selected =
+                selected_rows.is_none_or(|rows| rows.get(row_idx).copied().unwrap_or(false));
+            let deleted = batch.deleted_rows.get(row_idx).copied().unwrap_or(false);
+            if !selected || deleted {
+                return Ok(Some(false));
+            }
+            Ok(Some(record_batch_row_matches_predicates(
+                &batch.record_batch,
+                row_idx,
+                predicates,
+            )?))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(BooleanArray::from(values))
+}
+
+fn visibility_mask(batch: &ColumnarBatch, selected_rows: Option<&[bool]>) -> BooleanArray {
+    (0..batch.record_batch.num_rows())
+        .map(|row_idx| {
+            let selected =
+                selected_rows.is_none_or(|rows| rows.get(row_idx).copied().unwrap_or(false));
+            let deleted = batch.deleted_rows.get(row_idx).copied().unwrap_or(false);
+            Some(selected && !deleted)
+        })
+        .collect::<BooleanArray>()
+}
+
+fn try_eval_arrow_scan_predicate(
+    column: &dyn Array,
+    predicate: &ScanPredicate,
+) -> Result<Option<BooleanArray>, String> {
+    if let (Some(values), ScalarValue::Int(literal)) = (
+        column.as_any().downcast_ref::<Int64Array>(),
+        &predicate.value,
+    ) {
+        let scalar = Int64Array::new_scalar(*literal);
+        return Ok(eval_arrow_scan_comparison(values, &scalar, predicate));
+    }
+    if let (Some(values), ScalarValue::Float(literal)) = (
+        column.as_any().downcast_ref::<Float64Array>(),
+        &predicate.value,
+    ) {
+        let scalar = Float64Array::new_scalar(*literal);
+        return Ok(eval_arrow_scan_comparison(values, &scalar, predicate));
+    }
+    if let Some(values) = column.as_any().downcast_ref::<StringArray>() {
+        if predicate.escape.is_some()
+            && matches!(
+                predicate.op,
+                ScanPredicateOp::Like
+                    | ScanPredicateOp::NotLike
+                    | ScanPredicateOp::ILike
+                    | ScanPredicateOp::NotILike
+            )
+        {
+            return Ok(None);
+        }
+        let literal = match &predicate.value {
+            ScalarValue::Text(text) => text.clone(),
+            other => other.render(),
+        };
+        let scalar = StringArray::new_scalar(literal.as_str());
+        let mask = match predicate.op {
+            ScanPredicateOp::Eq => cmp::eq(values, &scalar).ok(),
+            ScanPredicateOp::NotEq => cmp::neq(values, &scalar).ok(),
+            ScanPredicateOp::Lt => cmp::lt(values, &scalar).ok(),
+            ScanPredicateOp::Lte => cmp::lt_eq(values, &scalar).ok(),
+            ScanPredicateOp::Gt => cmp::gt(values, &scalar).ok(),
+            ScanPredicateOp::Gte => cmp::gt_eq(values, &scalar).ok(),
+            ScanPredicateOp::Like => like(values, &scalar).ok(),
+            ScanPredicateOp::NotLike => nlike(values, &scalar).ok(),
+            ScanPredicateOp::ILike => ilike(values, &scalar).ok(),
+            ScanPredicateOp::NotILike => nilike(values, &scalar).ok(),
+        };
+        return Ok(mask);
+    }
+    Ok(None)
+}
+
+fn eval_arrow_scan_comparison(
+    values: &dyn arrow::array::Datum,
+    scalar: &dyn arrow::array::Datum,
+    predicate: &ScanPredicate,
+) -> Option<BooleanArray> {
+    match predicate.op {
+        ScanPredicateOp::Eq => cmp::eq(values, scalar).ok(),
+        ScanPredicateOp::NotEq => cmp::neq(values, scalar).ok(),
+        ScanPredicateOp::Lt => cmp::lt(values, scalar).ok(),
+        ScanPredicateOp::Lte => cmp::lt_eq(values, scalar).ok(),
+        ScanPredicateOp::Gt => cmp::gt(values, scalar).ok(),
+        ScanPredicateOp::Gte => cmp::gt_eq(values, scalar).ok(),
+        ScanPredicateOp::Like
+        | ScanPredicateOp::NotLike
+        | ScanPredicateOp::ILike
+        | ScanPredicateOp::NotILike => None,
+    }
 }
 
 fn record_batch_to_rows(
@@ -1623,6 +1738,47 @@ mod tests {
         assert_eq!(seen[0].0, COLUMNAR_BATCH_SIZE);
         assert_eq!(seen[0].1.first().copied(), Some(0));
         assert_eq!(seen[0].1.last().copied(), Some(COLUMNAR_BATCH_SIZE - 1));
+    }
+
+    #[test]
+    fn scan_batches_for_table_applies_like_predicate_columnarly() {
+        let mut storage = InMemoryStorage::default();
+        storage
+            .replace_rows_for_table(
+                79,
+                vec![
+                    vec![ScalarValue::Text("alpha".to_string())],
+                    vec![ScalarValue::Text("beta".to_string())],
+                    vec![ScalarValue::Text("alphabet".to_string())],
+                ],
+            )
+            .expect("replace rows");
+
+        let mut rows = Vec::new();
+        storage
+            .scan_batches_for_table(
+                79,
+                &[ScanPredicate {
+                    column_index: 0,
+                    op: ScanPredicateOp::Like,
+                    value: ScalarValue::Text("%alpha%".to_string()),
+                    escape: None,
+                }],
+                None,
+                &mut |batch| {
+                    rows.extend(batch.to_rows());
+                    Ok(true)
+                },
+            )
+            .expect("streaming scan should succeed");
+
+        assert_eq!(
+            rows,
+            vec![
+                vec![ScalarValue::Text("alpha".to_string())],
+                vec![ScalarValue::Text("alphabet".to_string())],
+            ]
+        );
     }
 
     #[test]

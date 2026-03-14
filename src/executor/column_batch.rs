@@ -1,4 +1,5 @@
 use arrow::array::{Array, BooleanArray, Date32Array, Float64Array, Int64Array, RecordBatch};
+use arrow::compute::filter_record_batch;
 use rust_decimal::Decimal;
 
 use crate::storage::tuple::{ScalarValue, arrow_value_to_scalar_value};
@@ -9,6 +10,7 @@ pub struct ColumnBatch {
     pub columns: Vec<TypedColumn>,
     pub column_names: Vec<String>,
     pub row_count: usize,
+    pub record_batch: Option<RecordBatch>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,6 +32,7 @@ impl ColumnBatch {
             columns,
             column_names,
             row_count,
+            record_batch: None,
         }
     }
 
@@ -42,6 +45,7 @@ impl ColumnBatch {
             columns,
             column_names,
             row_count: 0,
+            record_batch: None,
         }
     }
 
@@ -54,31 +58,25 @@ impl ColumnBatch {
         column_names: &[String],
         projected_columns: Option<&[usize]>,
     ) -> Self {
-        match projected_columns {
-            Some(projection) => Self {
-                columns: projection
-                    .iter()
-                    .filter_map(|idx| {
-                        rb.columns()
-                            .get(*idx)
-                            .map(|column| typed_column_from_array(column.as_ref(), rb.num_rows()))
-                    })
-                    .collect(),
-                column_names: projection
-                    .iter()
-                    .filter_map(|idx| column_names.get(*idx).cloned())
-                    .collect(),
-                row_count: rb.num_rows(),
-            },
-            None => Self {
-                columns: rb
-                    .columns()
-                    .iter()
-                    .map(|column| typed_column_from_array(column.as_ref(), rb.num_rows()))
-                    .collect(),
-                column_names: column_names.to_vec(),
-                row_count: rb.num_rows(),
-            },
+        let projected_batch = projected_columns.and_then(|projection| rb.project(projection).ok());
+        let source_batch = projected_batch.as_ref().unwrap_or(rb);
+        let projected_names = match projected_columns {
+            Some(projection) => projection
+                .iter()
+                .filter_map(|idx| column_names.get(*idx).cloned())
+                .collect(),
+            None => column_names.to_vec(),
+        };
+
+        Self {
+            columns: source_batch
+                .columns()
+                .iter()
+                .map(|column| typed_column_from_array(column.as_ref(), source_batch.num_rows()))
+                .collect(),
+            column_names: projected_names,
+            row_count: source_batch.num_rows(),
+            record_batch: Some(source_batch.clone()),
         }
     }
 
@@ -99,6 +97,7 @@ impl ColumnBatch {
             columns,
             column_names: column_names.to_vec(),
             row_count,
+            record_batch: None,
         }
     }
 
@@ -130,6 +129,17 @@ impl ColumnBatch {
 
     pub fn filter(&self, mask: &[bool]) -> Self {
         let row_count = self.row_count.min(mask.len());
+        if let Some(record_batch) = &self.record_batch {
+            let arrow_mask = mask
+                .iter()
+                .take(row_count)
+                .copied()
+                .map(Some)
+                .collect::<BooleanArray>();
+            if let Ok(filtered) = filter_record_batch(record_batch, &arrow_mask) {
+                return Self::from_record_batch(&filtered, &self.column_names);
+            }
+        }
         let columns = self
             .columns
             .iter()
@@ -143,28 +153,39 @@ impl ColumnBatch {
                 .take(row_count)
                 .filter(|selected| **selected)
                 .count(),
+            record_batch: None,
         }
     }
 
     pub fn project(&self, indices: &[usize]) -> Self {
-        let columns = indices
-            .iter()
-            .filter_map(|idx| self.columns.get(*idx).cloned())
-            .collect::<Vec<_>>();
         let column_names = indices
             .iter()
             .filter_map(|idx| self.column_names.get(*idx).cloned())
+            .collect::<Vec<_>>();
+        if let Some(record_batch) = &self.record_batch
+            && let Ok(projected) = record_batch.project(indices)
+        {
+            return Self::from_record_batch(&projected, &column_names);
+        }
+        let columns = indices
+            .iter()
+            .filter_map(|idx| self.columns.get(*idx).cloned())
             .collect::<Vec<_>>();
         Self {
             columns,
             column_names,
             row_count: self.row_count,
+            record_batch: None,
         }
     }
 
     pub fn slice(&self, offset: usize, len: usize) -> Self {
         let start = offset.min(self.row_count);
         let end = start.saturating_add(len).min(self.row_count);
+        if let Some(record_batch) = &self.record_batch {
+            let sliced = record_batch.slice(start, end - start);
+            return Self::from_record_batch(&sliced, &self.column_names);
+        }
         let columns = self
             .columns
             .iter()
@@ -174,6 +195,7 @@ impl ColumnBatch {
             columns,
             column_names: self.column_names.clone(),
             row_count: end - start,
+            record_batch: None,
         }
     }
 
@@ -190,6 +212,7 @@ impl ColumnBatch {
             columns,
             column_names,
             row_count: self.row_count,
+            record_batch: None,
         }
     }
 
@@ -207,6 +230,7 @@ impl ColumnBatch {
             columns,
             column_names,
             row_count: self.row_count,
+            record_batch: None,
         }
     }
 
@@ -225,6 +249,7 @@ impl ColumnBatch {
             left.append(right);
         }
         self.row_count += other.row_count;
+        self.record_batch = None;
         Ok(())
     }
 }
@@ -715,6 +740,35 @@ mod tests {
                 vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())],
                 vec![ScalarValue::Null, ScalarValue::Text("b".to_string())],
                 vec![ScalarValue::Int(3), ScalarValue::Null],
+            ]
+        );
+    }
+
+    #[test]
+    fn preserves_arrow_backing_for_record_batch_filters() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, true),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![Some(1), Some(2), Some(3)])),
+                Arc::new(StringArray::from(vec![Some("a"), Some("b"), Some("c")])),
+            ],
+        )
+        .expect("record batch should build");
+
+        let filtered =
+            ColumnBatch::from_record_batch(&batch, &["id".to_string(), "name".to_string()])
+                .filter(&[false, true, true]);
+
+        assert!(filtered.record_batch.is_some());
+        assert_eq!(
+            filtered.to_rows(),
+            vec![
+                vec![ScalarValue::Int(2), ScalarValue::Text("b".to_string())],
+                vec![ScalarValue::Int(3), ScalarValue::Text("c".to_string())],
             ]
         );
     }

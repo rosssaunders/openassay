@@ -1,5 +1,9 @@
 use std::cmp::Ordering;
 
+use arrow::array::{BooleanArray, Float64Array, Int64Array, StringArray};
+use arrow::compute::kernels::cmp;
+use arrow::compute::{and_kleene, ilike, like, nilike, nlike, not, or_kleene};
+
 use crate::executor::column_batch::{ColumnBatch, TypedColumn};
 use crate::executor::exec_expr::like_match;
 use crate::parser::ast::{BinaryOp, Expr, UnaryOp};
@@ -53,17 +57,12 @@ fn eval_predicate(expr: &Expr, batch: &ColumnBatch) -> Option<Vec<Option<bool>>>
         } => {
             let left_truths = eval_predicate(left, batch)?;
             let right_truths = eval_predicate(right, batch)?;
-            Some(
-                left_truths
-                    .into_iter()
-                    .zip(right_truths)
-                    .map(|(left, right)| match (left, right) {
-                        (Some(false), _) | (_, Some(false)) => Some(false),
-                        (Some(true), Some(true)) => Some(true),
-                        _ => None,
-                    })
-                    .collect(),
+            let combined = and_kleene(
+                &truths_to_boolean_array(left_truths),
+                &truths_to_boolean_array(right_truths),
             )
+            .ok()?;
+            Some(boolean_array_to_truths(combined))
         }
         Expr::Binary {
             left,
@@ -72,17 +71,12 @@ fn eval_predicate(expr: &Expr, batch: &ColumnBatch) -> Option<Vec<Option<bool>>>
         } => {
             let left_truths = eval_predicate(left, batch)?;
             let right_truths = eval_predicate(right, batch)?;
-            Some(
-                left_truths
-                    .into_iter()
-                    .zip(right_truths)
-                    .map(|(left, right)| match (left, right) {
-                        (Some(true), _) | (_, Some(true)) => Some(true),
-                        (Some(false), Some(false)) => Some(false),
-                        _ => None,
-                    })
-                    .collect(),
+            let combined = or_kleene(
+                &truths_to_boolean_array(left_truths),
+                &truths_to_boolean_array(right_truths),
             )
+            .ok()?;
+            Some(boolean_array_to_truths(combined))
         }
         Expr::Binary { left, op, right } => {
             let comparison = match op {
@@ -137,12 +131,8 @@ fn eval_predicate(expr: &Expr, batch: &ColumnBatch) -> Option<Vec<Option<bool>>>
             expr,
         } => {
             let truths = eval_predicate(expr, batch)?;
-            Some(
-                truths
-                    .into_iter()
-                    .map(|truth| truth.map(|value| !value))
-                    .collect(),
-            )
+            let negated = not(&truths_to_boolean_array(truths)).ok()?;
+            Some(boolean_array_to_truths(negated))
         }
         _ => None,
     }
@@ -185,50 +175,8 @@ fn compare_column_to_literal(
     op: BinaryOp,
     target_ordering: Ordering,
 ) -> Vec<Option<bool>> {
-    match (&batch.columns[column_idx], literal) {
-        (TypedColumn::Text(values, nulls), ScalarValue::Text(text)) => {
-            return values
-                .iter()
-                .zip(nulls.iter().copied())
-                .map(|(value, is_null)| {
-                    if is_null {
-                        return None;
-                    }
-                    let ordering = value.as_str().cmp(text.as_str());
-                    Some(compare_ordering(ordering, op.clone(), target_ordering))
-                })
-                .collect();
-        }
-        (TypedColumn::Int64(values, nulls), ScalarValue::Int(literal)) => {
-            return values
-                .iter()
-                .zip(nulls.iter().copied())
-                .map(|(value, is_null)| {
-                    if is_null {
-                        return None;
-                    }
-                    Some(compare_ordering(
-                        value.cmp(literal),
-                        op.clone(),
-                        target_ordering,
-                    ))
-                })
-                .collect();
-        }
-        (TypedColumn::Float64(values, nulls), ScalarValue::Float(literal)) => {
-            return values
-                .iter()
-                .zip(nulls.iter().copied())
-                .map(|(value, is_null)| {
-                    if is_null {
-                        return None;
-                    }
-                    let ordering = value.partial_cmp(literal).unwrap_or(Ordering::Equal);
-                    Some(compare_ordering(ordering, op.clone(), target_ordering))
-                })
-                .collect();
-        }
-        _ => {}
+    if let Some(mask) = compare_arrow_column_to_literal(&batch.columns[column_idx], literal, &op) {
+        return boolean_array_to_truths(mask);
     }
 
     (0..batch.row_count)
@@ -241,6 +189,53 @@ fn compare_column_to_literal(
             Some(compare_ordering(ordering, op.clone(), target_ordering))
         })
         .collect()
+}
+
+fn compare_arrow_column_to_literal(
+    column: &TypedColumn,
+    literal: &ScalarValue,
+    op: &BinaryOp,
+) -> Option<BooleanArray> {
+    match (column, literal) {
+        (TypedColumn::Text(values, nulls), ScalarValue::Text(text)) => {
+            let array = build_text_array(values, nulls);
+            let scalar = StringArray::new_scalar(text.as_str());
+            eval_arrow_comparison(&array, &scalar, op)
+        }
+        (TypedColumn::Text(values, nulls), other) => {
+            let array = build_text_array(values, nulls);
+            let rendered = other.render();
+            let scalar = StringArray::new_scalar(rendered.as_str());
+            eval_arrow_comparison(&array, &scalar, op)
+        }
+        (TypedColumn::Int64(values, nulls), ScalarValue::Int(value)) => {
+            let array = build_int_array(values, nulls);
+            let scalar = Int64Array::new_scalar(*value);
+            eval_arrow_comparison(&array, &scalar, op)
+        }
+        (TypedColumn::Float64(values, nulls), ScalarValue::Float(value)) => {
+            let array = build_float_array(values, nulls);
+            let scalar = Float64Array::new_scalar(*value);
+            eval_arrow_comparison(&array, &scalar, op)
+        }
+        _ => None,
+    }
+}
+
+fn eval_arrow_comparison(
+    left: &dyn arrow::array::Datum,
+    right: &dyn arrow::array::Datum,
+    op: &BinaryOp,
+) -> Option<BooleanArray> {
+    match op {
+        BinaryOp::Eq => cmp::eq(left, right).ok(),
+        BinaryOp::NotEq => cmp::neq(left, right).ok(),
+        BinaryOp::Lt => cmp::lt(left, right).ok(),
+        BinaryOp::Lte => cmp::lt_eq(left, right).ok(),
+        BinaryOp::Gt => cmp::gt(left, right).ok(),
+        BinaryOp::Gte => cmp::gt_eq(left, right).ok(),
+        _ => None,
+    }
 }
 
 fn compare_ordering(ordering: Ordering, op: BinaryOp, target_ordering: Ordering) -> bool {
@@ -263,23 +258,32 @@ fn compare_column_to_like_literal(
 ) -> Vec<Option<bool>> {
     let pattern_text = match pattern {
         ScalarValue::Null => return vec![None; batch.row_count],
-        ScalarValue::Text(text) => {
-            if case_insensitive {
-                text.to_ascii_lowercase()
-            } else {
-                text.clone()
-            }
-        }
-        other => {
-            let rendered = other.render();
-            if case_insensitive {
-                rendered.to_ascii_lowercase()
-            } else {
-                rendered
-            }
-        }
+        ScalarValue::Text(text) => text.clone(),
+        other => other.render(),
     };
-    let matcher = LikeLiteralMatcher::new(pattern_text, escape);
+
+    if let TypedColumn::Text(values, nulls) = &batch.columns[column_idx]
+        && escape.is_none()
+    {
+        let array = build_text_array(values, nulls);
+        let scalar = StringArray::new_scalar(pattern_text.as_str());
+        let mask = match (case_insensitive, negated) {
+            (false, false) => like(&array, &scalar).ok(),
+            (true, false) => ilike(&array, &scalar).ok(),
+            (false, true) => nlike(&array, &scalar).ok(),
+            (true, true) => nilike(&array, &scalar).ok(),
+        };
+        if let Some(mask) = mask {
+            return boolean_array_to_truths(mask);
+        }
+    }
+
+    let pattern_for_matcher = if case_insensitive {
+        pattern_text.to_ascii_lowercase()
+    } else {
+        pattern_text
+    };
+    let matcher = LikeLiteralMatcher::new(pattern_for_matcher, escape);
 
     if let TypedColumn::Text(values, nulls) = &batch.columns[column_idx] {
         return values
@@ -315,6 +319,38 @@ fn compare_column_to_like_literal(
             Some(if negated { !matched } else { matched })
         })
         .collect()
+}
+
+fn truths_to_boolean_array(truths: Vec<Option<bool>>) -> BooleanArray {
+    BooleanArray::from(truths)
+}
+
+fn boolean_array_to_truths(mask: BooleanArray) -> Vec<Option<bool>> {
+    mask.iter().collect()
+}
+
+fn build_text_array(values: &[String], nulls: &[bool]) -> StringArray {
+    values
+        .iter()
+        .zip(nulls.iter().copied())
+        .map(|(value, is_null)| (!is_null).then_some(value.as_str()))
+        .collect::<StringArray>()
+}
+
+fn build_int_array(values: &[i64], nulls: &[bool]) -> Int64Array {
+    values
+        .iter()
+        .zip(nulls.iter().copied())
+        .map(|(value, is_null)| (!is_null).then_some(*value))
+        .collect::<Int64Array>()
+}
+
+fn build_float_array(values: &[f64], nulls: &[bool]) -> Float64Array {
+    values
+        .iter()
+        .zip(nulls.iter().copied())
+        .map(|(value, is_null)| (!is_null).then_some(*value))
+        .collect::<Float64Array>()
 }
 
 fn classify_like_pattern(pattern: &str, escape: Option<char>) -> Option<LikeLiteralMatcher> {

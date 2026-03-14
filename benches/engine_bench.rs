@@ -1,4 +1,5 @@
-use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
+use openassay::executor::set_columnar_execution_enabled;
 use openassay::tcop::postgres::{BackendMessage, FrontendMessage, PostgresSession};
 
 fn assert_ok(out: &[BackendMessage]) {
@@ -103,6 +104,40 @@ fn bench_aggregate(c: &mut Criterion, name: &str, setup_sql: &str, query_sql: &s
     });
 }
 
+fn bench_analytical_path_pair(c: &mut Criterion, name: &str, setup_sql: &str, query_sql: &str) {
+    let mut group = c.benchmark_group(name);
+    let setup = setup_sql.to_string();
+    let query = query_sql.to_string();
+
+    for (label, columnar_enabled) in [("columnar", true), ("row", false)] {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(label),
+            &columnar_enabled,
+            |b, &enabled| {
+                b.iter_batched(
+                    || {
+                        set_columnar_execution_enabled(true);
+                        let mut session = PostgresSession::new();
+                        let out = session.run_sync([FrontendMessage::Query { sql: setup.clone() }]);
+                        assert_ok(&out);
+                        session
+                    },
+                    |mut session| {
+                        set_columnar_execution_enabled(enabled);
+                        let out = session.run_sync([FrontendMessage::Query { sql: query.clone() }]);
+                        assert_ok(&out);
+                        set_columnar_execution_enabled(true);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+
+    set_columnar_execution_enabled(true);
+    group.finish();
+}
+
 const AGG_1K_SETUP: &str =
     "CREATE TABLE bench_agg AS SELECT g AS val FROM generate_series(1, 1000) g";
 
@@ -142,6 +177,35 @@ fn bench_aggregate_group_by_1k(c: &mut Criterion) {
     );
 }
 
+const ANALYTICAL_PATH_SETUP: &str = "CREATE TABLE bench_analytics AS SELECT g AS x, g % 100 AS col FROM generate_series(1, 100000) g";
+
+fn bench_filtered_scan_paths(c: &mut Criterion) {
+    bench_analytical_path_pair(
+        c,
+        "analytical_filtered_scan_paths",
+        ANALYTICAL_PATH_SETUP,
+        "SELECT COUNT(*) FROM bench_analytics WHERE x > 10",
+    );
+}
+
+fn bench_group_by_paths(c: &mut Criterion) {
+    bench_analytical_path_pair(
+        c,
+        "analytical_group_by_paths",
+        ANALYTICAL_PATH_SETUP,
+        "SELECT col, COUNT(*) FROM bench_analytics GROUP BY col",
+    );
+}
+
+fn bench_distinct_count_paths(c: &mut Criterion) {
+    bench_analytical_path_pair(
+        c,
+        "analytical_distinct_count_paths",
+        ANALYTICAL_PATH_SETUP,
+        "SELECT COUNT(DISTINCT col) FROM bench_analytics",
+    );
+}
+
 criterion_group!(
     benches,
     bench_simple_select,
@@ -151,6 +215,9 @@ criterion_group!(
     bench_aggregate_sum_1k,
     bench_aggregate_min_1k,
     bench_aggregate_max_1k,
-    bench_aggregate_group_by_1k
+    bench_aggregate_group_by_1k,
+    bench_filtered_scan_paths,
+    bench_group_by_paths,
+    bench_distinct_count_paths
 );
 criterion_main!(benches);
