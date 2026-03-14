@@ -458,10 +458,7 @@ pub(crate) fn same_function_identity(left: &UserFunction, right: &UserFunction) 
 }
 
 pub(crate) fn lookup_user_function(name: &[String], arg_count: usize) -> Option<UserFunction> {
-    let lowered = name
-        .iter()
-        .map(|part| part.to_ascii_lowercase())
-        .collect::<Vec<_>>();
+    let lowered = name.to_vec();
     with_ext_read(|ext| {
         let mut candidates = ext
             .user_functions
@@ -1408,7 +1405,7 @@ async fn execute_insert(
             let conflict_scope_qualifiers = insert
                 .table_alias
                 .as_ref()
-                .map(|alias| vec![alias.to_ascii_lowercase()])
+                .map(|alias| vec![alias.clone()])
                 .unwrap_or_else(|| vec![table.name().to_string(), table.qualified_name()]);
 
             for row in &materialized {
@@ -1577,8 +1574,7 @@ async fn execute_update(
     let mut assignment_targets = Vec::with_capacity(update.assignments.len());
     let mut seen = HashSet::new();
     for assignment in &update.assignments {
-        let normalized = assignment.column.to_ascii_lowercase();
-        let assignment_key = format!("{normalized}:{:?}", assignment.subscripts);
+        let assignment_key = format!("{}:{:?}", assignment.column, assignment.subscripts);
         // Check for qualified column name (e.g. SET t.b = ...) — PostgreSQL rejects this
         // The column name should not contain dots; if someone writes "t.b", the parser
         // produces column="t" which won't match, giving a good error. But let's also
@@ -1593,7 +1589,7 @@ async fn execute_update(
             .columns()
             .iter()
             .enumerate()
-            .find(|(_, column)| column.name() == normalized)
+            .find(|(_, column)| column.name() == assignment.column)
         else {
             return Err(EngineError {
                 message: format!(
@@ -1638,7 +1634,7 @@ async fn execute_update(
     let target_qualifiers = update
         .alias
         .as_ref()
-        .map(|alias| vec![alias.to_ascii_lowercase()])
+        .map(|alias| vec![alias.clone()])
         .unwrap_or_else(|| vec![table.name().to_string(), table.qualified_name()]);
 
     'row_updates: for (row_idx, row) in current_rows.iter().enumerate() {
@@ -1969,7 +1965,7 @@ async fn execute_merge(
     let target_qualifiers = merge
         .target_alias
         .as_ref()
-        .map(|alias| vec![alias.to_ascii_lowercase()])
+        .map(|alias| vec![alias.clone()])
         .unwrap_or_else(|| vec![table.name().to_string(), table.qualified_name()]);
     let returning_columns = if merge.returning.is_empty() {
         Vec::new()
@@ -2515,8 +2511,7 @@ fn resolve_insert_target_indexes(
     let mut indexes = Vec::with_capacity(target_columns.len());
     let mut seen = HashSet::new();
     for column_name in target_columns {
-        let normalized = column_name.to_ascii_lowercase();
-        if !seen.insert(normalized.clone()) {
+        if !seen.insert(column_name.clone()) {
             return Err(EngineError {
                 message: format!("column \"{column_name}\" specified more than once"),
             });
@@ -2525,7 +2520,7 @@ fn resolve_insert_target_indexes(
             .columns()
             .iter()
             .enumerate()
-            .find(|(_, column)| column.name() == normalized)
+            .find(|(_, column)| column.name() == column_name)
         else {
             return Err(EngineError {
                 message: format!(
@@ -2552,8 +2547,7 @@ fn resolve_update_assignment_targets<'a>(
     let mut out = Vec::with_capacity(assignments.len());
     let mut seen = HashSet::new();
     for assignment in assignments {
-        let normalized = assignment.column.to_ascii_lowercase();
-        let assignment_key = format!("{normalized}:{:?}", assignment.subscripts);
+        let assignment_key = format!("{}:{:?}", assignment.column, assignment.subscripts);
         if !seen.insert(assignment_key) {
             return Err(EngineError {
                 message: format!("column \"{}\" specified more than once", assignment.column),
@@ -2563,7 +2557,7 @@ fn resolve_update_assignment_targets<'a>(
             .columns()
             .iter()
             .enumerate()
-            .find(|(_, column)| column.name() == normalized)
+            .find(|(_, column)| column.name() == assignment.column)
         else {
             return Err(EngineError {
                 message: format!(
@@ -2600,11 +2594,10 @@ pub(crate) fn find_column_index(
     table: &crate::catalog::Table,
     column_name: &str,
 ) -> Result<usize, EngineError> {
-    let normalized = column_name.to_ascii_lowercase();
     table
         .columns()
         .iter()
-        .position(|column| column.name() == normalized)
+        .position(|column| column.name() == column_name)
         .ok_or_else(|| EngineError {
             message: format!(
                 "column \"{}\" of relation \"{}\" does not exist",
@@ -2623,9 +2616,8 @@ fn resolve_on_conflict_target_indexes(
             let mut normalized_target = Vec::with_capacity(columns.len());
             let mut seen = HashSet::new();
             for column in columns {
-                let normalized = column.to_ascii_lowercase();
-                if seen.insert(normalized.clone()) {
-                    normalized_target.push(normalized);
+                if seen.insert(column.clone()) {
+                    normalized_target.push(column.clone());
                 }
             }
             if normalized_target.is_empty() {
@@ -2658,11 +2650,10 @@ fn resolve_on_conflict_target_indexes(
             normalized_target
         }
         ConflictTarget::Constraint(name) => {
-            let normalized_name = name.to_ascii_lowercase();
             let Some(constraint) = table
                 .key_constraints()
                 .iter()
-                .find(|constraint| constraint.name.as_deref() == Some(normalized_name.as_str()))
+                .find(|constraint| constraint.name.as_deref() == Some(name.as_str()))
             else {
                 return Err(EngineError {
                     message: format!(

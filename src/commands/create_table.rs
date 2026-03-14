@@ -36,12 +36,7 @@ pub async fn execute_create_table(
                 ),
             });
         }
-        let sequence_name = format!(
-            "{}.{}_{}_seq",
-            schema_name,
-            table_name,
-            column.name.to_ascii_lowercase()
-        );
+        let sequence_name = format!("{}.{}_{}_seq", schema_name, table_name, column.name);
         column.default = Some(Expr::FunctionCall {
             name: vec!["nextval".to_string()],
             args: vec![Expr::String(sequence_name.clone())],
@@ -142,11 +137,8 @@ pub async fn execute_create_table(
 
 pub(crate) fn relation_name_for_create(name: &[String]) -> Result<(String, String), EngineError> {
     match name {
-        [table_name] => Ok(("public".to_string(), table_name.to_ascii_lowercase())),
-        [schema_name, table_name] => Ok((
-            schema_name.to_ascii_lowercase(),
-            table_name.to_ascii_lowercase(),
-        )),
+        [table_name] => Ok(("public".to_string(), table_name.clone())),
+        [schema_name, table_name] => Ok((schema_name.clone(), table_name.clone())),
         _ => Err(EngineError {
             message: format!("invalid relation name \"{}\"", name.join(".")),
         }),
@@ -169,15 +161,8 @@ pub(crate) fn column_spec_from_ast(
             });
         }
         Some(crate::catalog::ForeignKeySpec {
-            table_name: reference
-                .table_name
-                .iter()
-                .map(|part| part.to_ascii_lowercase())
-                .collect(),
-            column_name: reference
-                .column_name
-                .as_ref()
-                .map(|name| name.to_ascii_lowercase()),
+            table_name: reference.table_name.clone(),
+            column_name: reference.column_name.clone(),
             on_delete: reference.on_delete,
             on_update: reference.on_update,
         })
@@ -186,7 +171,7 @@ pub(crate) fn column_spec_from_ast(
     };
 
     Ok(ColumnSpec {
-        name: column.name.to_ascii_lowercase(),
+        name: column.name.clone(),
         type_signature: type_signature_from_ast(column.data_type.clone()),
         subscript_value_type: subscript_value_type_from_ast(&column.data_type),
         nullable: column.nullable && !column.primary_key,
@@ -211,11 +196,8 @@ pub(crate) fn key_constraint_specs_from_ast(
                     });
                 }
                 out.push(crate::catalog::KeyConstraintSpec {
-                    name: name.as_ref().map(|name| name.to_ascii_lowercase()),
-                    columns: columns
-                        .iter()
-                        .map(|column| column.to_ascii_lowercase())
-                        .collect(),
+                    name: name.clone(),
+                    columns: columns.clone(),
                     primary: true,
                 });
             }
@@ -226,11 +208,8 @@ pub(crate) fn key_constraint_specs_from_ast(
                     });
                 }
                 out.push(crate::catalog::KeyConstraintSpec {
-                    name: name.as_ref().map(|name| name.to_ascii_lowercase()),
-                    columns: columns
-                        .iter()
-                        .map(|column| column.to_ascii_lowercase())
-                        .collect(),
+                    name: name.clone(),
+                    columns: columns.clone(),
                     primary: false,
                 });
             }
@@ -277,19 +256,10 @@ pub(crate) fn foreign_key_constraint_specs_from_ast(
         }
 
         out.push(crate::catalog::ForeignKeyConstraintSpec {
-            name: name.as_ref().map(|name| name.to_ascii_lowercase()),
-            columns: columns
-                .iter()
-                .map(|column| column.to_ascii_lowercase())
-                .collect(),
-            referenced_table: referenced_table
-                .iter()
-                .map(|part| part.to_ascii_lowercase())
-                .collect(),
-            referenced_columns: referenced_columns
-                .iter()
-                .map(|column| column.to_ascii_lowercase())
-                .collect(),
+            name: name.clone(),
+            columns: columns.clone(),
+            referenced_table: referenced_table.clone(),
+            referenced_columns: referenced_columns.clone(),
             on_delete: *on_delete,
             on_update: *on_update,
         });

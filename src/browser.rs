@@ -600,7 +600,7 @@ pub fn register_fdw(name: &str, callback: js_sys::Function) -> String {
     }
 
     let wrapper = Arc::new(JsFdw {
-        name: name.to_ascii_lowercase(),
+        name: name.to_string(),
         callback,
     });
 

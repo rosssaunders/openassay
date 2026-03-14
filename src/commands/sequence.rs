@@ -276,12 +276,8 @@ pub async fn execute_drop_sequence(
 
 pub fn normalize_sequence_name(name: &[String]) -> Result<String, EngineError> {
     match name {
-        [seq_name] => Ok(format!("public.{}", seq_name.to_ascii_lowercase())),
-        [schema_name, seq_name] => Ok(format!(
-            "{}.{}",
-            schema_name.to_ascii_lowercase(),
-            seq_name.to_ascii_lowercase()
-        )),
+        [seq_name] => Ok(format!("public.{seq_name}")),
+        [schema_name, seq_name] => Ok(format!("{schema_name}.{seq_name}")),
         _ => Err(EngineError {
             message: format!("invalid sequence name \"{}\"", name.join(".")),
         }),
@@ -293,7 +289,7 @@ pub fn normalize_sequence_name_from_text(raw: &str) -> Result<String, EngineErro
         .split('.')
         .map(|part| part.trim())
         .filter(|part| !part.is_empty())
-        .map(|part| part.to_ascii_lowercase())
+        .map(|part| part.to_string())
         .collect::<Vec<_>>();
     match parts.as_slice() {
         [seq_name] => Ok(format!("public.{seq_name}")),

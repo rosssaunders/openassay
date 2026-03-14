@@ -166,7 +166,7 @@ impl Parser {
 
     pub(super) fn token_word(&self, token: &TokenKind) -> Option<String> {
         match token {
-            TokenKind::Identifier(word) => Some(word.to_ascii_lowercase()),
+            TokenKind::Identifier(word) => Some(word.clone()),
             TokenKind::Keyword(keyword) => Some(format!("{keyword:?}").to_ascii_lowercase()),
             _ => None,
         }

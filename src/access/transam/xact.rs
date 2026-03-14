@@ -88,7 +88,7 @@ impl TransactionContext {
             return Err("transaction state missing working snapshot".to_string());
         };
         self.savepoints.push(SavepointFrame {
-            name: name.to_ascii_lowercase(),
+            name: name.clone(),
             snapshot: snapshots.working().clone(),
         });
         Ok(())
@@ -105,12 +105,7 @@ impl TransactionContext {
                     .to_string(),
             ),
         }
-        let normalized = name.to_ascii_lowercase();
-        let Some(idx) = self
-            .savepoints
-            .iter()
-            .rposition(|frame| frame.name == normalized)
-        else {
+        let Some(idx) = self.savepoints.iter().rposition(|frame| frame.name == name) else {
             return Err(format!("savepoint \"{name}\" does not exist"));
         };
         self.savepoints.truncate(idx);
@@ -124,12 +119,7 @@ impl TransactionContext {
         if self.state == TransactionState::Idle {
             return Err("ROLLBACK TO SAVEPOINT can only be used in transaction blocks".to_string());
         }
-        let normalized = name.to_ascii_lowercase();
-        let Some(idx) = self
-            .savepoints
-            .iter()
-            .rposition(|frame| frame.name == normalized)
-        else {
+        let Some(idx) = self.savepoints.iter().rposition(|frame| frame.name == name) else {
             return Err(format!("savepoint \"{name}\" does not exist"));
         };
         let snapshot = self.savepoints[idx].snapshot.clone();

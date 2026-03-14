@@ -637,7 +637,7 @@ impl Parser {
 
         // Handle type-name 'literal' syntax for types like bool, int, etc.
         if name.len() == 1 {
-            let type_lower = name[0].to_ascii_lowercase();
+            let type_lower = name[0].clone();
             let is_type_literal = matches!(
                 type_lower.as_str(),
                 "bool"
@@ -709,10 +709,7 @@ impl Parser {
             let mut args = Vec::new();
             let mut order_by = Vec::new();
             if !self.consume_if(|k| matches!(k, TokenKind::RParen)) {
-                let fn_name = name
-                    .last()
-                    .map(|part| part.to_ascii_lowercase())
-                    .unwrap_or_default();
+                let fn_name = name.last().cloned().unwrap_or_default();
                 let args_start = self.idx;
                 if fn_name == "extract" {
                     // EXTRACT(field FROM source) or extract('field', source)
@@ -1454,7 +1451,7 @@ impl Parser {
     }
 
     pub(super) fn parse_expr_type_name(&mut self) -> Result<String, ParseError> {
-        let base = self.parse_expr_type_word()?.to_ascii_lowercase();
+        let base = self.parse_expr_type_word()?;
         let normalized = match base.as_str() {
             "bool" | "boolean" => "boolean".to_string(),
             // Integer types - preserve specific types for overflow checking

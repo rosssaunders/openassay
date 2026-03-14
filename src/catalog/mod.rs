@@ -1546,7 +1546,7 @@ impl Catalog {
 }
 
 fn normalize_name(name: &str) -> Result<String, CatalogError> {
-    let normalized = name.trim().to_ascii_lowercase();
+    let normalized = name.trim().to_string();
     if normalized.is_empty() {
         return Err(CatalogError {
             message: "name cannot be empty".to_string(),

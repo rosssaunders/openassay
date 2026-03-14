@@ -11,7 +11,7 @@ use crate::tcop::engine::{EngineError, QueryResult};
 pub async fn execute_create_server(
     create: &CreateServerStatement,
 ) -> Result<QueryResult, EngineError> {
-    let server_name = create.name.to_ascii_lowercase();
+    let server_name = create.name.clone();
 
     // Check if server already exists.
     let exists = with_fdw_write(|reg| reg.get_server(&server_name).is_some());
@@ -35,14 +35,14 @@ pub async fn execute_create_server(
     let options: HashMap<String, String> = create
         .options
         .iter()
-        .map(|(k, v)| (k.to_ascii_lowercase(), v.clone()))
+        .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
     with_fdw_write(|reg| {
         reg.register_server(ForeignServer {
             oid,
             name: server_name,
-            fdw_name: create.fdw_name.to_ascii_lowercase(),
+            fdw_name: create.fdw_name.clone(),
             options,
         });
     });
@@ -68,7 +68,7 @@ pub async fn execute_create_foreign_table(
         .map(column_spec_from_ast)
         .collect::<Result<Vec<_>, _>>()?;
 
-    let server_name = create.server_name.to_ascii_lowercase();
+    let server_name = create.server_name.clone();
 
     // Handle IF NOT EXISTS.
     let table_exists = with_catalog_write(|catalog| {
@@ -117,7 +117,7 @@ pub async fn execute_create_foreign_table(
     let options: HashMap<String, String> = create
         .options
         .iter()
-        .map(|(k, v)| (k.to_ascii_lowercase(), v.clone()))
+        .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
     with_fdw_write(|reg| {

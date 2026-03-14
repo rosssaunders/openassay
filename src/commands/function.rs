@@ -7,7 +7,7 @@ pub async fn execute_create_function(
     create: &CreateFunctionStatement,
 ) -> Result<QueryResult, EngineError> {
     let uf = UserFunction {
-        name: create.name.iter().map(|s| s.to_ascii_lowercase()).collect(),
+        name: create.name.clone(),
         params: create.params.clone(),
         return_type: create.return_type.clone(),
         is_trigger: create.is_trigger,
@@ -37,7 +37,7 @@ pub async fn execute_create_function(
 pub async fn execute_drop_function(
     drop: &DropFunctionStatement,
 ) -> Result<QueryResult, EngineError> {
-    let normalized_name: Vec<String> = drop.name.iter().map(|s| s.to_ascii_lowercase()).collect();
+    let normalized_name: Vec<String> = drop.name.clone();
     let removed = with_ext_write(|ext| {
         let matches_name = |existing: &UserFunction| {
             if existing.name == normalized_name {

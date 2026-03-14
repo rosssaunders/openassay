@@ -4,7 +4,7 @@ use crate::tcop::engine::{EngineError, ExtensionRecord, QueryResult, with_ext_wr
 pub async fn execute_create_extension(
     create: &CreateExtensionStatement,
 ) -> Result<QueryResult, EngineError> {
-    let name = create.name.to_ascii_lowercase();
+    let name = create.name.clone();
     with_ext_write(|ext| {
         if ext.extensions.iter().any(|e| e.name == name) {
             if create.if_not_exists {
@@ -51,7 +51,7 @@ pub async fn execute_create_extension(
 pub async fn execute_drop_extension(
     drop_ext: &DropExtensionStatement,
 ) -> Result<QueryResult, EngineError> {
-    let name = drop_ext.name.to_ascii_lowercase();
+    let name = drop_ext.name.clone();
     with_ext_write(|ext| {
         let before = ext.extensions.len();
         ext.extensions.retain(|e| e.name != name);

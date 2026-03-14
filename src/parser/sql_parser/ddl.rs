@@ -1840,7 +1840,7 @@ impl Parser {
     }
 
     pub(super) fn parse_type_name(&mut self) -> Result<TypeName, ParseError> {
-        let base = self.parse_identifier()?.to_ascii_lowercase();
+        let base = self.parse_identifier()?;
         let mut ty = match base.as_str() {
             "bool" | "boolean" => TypeName::Bool,
             "smallint" | "int2" => TypeName::Int2,
@@ -2011,7 +2011,7 @@ impl Parser {
     }
 
     pub(super) fn try_parse_type_name(&self, ident: &str) -> Result<TypeName, ()> {
-        match ident.to_ascii_lowercase().as_str() {
+        match ident {
             "bool" | "boolean" => Ok(TypeName::Bool),
             "int2" | "smallint" => Ok(TypeName::Int2),
             "int4" | "integer" | "int" => Ok(TypeName::Int4),

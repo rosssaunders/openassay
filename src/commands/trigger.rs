@@ -15,23 +15,15 @@ pub async fn execute_create_trigger(
     let table_name = if let Some(table) = resolved_table {
         vec![table.schema_name().to_string(), table.name().to_string()]
     } else {
-        create
-            .table_name
-            .iter()
-            .map(|part| part.to_ascii_lowercase())
-            .collect::<Vec<_>>()
+        create.table_name.clone()
     };
 
     let trigger = UserTrigger {
-        name: create.name.to_ascii_lowercase(),
+        name: create.name.clone(),
         table_name,
         timing: create.timing,
         events: create.events.clone(),
-        function_name: create
-            .function_name
-            .iter()
-            .map(|part| part.to_ascii_lowercase())
-            .collect(),
+        function_name: create.function_name.clone(),
     };
 
     with_ext_write(|ext| {
@@ -62,9 +54,9 @@ pub async fn execute_drop_trigger(
         message: err.message,
     })?;
 
-    let trigger_name = drop_trigger.name.to_ascii_lowercase();
-    let table_schema = table.schema_name().to_ascii_lowercase();
-    let table_name = table.name().to_ascii_lowercase();
+    let trigger_name = drop_trigger.name.clone();
+    let table_schema = table.schema_name().to_string();
+    let table_name = table.name().to_string();
 
     with_ext_write(|ext| {
         let before = ext.triggers.len();
