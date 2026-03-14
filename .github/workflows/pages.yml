@@ -43,10 +43,6 @@ jobs:
         run: |
           mkdir -p _site
           cp -r web/* _site/
-          mkdir -p _site/notebook
-          cp -r notebook/* _site/notebook/
-          cp -r web/pkg _site/notebook/pkg
-          cp web/worker.js _site/notebook/worker.js
           cp -r target/doc _site/docs
           touch _site/.nojekyll
 
