@@ -1284,6 +1284,10 @@ async fn evaluate_relation_with_predicates_impl(
                 .map(|column| column.name().to_string())
                 .collect::<Vec<_>>();
             let rows = crate::foreign::execute_foreign_scan(&table)?;
+            // Foreign scans do not apply scan_predicates at the storage level,
+            // so clear pushed_predicate_indexes so the caller knows all
+            // predicates still need post-scan evaluation.
+            pushed_predicate_indexes.clear();
             (columns, rows, None)
         }
     };
