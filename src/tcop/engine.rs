@@ -523,6 +523,8 @@ pub(crate) mod ws_native {
         >,
         pub incoming: mpsc::Receiver<String>,
         pub _reader_thread: thread::JoinHandle<()>,
+        /// Cloned TCP stream used to unblock the reader thread via shutdown.
+        pub tcp_shutdown: Option<std::net::TcpStream>,
     }
 
     /// Open a real WebSocket connection. Returns a handle for sending/receiving.
@@ -530,14 +532,25 @@ pub(crate) mod ws_native {
         let (socket, _response) =
             tungstenite::connect(url).map_err(|e| format!("WebSocket connect failed: {e}"))?;
 
+        // Clone the TCP stream so we can shut it down to unblock the reader.
+        let tcp_shutdown = match socket.get_ref() {
+            tungstenite::stream::MaybeTlsStream::Plain(tcp) => tcp.try_clone().ok(),
+            _ => None,
+        };
+
+        // Set socket to non-blocking so the reader thread never holds the
+        // writer lock indefinitely — reads return WouldBlock immediately
+        // when no data is available.
+        if let tungstenite::stream::MaybeTlsStream::Plain(tcp) = socket.get_ref() {
+            let _ = tcp.set_nonblocking(true);
+        }
+
         let writer = Arc::new(Mutex::new(Some(socket)));
         let reader_writer = Arc::clone(&writer);
         let (tx, rx) = mpsc::channel();
 
         let reader_thread = thread::spawn(move || {
             loop {
-                // We need to read from the socket, but the writer lock holds it.
-                // We'll use a pattern where the reader briefly locks to read one message.
                 let msg = {
                     let mut guard = match reader_writer.lock() {
                         Ok(guard) => guard,
@@ -551,6 +564,11 @@ pub(crate) mod ws_native {
                             }
                             Ok(tungstenite::Message::Close(_)) => None,
                             Ok(_) => Some(String::new()), // ping/pong/frame - skip
+                            Err(tungstenite::Error::Io(e))
+                                if e.kind() == std::io::ErrorKind::WouldBlock =>
+                            {
+                                Some(String::new()) // no data yet – yield lock
+                            }
                             Err(_) => None,
                         }
                     } else {
@@ -563,8 +581,13 @@ pub(crate) mod ws_native {
                             break;
                         }
                     }
-                    Some(_) => continue, // empty = ping/pong
-                    None => break,       // closed or error
+                    Some(_) => {
+                        // No data available — sleep briefly to avoid busy-spinning
+                        // while still yielding the lock for writers.
+                        thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    None => break, // closed or error
                 }
             }
         });
@@ -573,6 +596,7 @@ pub(crate) mod ws_native {
             writer,
             incoming: rx,
             _reader_thread: reader_thread,
+            tcp_shutdown,
         })
     }
 
@@ -582,25 +606,34 @@ pub(crate) mod ws_native {
             .lock()
             .map_err(|_| "WebSocket writer lock poisoned".to_string())?;
         if let Some(ref mut ws) = *guard {
-            ws.write(tungstenite::Message::Text(msg.to_string().into()))
-                .map_err(|e| format!("WebSocket send failed: {e}"))?;
-            ws.flush()
-                .map_err(|e| format!("WebSocket flush failed: {e}"))?;
-            Ok(())
+            // Temporarily switch to blocking mode for reliable writes.
+            if let tungstenite::stream::MaybeTlsStream::Plain(tcp) = ws.get_ref() {
+                let _ = tcp.set_nonblocking(false);
+            }
+            let result = ws
+                .write(tungstenite::Message::Text(msg.to_string().into()))
+                .and_then(|()| ws.flush());
+            // Restore non-blocking mode for the reader thread.
+            if let tungstenite::stream::MaybeTlsStream::Plain(tcp) = ws.get_ref() {
+                let _ = tcp.set_nonblocking(true);
+            }
+            result.map_err(|e| format!("WebSocket send failed: {e}"))
         } else {
             Err("connection already closed".to_string())
         }
     }
 
     pub fn close_connection(handle: &NativeWsHandle) -> Result<(), String> {
+        // Shut down the underlying TCP socket to unblock the reader thread's
+        // ws.read() call, so we can acquire the writer lock promptly.
+        if let Some(ref tcp) = handle.tcp_shutdown {
+            let _ = tcp.shutdown(std::net::Shutdown::Both);
+        }
+
         let mut guard = handle
             .writer
             .lock()
             .map_err(|_| "WebSocket writer lock poisoned".to_string())?;
-        if let Some(ref mut ws) = *guard {
-            let _ = ws.close(None);
-            let _ = ws.flush();
-        }
         *guard = None;
         Ok(())
     }
