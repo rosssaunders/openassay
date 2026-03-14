@@ -84,6 +84,7 @@ object_store = { workspace = true, features = ["aws", "azure", "gcp", "fs"] }
 [dev-dependencies]
 criterion.workspace = true
 proptest.workspace = true
+tungstenite.workspace = true
 
 [[bench]]
 name = "engine_bench"
