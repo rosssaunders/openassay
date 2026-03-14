@@ -8,6 +8,9 @@ pub enum TableKind {
     Heap,
     View,
     MaterializedView,
+    /// A foreign table whose data lives outside the engine and is accessed via
+    /// a Foreign Data Wrapper (FDW).  Mirrors PostgreSQL's `RELKIND_FOREIGN_TABLE`.
+    Foreign,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,6 +273,8 @@ pub struct Table {
     foreign_key_constraints: Vec<ForeignKeyConstraint>,
     indexes: Vec<IndexSpec>,
     view_definition: Option<Query>,
+    /// For `TableKind::Foreign` – the name of the foreign server.
+    server_name: Option<String>,
 }
 
 impl Table {
@@ -297,6 +302,7 @@ impl Table {
             foreign_key_constraints,
             indexes,
             view_definition,
+            server_name: None,
         }
     }
 
@@ -375,5 +381,13 @@ impl Table {
     pub fn set_schema(&mut self, schema_oid: Oid, schema_name: String) {
         self.schema_oid = schema_oid;
         self.schema_name = schema_name;
+    }
+
+    pub fn server_name(&self) -> Option<&str> {
+        self.server_name.as_deref()
+    }
+
+    pub fn set_server_name(&mut self, server_name: Option<String>) {
+        self.server_name = server_name;
     }
 }

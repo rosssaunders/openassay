@@ -34,15 +34,11 @@ pub async fn execute_create_index(
     }
     crate::tcop::engine::require_relation_owner(&table)?;
 
-    let mut index_name = create.name.to_ascii_lowercase();
+    let mut index_name = create.name.clone();
     if create.generated_name {
         index_name = choose_generated_index_name(&table, &index_name);
     }
-    let index_columns = create
-        .columns
-        .iter()
-        .map(|column| column.to_ascii_lowercase())
-        .collect::<Vec<_>>();
+    let index_columns = create.columns.clone();
     let index_column_indexes = resolve_index_column_indexes(&table, &index_columns)?;
 
     if create.unique {
@@ -274,7 +270,6 @@ fn index_name_in_use(table: &crate::catalog::Table, candidate: &str) -> bool {
 fn resolve_index_target(index_name: &[String]) -> Result<Option<IndexTarget>, EngineError> {
     match index_name {
         [name] => {
-            let normalized_name = name.to_ascii_lowercase();
             let mut matches = Vec::new();
             with_catalog_read(|catalog| {
                 for schema_name in SearchPath::default().schemas() {
@@ -282,15 +277,11 @@ fn resolve_index_target(index_name: &[String]) -> Result<Option<IndexTarget>, En
                         continue;
                     };
                     for table in schema.tables() {
-                        if table
-                            .indexes()
-                            .iter()
-                            .any(|index| index.name == normalized_name)
-                        {
+                        if table.indexes().iter().any(|index| index.name == *name) {
                             matches.push(IndexTarget {
                                 schema_name: schema.name().to_string(),
                                 table_name: table.name().to_string(),
-                                index_name: normalized_name.clone(),
+                                index_name: name.clone(),
                             });
                         }
                     }
@@ -304,21 +295,15 @@ fn resolve_index_target(index_name: &[String]) -> Result<Option<IndexTarget>, En
             Ok(matches.pop())
         }
         [schema_name, name] => {
-            let normalized_schema = schema_name.to_ascii_lowercase();
-            let normalized_name = name.to_ascii_lowercase();
             let mut found = None;
             with_catalog_read(|catalog| {
-                if let Some(schema) = catalog.schema(&normalized_schema) {
+                if let Some(schema) = catalog.schema(schema_name) {
                     for table in schema.tables() {
-                        if table
-                            .indexes()
-                            .iter()
-                            .any(|index| index.name == normalized_name)
-                        {
+                        if table.indexes().iter().any(|index| index.name == *name) {
                             found = Some(IndexTarget {
-                                schema_name: normalized_schema.clone(),
+                                schema_name: schema_name.clone(),
                                 table_name: table.name().to_string(),
-                                index_name: normalized_name.clone(),
+                                index_name: name.clone(),
                             });
                             break;
                         }

@@ -32,6 +32,12 @@ pub struct ScanPlan {
 }
 
 #[derive(Debug, Clone)]
+pub struct ForeignScanPlan {
+    pub table: TableRef,
+    pub cost: PlanCost,
+}
+
+#[derive(Debug, Clone)]
 pub struct FunctionScanPlan {
     pub function: TableFunctionRef,
     pub cost: PlanCost,
@@ -145,6 +151,7 @@ pub struct ResultPlan {
 pub enum PhysicalPlan {
     Result(ResultPlan),
     Scan(ScanPlan),
+    ForeignScan(ForeignScanPlan),
     FunctionScan(FunctionScanPlan),
     CteScan(CteScanPlan),
     Subquery(SubqueryPlan),
@@ -166,6 +173,7 @@ impl PhysicalPlan {
         match self {
             Self::Result(plan) => plan.cost,
             Self::Scan(plan) => plan.cost,
+            Self::ForeignScan(plan) => plan.cost,
             Self::FunctionScan(plan) => plan.cost,
             Self::CteScan(plan) => plan.cost,
             Self::Subquery(plan) => plan.cost,
@@ -214,6 +222,14 @@ impl PhysicalPlan {
                 if plan.filter.is_some() {
                     lines.push(format!("{prefix}  Filter: <predicate>"));
                 }
+            }
+            Self::ForeignScan(plan) => {
+                lines.push(format!(
+                    "{}Foreign Scan on {}  ({})",
+                    prefix,
+                    plan.table.name.join("."),
+                    format_cost(plan.cost)
+                ));
             }
             Self::FunctionScan(plan) => {
                 lines.push(format!(
@@ -396,6 +412,15 @@ fn plan_with_context(
             cost: PlanCost::new(1.0, 0.0, 1.0),
         })),
         LogicalPlan::Scan(scan) => plan_scan(scan, None, ctx),
+        LogicalPlan::ForeignScan(scan) => Ok(PhysicalPlan::ForeignScan(ForeignScanPlan {
+            table: scan.table.clone(),
+            // Placeholder cost — in PostgreSQL the FDW provides estimates via
+            // GetForeignRelSize / GetForeignPaths.  For now we use a moderate
+            // default that makes foreign scans slightly more expensive than
+            // local heap scans so the planner prefers local tables when both
+            // are available.
+            cost: PlanCost::new(10.0, 0.0, 100.0),
+        })),
         LogicalPlan::FunctionScan(scan) => Ok(PhysicalPlan::FunctionScan(FunctionScanPlan {
             function: scan.function.clone(),
             cost: PlanCost::new(1.0, 0.0, 1.0),
@@ -1644,7 +1669,10 @@ fn assign_scan_projections(
             }
             assign_scan_projections(&mut cte.input, projections);
         }
-        PhysicalPlan::Result(_) | PhysicalPlan::FunctionScan(_) | PhysicalPlan::CteScan(_) => {}
+        PhysicalPlan::Result(_)
+        | PhysicalPlan::ForeignScan(_)
+        | PhysicalPlan::FunctionScan(_)
+        | PhysicalPlan::CteScan(_) => {}
     }
 }
 

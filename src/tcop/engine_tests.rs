@@ -7029,3 +7029,77 @@ fn json_table_deribit_pgwire() {
         assert!(row_count > 0, "should have data rows");
     });
 }
+
+// --- Quoted identifier case preservation tests (issue #127) ---
+
+#[test]
+fn quoted_table_name_preserves_case() {
+    let results = run_batch(&[
+        r#"CREATE TABLE "MyTable" (id INT)"#,
+        r#"INSERT INTO "MyTable" (id) VALUES (1)"#,
+        r#"SELECT id FROM "MyTable""#,
+    ]);
+    assert_eq!(results[2].rows.len(), 1);
+    assert_eq!(results[2].rows[0][0], ScalarValue::Int(1));
+}
+
+#[test]
+fn quoted_column_name_preserves_case() {
+    let results = run_batch(&[
+        r#"CREATE TABLE test_quoted_col ("Product Name" TEXT, "unitPrice" INT)"#,
+        r#"INSERT INTO test_quoted_col ("Product Name", "unitPrice") VALUES ('Laptop', 999)"#,
+        r#"SELECT "Product Name", "unitPrice" FROM test_quoted_col"#,
+    ]);
+    assert_eq!(results[2].columns, vec!["Product Name", "unitPrice"]);
+    assert_eq!(
+        results[2].rows[0],
+        vec![
+            ScalarValue::Text("Laptop".to_string()),
+            ScalarValue::Int(999)
+        ]
+    );
+}
+
+#[test]
+fn mixed_quoted_and_unquoted_identifiers() {
+    let results = run_batch(&[
+        r#"CREATE TABLE "Mixed" (unquoted_col INT, "QuotedCol" TEXT)"#,
+        r#"INSERT INTO "Mixed" (unquoted_col, "QuotedCol") VALUES (42, 'hello')"#,
+        r#"SELECT unquoted_col, "QuotedCol" FROM "Mixed""#,
+    ]);
+    assert_eq!(results[2].columns, vec!["unquoted_col", "QuotedCol"]);
+    assert_eq!(
+        results[2].rows[0],
+        vec![ScalarValue::Int(42), ScalarValue::Text("hello".to_string())]
+    );
+}
+
+#[test]
+fn unquoted_identifiers_still_lowercased() {
+    // Unquoted identifiers should still be case-insensitive (lowercased)
+    let results = run_batch(&[
+        "CREATE TABLE unquoted_test (MyCol INT)",
+        "INSERT INTO UNQUOTED_TEST (MYCOL) VALUES (7)",
+        "SELECT mycol FROM unquoted_test",
+    ]);
+    assert_eq!(results[2].columns, vec!["mycol"]);
+    assert_eq!(results[2].rows[0], vec![ScalarValue::Int(7)]);
+}
+
+#[test]
+fn quoted_identifier_case_sensitive_lookup() {
+    // Quoted identifiers preserve their exact case in column names
+    let results = run_batch(&[
+        r#"CREATE TABLE cs_lookup ("FirstName" TEXT, "LastName" TEXT)"#,
+        r#"INSERT INTO cs_lookup ("FirstName", "LastName") VALUES ('Alice', 'Smith')"#,
+        r#"SELECT "FirstName", "LastName" FROM cs_lookup"#,
+    ]);
+    assert_eq!(results[2].columns, vec!["FirstName", "LastName"]);
+    assert_eq!(
+        results[2].rows[0],
+        vec![
+            ScalarValue::Text("Alice".to_string()),
+            ScalarValue::Text("Smith".to_string()),
+        ]
+    );
+}

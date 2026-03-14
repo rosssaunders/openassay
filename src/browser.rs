@@ -27,7 +27,7 @@ thread_local! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BrowserQueryResult {
     columns: Vec<String>,
-    rows: Vec<Vec<String>>,
+    rows: Vec<Vec<Option<String>>>,
     command_tag: String,
     rows_affected: u64,
 }
@@ -218,7 +218,7 @@ async fn execute_simple_query(sql: &str) -> Result<Vec<BrowserQueryResult>, Stri
 
     let mut results = Vec::new();
     let mut current_columns: Option<Vec<String>> = None;
-    let mut current_rows: Vec<Vec<String>> = Vec::new();
+    let mut current_rows: Vec<Vec<Option<String>>> = Vec::new();
 
     for message in messages {
         match message {
@@ -227,20 +227,25 @@ async fn execute_simple_query(sql: &str) -> Result<Vec<BrowserQueryResult>, Stri
                 current_rows.clear();
             }
             BackendMessage::DataRow { values } => {
-                current_rows.push(values);
+                current_rows.push(values.into_iter().map(Some).collect());
             }
             BackendMessage::DataRowBinary { values } => {
                 current_rows.push(
                     values
                         .into_iter()
                         .map(|value| match value {
-                            None => "NULL".to_string(),
-                            Some(bytes) => String::from_utf8(bytes.clone()).unwrap_or_else(|_| {
-                                format!(
-                                    "\\x{}",
-                                    bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
-                                )
-                            }),
+                            None => None,
+                            Some(bytes) => {
+                                Some(String::from_utf8(bytes.clone()).unwrap_or_else(|_| {
+                                    format!(
+                                        "\\x{}",
+                                        bytes
+                                            .iter()
+                                            .map(|b| format!("{b:02x}"))
+                                            .collect::<String>()
+                                    )
+                                }))
+                            }
                         })
                         .collect(),
                 );
@@ -386,9 +391,12 @@ fn render_query_result(result: &BrowserQueryResult) -> String {
         .iter()
         .map(|row| {
             if row.len() <= 1 {
-                row.first().cloned().unwrap_or_default()
+                row.first().and_then(|v| v.clone()).unwrap_or_default()
             } else {
-                row.join("\t")
+                row.iter()
+                    .map(|v| v.as_deref().unwrap_or("NULL"))
+                    .collect::<Vec<_>>()
+                    .join("\t")
             }
         })
         .collect::<Vec<_>>()
@@ -487,6 +495,130 @@ async fn browse_catalog_json_internal(_path: &str) -> String {
         "catalogs": [],
     })
     .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// FDW WASM bindings
+// ---------------------------------------------------------------------------
+
+/// Register a foreign data wrapper by name.
+///
+/// In WASM builds the `callback` parameter is a JavaScript function with
+/// the signature `(tableName: string, options: string) => string[][]` which
+/// returns an array of rows (each row is an array of string column values).
+///
+/// In native builds, `callback` is ignored and only the wrapper name is
+/// registered as a no-op placeholder.
+///
+/// # JavaScript usage
+///
+/// ```javascript
+/// register_fdw("my_fdw", (table, opts) => [["1","hello"],["2","world"]]);
+/// await execute_sql(`
+///   CREATE SERVER myserver FOREIGN DATA WRAPPER my_fdw;
+///   CREATE FOREIGN TABLE ft (id int8, name text) SERVER myserver;
+///   SELECT * FROM ft;
+/// `);
+/// ```
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = register_fdw)]
+pub fn register_fdw(name: &str, callback: js_sys::Function) -> String {
+    use std::sync::Arc;
+
+    use crate::foreign::{
+        FdwError, ForeignDataWrapper, ForeignScan, ForeignTableDef, Qual, with_fdw_write,
+    };
+    use crate::storage::tuple::ScalarValue;
+
+    struct JsForeignScan {
+        rows: std::vec::IntoIter<Vec<ScalarValue>>,
+    }
+
+    impl ForeignScan for JsForeignScan {
+        fn iterate(&mut self) -> Option<Vec<ScalarValue>> {
+            self.rows.next()
+        }
+        fn end(&mut self) {}
+    }
+
+    struct JsFdw {
+        name: String,
+        callback: js_sys::Function,
+    }
+
+    // Safety: WASM is single-threaded.
+    unsafe impl Send for JsFdw {}
+    unsafe impl Sync for JsFdw {}
+
+    impl ForeignDataWrapper for JsFdw {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn begin_scan(
+            &self,
+            table: &ForeignTableDef,
+            _quals: &[Qual],
+        ) -> Result<Box<dyn ForeignScan>, FdwError> {
+            let options_json = serde_json::to_string(&table.options).unwrap_or_default();
+            let this = wasm_bindgen::JsValue::null();
+            let table_name = wasm_bindgen::JsValue::from_str(&format!("{}", table.table_oid));
+            let opts = wasm_bindgen::JsValue::from_str(&options_json);
+            let result = self
+                .callback
+                .call2(&this, &table_name, &opts)
+                .map_err(|e| FdwError {
+                    message: format!("JS FDW callback error: {:?}", e),
+                })?;
+
+            // Expect result to be an array of arrays of strings.
+            // Values are returned as ScalarValue::Text — the executor handles
+            // type coercion (implicit casts) when evaluating expressions, similar
+            // to how PostgreSQL's file_fdw reads everything as text and relies
+            // on input functions for conversion.
+            let outer = js_sys::Array::from(&result);
+            let mut rows = Vec::new();
+            for i in 0..outer.length() {
+                let inner = js_sys::Array::from(&outer.get(i));
+                let mut row = Vec::new();
+                for j in 0..inner.length() {
+                    let val = inner.get(j);
+                    if val.is_null() || val.is_undefined() {
+                        row.push(ScalarValue::Null);
+                    } else {
+                        row.push(ScalarValue::Text(
+                            val.as_string().unwrap_or_else(|| format!("{:?}", val)),
+                        ));
+                    }
+                }
+                rows.push(row);
+            }
+
+            Ok(Box::new(JsForeignScan {
+                rows: rows.into_iter(),
+            }))
+        }
+    }
+
+    let wrapper = Arc::new(JsFdw {
+        name: name.to_string(),
+        callback,
+    });
+
+    with_fdw_write(|reg| {
+        reg.register_wrapper(wrapper);
+    });
+
+    "OK".to_string()
+}
+
+/// Register a foreign data wrapper by name (native stub).
+///
+/// On native targets, FDW implementations are registered via the Rust API
+/// directly using `foreign::with_fdw_write`.  This WASM-only stub prevents
+/// import errors in dual-target builds.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_fdw(_name: &str) -> String {
+    "OK".to_string()
 }
 
 fn browser_type_name(signature: crate::catalog::TypeSignature) -> &'static str {

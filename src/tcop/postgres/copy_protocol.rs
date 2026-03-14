@@ -21,10 +21,9 @@ impl PostgresSession {
                 .map_err(SessionError::from)?;
         let mut result = Vec::with_capacity(columns.len());
         for col in columns {
-            let col_lower = col.to_ascii_lowercase();
             let idx = all_columns
                 .iter()
-                .position(|c| c.to_ascii_lowercase() == col_lower)
+                .position(|c| c == col)
                 .ok_or_else(|| SessionError {
                     message: format!(
                         "column \"{}\" of relation \"{}\" does not exist",
@@ -111,13 +110,13 @@ impl PostgresSession {
             // Build mapping: for each specified column, find its index in the full table
             let mut col_indices = Vec::with_capacity(state.columns.len());
             for col in &state.columns {
-                let col_lower = col.to_ascii_lowercase();
-                let idx = all_columns
-                    .iter()
-                    .position(|c| c.to_ascii_lowercase() == col_lower)
-                    .ok_or_else(|| SessionError {
-                        message: format!("column \"{col}\" does not exist"),
-                    })?;
+                let idx =
+                    all_columns
+                        .iter()
+                        .position(|c| c == col)
+                        .ok_or_else(|| SessionError {
+                            message: format!("column \"{col}\" does not exist"),
+                        })?;
                 col_indices.push(idx);
             }
             rows = rows

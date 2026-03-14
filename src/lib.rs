@@ -66,6 +66,7 @@ pub mod catalog;
 pub mod commands;
 pub mod executor;
 pub mod extensions;
+pub mod foreign;
 pub mod parser;
 pub mod planner;
 pub mod plpgsql;

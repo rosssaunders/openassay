@@ -101,11 +101,7 @@ impl TypeScope {
     }
 
     fn insert_qualified(&mut self, parts: &[String], resolved: ResolvedExprType) {
-        let key = parts
-            .iter()
-            .map(|part| part.to_ascii_lowercase())
-            .collect::<Vec<_>>()
-            .join(".");
+        let key = parts.join(".");
         self.qualified.insert(key, resolved);
     }
 
@@ -122,11 +118,7 @@ impl TypeScope {
             return self.unqualified.get(&key).cloned();
         }
 
-        let key = parts
-            .iter()
-            .map(|part| part.to_ascii_lowercase())
-            .collect::<Vec<_>>()
-            .join(".");
+        let key = parts.join(".");
         self.qualified.get(&key).cloned()
     }
 }
@@ -578,7 +570,7 @@ fn extend_scope_with_table(
         message: err.message,
     })?;
     let qualifier = alias
-        .map(|name| name.to_ascii_lowercase())
+        .map(|name| name.to_string())
         .unwrap_or_else(|| table.name().to_string());
     for column in table.columns() {
         let resolved = ResolvedExprType::new(
@@ -768,7 +760,7 @@ fn annotate_recursive_cte_subscript_types(
     cte: &mut crate::parser::ast::CommonTableExpr,
     ctes: &mut HashMap<String, Vec<PlannedOutputColumn>>,
 ) -> Result<(), EngineError> {
-    let cte_name = cte.name.to_ascii_lowercase();
+    let cte_name = cte.name.clone();
     let QueryExpr::SetOperation {
         left,
         op,
@@ -828,7 +820,7 @@ fn annotate_query_subscript_types_with_ctes(
                 }
             }
             append_cte_aux_output_columns(&mut cols, cte);
-            local_ctes.insert(cte.name.to_ascii_lowercase(), cols);
+            local_ctes.insert(cte.name.clone(), cols);
         }
     }
     annotate_query_expr_subscript_types(&mut query.body, &mut local_ctes)?;
@@ -1306,7 +1298,7 @@ pub(crate) fn derive_query_output_columns_with_ctes(
     let mut local_ctes = ctes.clone();
     if let Some(with) = &query.with {
         for cte in &with.ctes {
-            let cte_name = cte.name.to_ascii_lowercase();
+            let cte_name = cte.name.clone();
             let cols = if with.recursive
                 && query_references_relation(&cte.query, &cte_name)
                 && is_recursive_union_expr(&cte.query.body)
@@ -1344,7 +1336,7 @@ fn derive_recursive_cte_output_columns(
     cte: &crate::parser::ast::CommonTableExpr,
     ctes: &HashMap<String, Vec<PlannedOutputColumn>>,
 ) -> Result<Vec<PlannedOutputColumn>, EngineError> {
-    let cte_name = cte.name.to_ascii_lowercase();
+    let cte_name = cte.name.clone();
     let QueryExpr::SetOperation {
         left,
         op,
@@ -1550,7 +1542,7 @@ fn derive_query_columns_with_ctes(
     let mut local_ctes = ctes.clone();
     if let Some(with) = &query.with {
         for cte in &with.ctes {
-            let cte_name = cte.name.to_ascii_lowercase();
+            let cte_name = cte.name.clone();
             let cols = if with.recursive
                 && query_references_relation(&cte.query, &cte_name)
                 && is_recursive_union_expr(&cte.query.body)
@@ -1574,7 +1566,7 @@ fn derive_recursive_cte_columns(
     cte: &crate::parser::ast::CommonTableExpr,
     ctes: &HashMap<String, Vec<String>>,
 ) -> Result<Vec<String>, EngineError> {
-    let cte_name = cte.name.to_ascii_lowercase();
+    let cte_name = cte.name.clone();
     let QueryExpr::SetOperation {
         left,
         op,
@@ -2101,7 +2093,7 @@ pub(crate) fn current_cte_binding(name: &str) -> Option<CteBinding> {
         stack
             .borrow()
             .last()
-            .and_then(|ctes| ctes.get(&name.to_ascii_lowercase()).cloned())
+            .and_then(|ctes| ctes.get(name).cloned())
     })
 }
 
@@ -2148,13 +2140,9 @@ fn expand_table_expression_columns(
     match table {
         TableExpression::Relation(rel) => {
             if rel.name.len() == 1 {
-                let key = rel.name[0].to_ascii_lowercase();
+                let key = rel.name[0].clone();
                 if let Some(columns) = ctes.get(&key) {
-                    let qualifier = rel
-                        .alias
-                        .as_ref()
-                        .map(|alias| alias.to_ascii_lowercase())
-                        .unwrap_or(key);
+                    let qualifier = rel.alias.clone().unwrap_or(key);
                     return Ok(columns
                         .iter()
                         .map(|column| ExpandedFromColumn {
@@ -2165,11 +2153,7 @@ fn expand_table_expression_columns(
                 }
             }
             if let Some((_, relation_name, columns)) = lookup_virtual_relation(&rel.name) {
-                let qualifier = rel
-                    .alias
-                    .as_ref()
-                    .map(|alias| alias.to_ascii_lowercase())
-                    .unwrap_or(relation_name);
+                let qualifier = rel.alias.clone().unwrap_or(relation_name);
                 return Ok(columns
                     .iter()
                     .map(|column| ExpandedFromColumn {
@@ -2188,8 +2172,7 @@ fn expand_table_expression_columns(
             })?;
             let qualifier = rel
                 .alias
-                .as_ref()
-                .map(|alias| alias.to_ascii_lowercase())
+                .clone()
                 .unwrap_or_else(|| table.name().to_string());
             Ok(table
                 .columns()
@@ -2204,9 +2187,8 @@ fn expand_table_expression_columns(
             let column_names = effective_table_function_columns(function);
             let qualifier = function
                 .alias
-                .as_ref()
-                .map(|alias| alias.to_ascii_lowercase())
-                .or_else(|| function.name.last().map(|name| name.to_ascii_lowercase()));
+                .clone()
+                .or_else(|| function.name.last().cloned());
             Ok(column_names
                 .into_iter()
                 .map(|column_name| {
@@ -2231,7 +2213,7 @@ fn expand_table_expression_columns(
                 }
             }
             if let Some(alias) = &sub.alias {
-                let qualifier = alias.to_ascii_lowercase();
+                let qualifier = alias.clone();
                 Ok(cols
                     .into_iter()
                     .map(|col| ExpandedFromColumn {
@@ -2267,14 +2249,11 @@ fn expand_table_expression_columns(
             } else {
                 Vec::new()
             };
-            let using_set: HashSet<String> = using_columns
-                .iter()
-                .map(|column| column.to_ascii_lowercase())
-                .collect();
+            let using_set: HashSet<String> = using_columns.iter().cloned().collect();
 
             let mut out = left_cols;
             for col in right_cols {
-                if using_set.contains(&col.label.to_ascii_lowercase()) {
+                if using_set.contains(&col.label) {
                     continue;
                 }
                 out.push(col);
@@ -2308,13 +2287,9 @@ fn expand_table_expression_columns_typed(
     match table {
         TableExpression::Relation(rel) => {
             if rel.name.len() == 1 {
-                let key = rel.name[0].to_ascii_lowercase();
+                let key = rel.name[0].clone();
                 if let Some(columns) = ctes.get(&key) {
-                    let qualifier = rel
-                        .alias
-                        .as_ref()
-                        .map(|alias| alias.to_ascii_lowercase())
-                        .unwrap_or(key);
+                    let qualifier = rel.alias.clone().unwrap_or(key);
                     return Ok(columns
                         .iter()
                         .map(|column| ExpandedFromTypeColumn {
@@ -2327,11 +2302,7 @@ fn expand_table_expression_columns_typed(
                 }
             }
             if let Some((_, relation_name, columns)) = lookup_virtual_relation(&rel.name) {
-                let qualifier = rel
-                    .alias
-                    .as_ref()
-                    .map(|alias| alias.to_ascii_lowercase())
-                    .unwrap_or(relation_name);
+                let qualifier = rel.alias.clone().unwrap_or(relation_name);
                 return Ok(columns
                     .iter()
                     .map(|column| ExpandedFromTypeColumn {
@@ -2352,8 +2323,7 @@ fn expand_table_expression_columns_typed(
             })?;
             let qualifier = rel
                 .alias
-                .as_ref()
-                .map(|alias| alias.to_ascii_lowercase())
+                .clone()
                 .unwrap_or_else(|| table.name().to_string());
             Ok(table
                 .columns()
@@ -2375,9 +2345,8 @@ fn expand_table_expression_columns_typed(
             }
             let qualifier = function
                 .alias
-                .as_ref()
-                .map(|alias| alias.to_ascii_lowercase())
-                .or_else(|| function.name.last().map(|name| name.to_ascii_lowercase()));
+                .clone()
+                .or_else(|| function.name.last().cloned());
             Ok(column_names
                 .into_iter()
                 .enumerate()
@@ -2405,7 +2374,7 @@ fn expand_table_expression_columns_typed(
                 }
             }
             if let Some(alias) = &sub.alias {
-                let qualifier = alias.to_ascii_lowercase();
+                let qualifier = alias.clone();
                 Ok(cols
                     .into_iter()
                     .map(|col| ExpandedFromTypeColumn {
@@ -2445,14 +2414,11 @@ fn expand_table_expression_columns_typed(
             } else {
                 Vec::new()
             };
-            let using_set: HashSet<String> = using_columns
-                .iter()
-                .map(|column| column.to_ascii_lowercase())
-                .collect();
+            let using_set: HashSet<String> = using_columns.iter().cloned().collect();
 
             let mut out = left_cols;
             for col in right_cols {
-                if using_set.contains(&col.label.to_ascii_lowercase()) {
+                if using_set.contains(&col.label) {
                     continue;
                 }
                 out.push(col);

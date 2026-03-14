@@ -192,7 +192,10 @@ pub fn expand_relation_dependency_set(
     for relation_oid in initial_relation_oids {
         let ident = describe_table(catalog, *relation_oid)?;
         match ident.kind {
-            TableKind::Heap | TableKind::View | TableKind::MaterializedView => {
+            TableKind::Heap
+            | TableKind::View
+            | TableKind::MaterializedView
+            | TableKind::Foreign => {
                 set.insert(*relation_oid);
             }
             TableKind::VirtualDual => {
@@ -274,10 +277,10 @@ fn collect_query_relation_refs(
         for cte in &with.ctes {
             let mut cte_scope = scope.clone();
             if with.recursive {
-                cte_scope.insert(cte.name.to_ascii_lowercase());
+                cte_scope.insert(cte.name.clone());
             }
             collect_query_relation_refs(&cte.query, &cte_scope, out);
-            scope.insert(cte.name.to_ascii_lowercase());
+            scope.insert(cte.name.clone());
         }
     }
     collect_query_expr_relation_refs(&query.body, &scope, out);
@@ -356,7 +359,7 @@ fn collect_table_expression_refs(
 ) {
     match table {
         TableExpression::Relation(rel) => {
-            if rel.name.len() == 1 && ctes.contains(&rel.name[0].to_ascii_lowercase()) {
+            if rel.name.len() == 1 && ctes.contains(&rel.name[0]) {
                 return;
             }
             out.push(rel.name.clone());

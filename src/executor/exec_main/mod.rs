@@ -202,6 +202,7 @@ fn collect_scan_projection_hints_inner(
             collect_scan_projection_hints_inner(&cte.input, hints);
         }
         crate::planner::physical::PhysicalPlan::Result(_)
+        | crate::planner::physical::PhysicalPlan::ForeignScan(_)
         | crate::planner::physical::PhysicalPlan::FunctionScan(_)
         | crate::planner::physical::PhysicalPlan::CteScan(_) => {}
     }

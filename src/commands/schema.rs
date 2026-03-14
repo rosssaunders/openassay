@@ -35,7 +35,7 @@ pub async fn execute_create_schema(
 pub async fn execute_drop_schema(
     drop_schema: &DropSchemaStatement,
 ) -> Result<QueryResult, EngineError> {
-    let schema_name = drop_schema.name.to_ascii_lowercase();
+    let schema_name = drop_schema.name.clone();
     let schema_tables = with_catalog_read(|catalog| {
         catalog
             .schema(&schema_name)
