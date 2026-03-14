@@ -87,6 +87,10 @@ fn virtual_relation_column_defs(
                 name: "nspname".to_string(),
                 type_oid: PG_TEXT_OID,
             },
+            VirtualRelationColumnDef {
+                name: "nspowner".to_string(),
+                type_oid: PG_INT8_OID,
+            },
         ],
         ("pg_catalog", "pg_class") => vec![
             VirtualRelationColumnDef {

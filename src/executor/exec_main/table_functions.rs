@@ -1392,7 +1392,13 @@ pub(super) fn virtual_relation_rows(
             entries.sort_by_key(|a| a.0);
             Ok(entries
                 .into_iter()
-                .map(|(oid, name)| vec![ScalarValue::Int(oid as i64), ScalarValue::Text(name)])
+                .map(|(oid, name)| {
+                    vec![
+                        ScalarValue::Int(oid as i64),
+                        ScalarValue::Text(name),
+                        ScalarValue::Int(10), // nspowner: superuser OID
+                    ]
+                })
                 .collect())
         }
         ("pg_catalog", "pg_class") => {
@@ -1956,24 +1962,28 @@ pub(super) fn virtual_relation_rows(
                                     .join(",")
                             );
                             // Resolve referenced table OID
-                            let ref_table_oid = catalog
-                                .schema(
+                            let (ref_schema, ref_table_name) = if fk.referenced_table.len() >= 2 {
+                                (
+                                    fk.referenced_table[0].as_str(),
+                                    fk.referenced_table.last().map(String::as_str).unwrap(),
+                                )
+                            } else {
+                                (
+                                    "public",
                                     fk.referenced_table
                                         .first()
                                         .map(String::as_str)
                                         .unwrap_or("public"),
                                 )
-                                .and_then(|s| fk.referenced_table.last().and_then(|n| s.table(n)))
+                            };
+                            let ref_table_oid = catalog
+                                .schema(ref_schema)
+                                .and_then(|s| s.table(ref_table_name))
                                 .map(|t| t.oid() as i64)
                                 .unwrap_or(0);
                             let ref_col_ordinals: std::collections::HashMap<String, i64> = catalog
-                                .schema(
-                                    fk.referenced_table
-                                        .first()
-                                        .map(String::as_str)
-                                        .unwrap_or("public"),
-                                )
-                                .and_then(|s| fk.referenced_table.last().and_then(|n| s.table(n)))
+                                .schema(ref_schema)
+                                .and_then(|s| s.table(ref_table_name))
                                 .map(|t| {
                                     t.columns()
                                         .iter()
