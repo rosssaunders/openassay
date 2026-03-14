@@ -7103,3 +7103,313 @@ fn quoted_identifier_case_sensitive_lookup() {
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// DBeaver / pgAdmin introspection queries (issue #44)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dbeaver_schema_enumeration() {
+    let r = run("SELECT nspname, nspowner FROM pg_catalog.pg_namespace WHERE nspname = 'public'");
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0][0], ScalarValue::Text("public".to_string()));
+    assert_eq!(r.rows[0][1], ScalarValue::Int(10)); // nspowner = superuser
+}
+
+#[test]
+fn dbeaver_table_discovery_with_relowner() {
+    let results = run_batch(&[
+        "CREATE TABLE disco (id int8)",
+        "SELECT c.oid, c.relname, c.relkind, c.relowner \
+         FROM pg_catalog.pg_class c \
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relname = 'disco'",
+    ]);
+    assert_eq!(results[1].rows.len(), 1);
+    assert_eq!(
+        results[1].rows[0][1],
+        ScalarValue::Text("disco".to_string())
+    );
+    assert_eq!(results[1].rows[0][2], ScalarValue::Text("r".to_string()));
+    // relowner = 10 (superuser OID)
+    assert_eq!(results[1].rows[0][3], ScalarValue::Int(10));
+}
+
+#[test]
+fn dbeaver_column_details_with_attisdropped() {
+    let results = run_batch(&[
+        "CREATE TABLE col_test (name text NOT NULL, age int8)",
+        "SELECT a.attname, a.atttypid, a.attnotnull, a.attnum, t.typname \
+         FROM pg_catalog.pg_attribute a \
+         JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
+         WHERE a.attrelid = (SELECT oid FROM pg_catalog.pg_class WHERE relname = 'col_test') \
+           AND a.attnum > 0 AND NOT a.attisdropped \
+         ORDER BY a.attnum",
+    ]);
+    assert_eq!(results[1].rows.len(), 2);
+    // First column: name text NOT NULL
+    assert_eq!(results[1].rows[0][0], ScalarValue::Text("name".to_string()));
+    assert_eq!(
+        results[1].rows[0][2],
+        ScalarValue::Bool(true) // attnotnull
+    );
+    assert_eq!(results[1].rows[0][4], ScalarValue::Text("text".to_string()));
+    // Second column: age int8
+    assert_eq!(results[1].rows[1][0], ScalarValue::Text("age".to_string()));
+    assert_eq!(
+        results[1].rows[1][2],
+        ScalarValue::Bool(false) // attnotnull
+    );
+    assert_eq!(results[1].rows[1][4], ScalarValue::Text("int8".to_string()));
+}
+
+#[test]
+fn dbeaver_constraint_discovery() {
+    let results = run_batch(&[
+        "CREATE TABLE constr_test (id int8 PRIMARY KEY, name text UNIQUE)",
+        "SELECT c.conname, c.contype FROM pg_catalog.pg_constraint c \
+         JOIN pg_catalog.pg_class r ON r.oid = c.conrelid \
+         WHERE r.relname = 'constr_test' \
+         ORDER BY c.conname",
+    ]);
+    assert_eq!(results[1].rows.len(), 2);
+    // PK constraint
+    let pk_row = results[1]
+        .rows
+        .iter()
+        .find(|r| r[1] == ScalarValue::Text("p".to_string()))
+        .expect("should have PK constraint");
+    assert!(matches!(&pk_row[0], ScalarValue::Text(_)));
+    // UNIQUE constraint
+    let uq_row = results[1]
+        .rows
+        .iter()
+        .find(|r| r[1] == ScalarValue::Text("u".to_string()))
+        .expect("should have UNIQUE constraint");
+    assert!(matches!(&uq_row[0], ScalarValue::Text(_)));
+}
+
+#[test]
+fn dbeaver_index_discovery() {
+    let results = run_batch(&[
+        "CREATE TABLE idx_test (id int8 PRIMARY KEY, name text)",
+        "CREATE INDEX idx_name ON idx_test (name)",
+        "SELECT i.indexrelid, i.indisunique, i.indisprimary \
+         FROM pg_catalog.pg_index i \
+         JOIN pg_catalog.pg_class c ON c.oid = i.indrelid \
+         WHERE c.relname = 'idx_test' \
+         ORDER BY i.indexrelid",
+    ]);
+    assert_eq!(results[2].rows.len(), 2);
+    // PK index: unique=true, primary=true
+    let pk_idx = &results[2].rows[0];
+    assert_eq!(pk_idx[1], ScalarValue::Bool(true)); // indisunique
+    assert_eq!(pk_idx[2], ScalarValue::Bool(true)); // indisprimary
+    // Explicit index: unique=false, primary=false
+    let explicit_idx = &results[2].rows[1];
+    assert_eq!(explicit_idx[1], ScalarValue::Bool(false)); // indisunique
+    assert_eq!(explicit_idx[2], ScalarValue::Bool(false)); // indisprimary
+}
+
+#[test]
+fn pg_type_exposes_typnamespace_and_typlen() {
+    let r = run(
+        "SELECT oid, typname, typnamespace, typlen, typbyval, typtype \
+         FROM pg_catalog.pg_type WHERE typname = 'int8'",
+    );
+    assert_eq!(r.rows.len(), 1);
+    assert_eq!(r.rows[0][0], ScalarValue::Int(20)); // oid
+    assert_eq!(r.rows[0][1], ScalarValue::Text("int8".to_string()));
+    assert_eq!(r.rows[0][2], ScalarValue::Int(11)); // typnamespace = pg_catalog
+    assert_eq!(r.rows[0][3], ScalarValue::Int(8)); // typlen
+    assert_eq!(r.rows[0][4], ScalarValue::Bool(true)); // typbyval
+    assert_eq!(r.rows[0][5], ScalarValue::Text("b".to_string())); // typtype = base
+}
+
+#[test]
+fn pg_class_relhasindex_reflects_constraints() {
+    let results = run_batch(&[
+        "CREATE TABLE noix (a text)",
+        "CREATE TABLE hasix (a int8 PRIMARY KEY)",
+        "SELECT relname, relhasindex FROM pg_catalog.pg_class \
+         WHERE relname IN ('noix', 'hasix') ORDER BY relname",
+    ]);
+    assert_eq!(results[2].rows.len(), 2);
+    // hasix should have relhasindex=true
+    assert_eq!(
+        results[2].rows[0][0],
+        ScalarValue::Text("hasix".to_string())
+    );
+    assert_eq!(results[2].rows[0][1], ScalarValue::Bool(true));
+    // noix should have relhasindex=false
+    assert_eq!(results[2].rows[1][0], ScalarValue::Text("noix".to_string()));
+    assert_eq!(results[2].rows[1][1], ScalarValue::Bool(false));
+}
+
+#[test]
+fn pg_attrdef_exposes_column_defaults() {
+    let results = run_batch(&[
+        "CREATE TABLE def_test (id int8, status text DEFAULT 'active')",
+        "SELECT ad.adrelid, ad.adnum, ad.adsrc \
+         FROM pg_catalog.pg_attrdef ad \
+         JOIN pg_catalog.pg_class c ON c.oid = ad.adrelid \
+         WHERE c.relname = 'def_test'",
+    ]);
+    assert_eq!(results[1].rows.len(), 1);
+    assert_eq!(results[1].rows[0][1], ScalarValue::Int(2)); // adnum for 'status'
+    assert!(matches!(&results[1].rows[0][2], ScalarValue::Text(s) if s.contains("active")));
+}
+
+#[test]
+fn pg_attribute_atthasdef_reflects_defaults() {
+    let results = run_batch(&[
+        "CREATE TABLE defattr (a int8, b text DEFAULT 'x')",
+        "SELECT attname, atthasdef FROM pg_catalog.pg_attribute \
+         WHERE attrelid = (SELECT oid FROM pg_class WHERE relname = 'defattr') \
+           AND attnum > 0 \
+         ORDER BY attnum",
+    ]);
+    assert_eq!(results[1].rows.len(), 2);
+    // a: no default
+    assert_eq!(results[1].rows[0][0], ScalarValue::Text("a".to_string()));
+    assert_eq!(results[1].rows[0][1], ScalarValue::Bool(false));
+    // b: has default
+    assert_eq!(results[1].rows[1][0], ScalarValue::Text("b".to_string()));
+    assert_eq!(results[1].rows[1][1], ScalarValue::Bool(true));
+}
+
+#[test]
+fn information_schema_table_constraints_from_pk() {
+    let results = run_batch(&[
+        "CREATE TABLE tcon (id int8 PRIMARY KEY, name text UNIQUE)",
+        "SELECT constraint_name, constraint_type, is_deferrable \
+         FROM information_schema.table_constraints \
+         WHERE table_name = 'tcon' ORDER BY constraint_type",
+    ]);
+    assert_eq!(results[1].rows.len(), 2);
+    // PK
+    let pk = results[1]
+        .rows
+        .iter()
+        .find(|r| r[1] == ScalarValue::Text("PRIMARY KEY".to_string()))
+        .expect("should have PRIMARY KEY constraint");
+    assert_eq!(pk[2], ScalarValue::Text("NO".to_string()));
+    // UNIQUE
+    let uq = results[1]
+        .rows
+        .iter()
+        .find(|r| r[1] == ScalarValue::Text("UNIQUE".to_string()))
+        .expect("should have UNIQUE constraint");
+    assert_eq!(uq[2], ScalarValue::Text("NO".to_string()));
+}
+
+#[test]
+fn information_schema_key_column_usage_from_pk() {
+    let results = run_batch(&[
+        "CREATE TABLE kcu (id int8 PRIMARY KEY, name text)",
+        "SELECT constraint_name, column_name, ordinal_position \
+         FROM information_schema.key_column_usage \
+         WHERE table_name = 'kcu'",
+    ]);
+    assert_eq!(results[1].rows.len(), 1);
+    assert_eq!(results[1].rows[0][1], ScalarValue::Text("id".to_string()));
+    assert_eq!(results[1].rows[0][2], ScalarValue::Int(1));
+}
+
+#[test]
+fn information_schema_columns_with_defaults_and_precision() {
+    let results = run_batch(&[
+        "CREATE TABLE is_col (id int8, score float8, label text DEFAULT 'none')",
+        "SELECT column_name, column_default, is_nullable, data_type, numeric_precision \
+         FROM information_schema.columns \
+         WHERE table_name = 'is_col' ORDER BY ordinal_position",
+    ]);
+    assert_eq!(results[1].rows.len(), 3);
+    // id: int8, no default, precision=64
+    assert_eq!(results[1].rows[0][0], ScalarValue::Text("id".to_string()));
+    assert_eq!(results[1].rows[0][1], ScalarValue::Null);
+    assert_eq!(
+        results[1].rows[0][3],
+        ScalarValue::Text("bigint".to_string())
+    );
+    assert_eq!(results[1].rows[0][4], ScalarValue::Int(64));
+    // score: float8, precision=53
+    assert_eq!(
+        results[1].rows[1][0],
+        ScalarValue::Text("score".to_string())
+    );
+    assert_eq!(
+        results[1].rows[1][3],
+        ScalarValue::Text("double precision".to_string())
+    );
+    assert_eq!(results[1].rows[1][4], ScalarValue::Int(53));
+    // label: text, has default
+    assert_eq!(
+        results[1].rows[2][0],
+        ScalarValue::Text("label".to_string())
+    );
+    assert!(matches!(&results[1].rows[2][1], ScalarValue::Text(s) if s.contains("none")));
+    assert_eq!(results[1].rows[2][4], ScalarValue::Null);
+}
+
+#[test]
+fn pg_am_exposes_all_access_methods() {
+    let r = run("SELECT oid, amname, amtype FROM pg_catalog.pg_am ORDER BY oid");
+    assert_eq!(r.rows.len(), 3);
+    // heap (oid=2)
+    assert_eq!(r.rows[0][0], ScalarValue::Int(2));
+    assert_eq!(r.rows[0][1], ScalarValue::Text("heap".to_string()));
+    assert_eq!(r.rows[0][2], ScalarValue::Text("t".to_string()));
+    // btree (oid=403)
+    assert_eq!(r.rows[1][0], ScalarValue::Int(403));
+    assert_eq!(r.rows[1][1], ScalarValue::Text("btree".to_string()));
+    assert_eq!(r.rows[1][2], ScalarValue::Text("i".to_string()));
+    // hash (oid=405)
+    assert_eq!(r.rows[2][0], ScalarValue::Int(405));
+    assert_eq!(r.rows[2][1], ScalarValue::Text("hash".to_string()));
+    assert_eq!(r.rows[2][2], ScalarValue::Text("i".to_string()));
+}
+
+#[test]
+fn pg_inherits_returns_empty() {
+    let r = run("SELECT inhrelid, inhparent, inhseqno FROM pg_catalog.pg_inherits");
+    assert!(r.rows.is_empty());
+}
+
+#[test]
+fn pg_constraint_foreign_key_populated() {
+    let results = run_batch(&[
+        "CREATE TABLE fk_parent (id int8 PRIMARY KEY)",
+        "CREATE TABLE fk_child (id int8, parent_id int8 REFERENCES fk_parent(id))",
+        "SELECT c.conname, c.contype, c.confrelid \
+         FROM pg_catalog.pg_constraint c \
+         JOIN pg_catalog.pg_class r ON r.oid = c.conrelid \
+         WHERE r.relname = 'fk_child'",
+    ]);
+    assert_eq!(results[2].rows.len(), 1);
+    assert_eq!(results[2].rows[0][1], ScalarValue::Text("f".to_string()));
+    // confrelid should be the OID of fk_parent (non-zero)
+    assert!(matches!(results[2].rows[0][2], ScalarValue::Int(v) if v > 0));
+}
+
+#[test]
+fn pg_class_join_namespace_full_introspection() {
+    // A query DBeaver sends for full table listing
+    let results = run_batch(&[
+        "CREATE TABLE full_intro (x int8)",
+        "SELECT c.relname, c.relkind, n.nspname, c.relowner, c.relhasindex, \
+                c.relhasrules, c.relhastriggers \
+         FROM pg_catalog.pg_class c \
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relname = 'full_intro'",
+    ]);
+    assert_eq!(results[1].rows.len(), 1);
+    let row = &results[1].rows[0];
+    assert_eq!(row[0], ScalarValue::Text("full_intro".to_string()));
+    assert_eq!(row[1], ScalarValue::Text("r".to_string()));
+    assert_eq!(row[2], ScalarValue::Text("public".to_string()));
+    assert_eq!(row[3], ScalarValue::Int(10)); // relowner
+    assert_eq!(row[4], ScalarValue::Bool(false)); // relhasindex (no PK/index)
+    assert_eq!(row[5], ScalarValue::Bool(false)); // relhasrules
+    assert_eq!(row[6], ScalarValue::Bool(false)); // relhastriggers
+}
