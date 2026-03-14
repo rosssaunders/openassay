@@ -358,7 +358,8 @@ fn can_use_simple_columnar_projection(
     has_window: bool,
     outer_scope: Option<&EvalScope>,
 ) -> bool {
-    outer_scope.is_none()
+    crate::executor::columnar_execution_enabled()
+        && outer_scope.is_none()
         && !has_aggregate
         && !has_window
         && select.group_by.is_empty()
@@ -396,7 +397,8 @@ fn can_use_columnar_aggregation(
     has_window: bool,
     outer_scope: Option<&EvalScope>,
 ) -> bool {
-    outer_scope.is_none()
+    crate::executor::columnar_execution_enabled()
+        && outer_scope.is_none()
         && has_aggregate
         && !has_window
         && select.from.len() == 1
@@ -412,7 +414,8 @@ fn can_use_columnar_windows(
     has_window: bool,
     outer_scope: Option<&EvalScope>,
 ) -> bool {
-    outer_scope.is_none()
+    crate::executor::columnar_execution_enabled()
+        && outer_scope.is_none()
         && !has_aggregate
         && has_window
         && select.group_by.is_empty()
@@ -496,6 +499,7 @@ fn schema_batch_for_table(table: &crate::catalog::Table) -> ColumnBatch {
             .map(|column| column.name().to_string())
             .collect(),
         row_count: 0,
+        record_batch: None,
     }
 }
 
@@ -1196,6 +1200,7 @@ mod tests {
                 "Referer".to_string(),
             ],
             row_count: 3,
+            record_batch: None,
         };
 
         let expr = Expr::CaseSearched {

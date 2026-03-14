@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
 pub mod column_batch;
 pub mod column_filter;
 pub mod columnar_agg;
@@ -22,3 +24,13 @@ pub mod node_subquery;
 pub mod node_window_agg;
 pub mod pipeline;
 pub mod window_eval;
+
+static COLUMNAR_EXECUTION_ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub fn columnar_execution_enabled() -> bool {
+    COLUMNAR_EXECUTION_ENABLED.load(AtomicOrdering::Relaxed)
+}
+
+pub fn set_columnar_execution_enabled(enabled: bool) {
+    COLUMNAR_EXECUTION_ENABLED.store(enabled, AtomicOrdering::Relaxed);
+}
