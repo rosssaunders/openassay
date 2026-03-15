@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::executor::profiling;
 
 pub(super) fn scope_from_row(
     columns: &[String],
@@ -7,6 +8,7 @@ pub(super) fn scope_from_row(
     qualifiers: &[String],
     visible_columns: &[String],
 ) -> EvalScope {
+    let _span = profiling::span("scope_from_row");
     let mut scope = EvalScope::default();
     for (col, value) in columns.iter().zip(row.iter()) {
         scope.insert_unqualified(col, value.clone());

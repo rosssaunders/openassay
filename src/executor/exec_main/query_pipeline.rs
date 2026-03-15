@@ -4,15 +4,19 @@ use super::*;
 use crate::executor::column_batch::{ColumnBatch, TypedColumn};
 use crate::executor::columnar_agg::{AggKind, AggSpec, ColumnarAggregator, OutputExpr};
 use crate::executor::pipeline::{
-    AggregateSink, BatchCollector, FilterStage, LimitStage, PipelineStage, ProjectStage,
+    BatchCollector, FilterStage, LimitStage, PipelineStage, ProjectStage,
 };
+use crate::executor::profiling;
 use crate::executor::window_eval::{
     WindowArgumentKind, WindowColumnPlan, WindowPartitions, eval_window_function_columnar,
     expr_references_columns, resolve_window_spec,
 };
 use crate::parser::ast::WindowSpec;
-use crate::storage::heap::{ColumnAggregateOp, ColumnAggregateRequest, ScanPredicate};
+use crate::storage::heap::{
+    ColumnAggregateOp, ColumnAggregateRequest, ScanPredicate, ScanPredicateOp,
+};
 use crate::tcop::engine::with_storage_write;
+use arrow::array::{Array, StringArray};
 use std::collections::BTreeSet;
 
 pub async fn execute_query(
@@ -452,6 +456,98 @@ impl SimpleLikeMatcher {
             Self::Prefix(literal) => value.starts_with(literal),
             Self::Suffix(literal) => value.ends_with(literal),
             Self::Contains(literal) => value.contains(literal),
+        }
+    }
+}
+
+fn for_each_matching_text_row(
+    values: &StringArray,
+    deleted_rows: Option<&[bool]>,
+    matcher: &SimpleLikeMatcher,
+    mut callback: impl FnMut(usize),
+) {
+    let has_nulls = values.null_count() > 0;
+    match matcher {
+        SimpleLikeMatcher::Exact(literal) => {
+            for_each_matching_text_row_with(
+                values,
+                deleted_rows,
+                has_nulls,
+                |value| value == literal,
+                &mut callback,
+            );
+        }
+        SimpleLikeMatcher::Prefix(literal) => {
+            for_each_matching_text_row_with(
+                values,
+                deleted_rows,
+                has_nulls,
+                |value| value.starts_with(literal),
+                &mut callback,
+            );
+        }
+        SimpleLikeMatcher::Suffix(literal) => {
+            for_each_matching_text_row_with(
+                values,
+                deleted_rows,
+                has_nulls,
+                |value| value.ends_with(literal),
+                &mut callback,
+            );
+        }
+        SimpleLikeMatcher::Contains(literal) => {
+            for_each_matching_text_row_with(
+                values,
+                deleted_rows,
+                has_nulls,
+                |value| value.contains(literal),
+                &mut callback,
+            );
+        }
+    }
+}
+
+fn for_each_matching_text_row_with(
+    values: &StringArray,
+    deleted_rows: Option<&[bool]>,
+    has_nulls: bool,
+    mut matches: impl FnMut(&str) -> bool,
+    callback: &mut impl FnMut(usize),
+) {
+    match (deleted_rows, has_nulls) {
+        (None, false) => {
+            for row_idx in 0..values.len() {
+                if matches(values.value(row_idx)) {
+                    callback(row_idx);
+                }
+            }
+        }
+        (None, true) => {
+            for row_idx in 0..values.len() {
+                if !values.is_null(row_idx) && matches(values.value(row_idx)) {
+                    callback(row_idx);
+                }
+            }
+        }
+        (Some(deleted_rows), false) => {
+            for (row_idx, deleted) in deleted_rows.iter().copied().enumerate().take(values.len()) {
+                if deleted {
+                    continue;
+                }
+                if matches(values.value(row_idx)) {
+                    callback(row_idx);
+                }
+            }
+        }
+        (Some(deleted_rows), true) => {
+            for (row_idx, deleted) in deleted_rows.iter().copied().enumerate().take(values.len()) {
+                if deleted || values.is_null(row_idx) {
+                    continue;
+                }
+                if matches(values.value(row_idx)) {
+                    callback(row_idx);
+                }
+            }
         }
     }
 }
@@ -1339,6 +1435,49 @@ fn classify_simple_like_predicate(
     None
 }
 
+fn simple_like_matcher_from_pattern(pattern: String) -> Option<SimpleLikeMatcher> {
+    if pattern.contains('_') {
+        return None;
+    }
+    if let Some(literal) = pattern
+        .strip_prefix('%')
+        .and_then(|value| value.strip_suffix('%'))
+        && !literal.contains('%')
+    {
+        return Some(SimpleLikeMatcher::Contains(literal.to_string()));
+    }
+    if let Some(literal) = pattern.strip_prefix('%')
+        && !literal.contains('%')
+    {
+        return Some(SimpleLikeMatcher::Suffix(literal.to_string()));
+    }
+    if let Some(literal) = pattern.strip_suffix('%')
+        && !literal.contains('%')
+    {
+        return Some(SimpleLikeMatcher::Prefix(literal.to_string()));
+    }
+    if !pattern.contains('%') {
+        return Some(SimpleLikeMatcher::Exact(pattern));
+    }
+    None
+}
+
+fn classify_simple_like_scan_predicate(
+    predicates: &[ScanPredicate],
+) -> Option<(usize, SimpleLikeMatcher)> {
+    let [predicate] = predicates else {
+        return None;
+    };
+    if predicate.escape.is_some() || predicate.op != ScanPredicateOp::Like {
+        return None;
+    }
+    let pattern = match &predicate.value {
+        ScalarValue::Text(text) => text.clone(),
+        other => other.render(),
+    };
+    simple_like_matcher_from_pattern(pattern).map(|matcher| (predicate.column_index, matcher))
+}
+
 async fn try_execute_simple_columnar_select(
     select: &SelectStatement,
     query: Option<&Query>,
@@ -1348,6 +1487,7 @@ async fn try_execute_simple_columnar_select(
     columns: &[String],
     _outer_scope: Option<&EvalScope>,
 ) -> Result<Option<QueryResult>, EngineError> {
+    let _span = profiling::span("try_execute_simple_columnar_select");
     let Some(scan_plan) = prepare_columnar_relation_scan(rel, relation_predicates, params).await?
     else {
         return Ok(None);
@@ -1378,53 +1518,259 @@ async fn try_execute_simple_columnar_select(
         if let Some(mut offset_collector) =
             OffsetTopNCollector::new(query, &topn_columns, params).await?
         {
+            let pushed_simple_like = scan_plan
+                .remaining_predicate
+                .is_none()
+                .then(|| classify_simple_like_scan_predicate(&scan_plan.scan_predicates))
+                .flatten();
             let simple_like = scan_plan
                 .remaining_predicate
                 .as_ref()
                 .and_then(|predicate| classify_simple_like_predicate(predicate, &topn_batch));
+            if let Some((source_column_idx, matcher)) = &pushed_simple_like {
+                with_storage_write(|storage| {
+                    storage.scan_record_batches_for_table(
+                        scan_plan.table.oid(),
+                        &mut |batch, deleted_rows, batch_start| {
+                            let _span = profiling::span("columnar_offset_topn_pushed_like_stream");
+                            let Some(values) = batch
+                                .columns()
+                                .get(*source_column_idx)
+                                .and_then(|column| column.as_any().downcast_ref::<StringArray>())
+                            else {
+                                return Ok(true);
+                            };
+                            let deleted_rows = deleted_rows
+                                .iter()
+                                .any(|deleted| *deleted)
+                                .then_some(deleted_rows);
+                            for_each_matching_text_row(values, deleted_rows, matcher, |row_idx| {
+                                offset_collector.push_record_batch_row(
+                                    batch,
+                                    &topn_projection,
+                                    row_idx,
+                                    batch_start + row_idx,
+                                );
+                            });
+                            Ok(true)
+                        },
+                    )
+                })
+                .map_err(|message| EngineError { message })?;
+
+                let offsets = offset_collector.finish();
+                let rows = with_storage_write(|storage| {
+                    storage.scan_rows_for_table(scan_plan.table.oid(), Some(&offsets), &[], None)
+                })
+                .map_err(|message| EngineError { message })?;
+                return Ok(Some(QueryResult {
+                    columns: columns.to_vec(),
+                    rows_affected: rows.len() as u64,
+                    rows,
+                    command_tag: "SELECT".to_string(),
+                }));
+            }
+            if let Some((column_idx, matcher)) = &simple_like {
+                let source_column_idx = topn_projection[*column_idx];
+                with_storage_write(|storage| {
+                    if scan_plan.scan_predicates.is_empty() {
+                        storage.scan_record_batches_for_table(
+                            scan_plan.table.oid(),
+                            &mut |batch, deleted_rows, batch_start| {
+                                let _span =
+                                    profiling::span("columnar_offset_topn_simple_like_stream");
+                                let Some(values) =
+                                    batch.columns().get(source_column_idx).and_then(|column| {
+                                        column.as_any().downcast_ref::<StringArray>()
+                                    })
+                                else {
+                                    return Ok(true);
+                                };
+                                let deleted_rows = deleted_rows
+                                    .iter()
+                                    .any(|deleted| *deleted)
+                                    .then_some(deleted_rows);
+                                for_each_matching_text_row(
+                                    values,
+                                    deleted_rows,
+                                    matcher,
+                                    |row_idx| {
+                                        offset_collector.push_record_batch_row(
+                                            batch,
+                                            &topn_projection,
+                                            row_idx,
+                                            batch_start + row_idx,
+                                        );
+                                    },
+                                );
+                                Ok(true)
+                            },
+                        )
+                    } else {
+                        storage.scan_selected_offsets_for_table(
+                            scan_plan.table.oid(),
+                            &scan_plan.scan_predicates,
+                            &mut |batch, selected_rows, offsets| {
+                                let _span = profiling::span("columnar_offset_topn_simple_like_raw");
+                                let Some(values) =
+                                    batch.columns().get(source_column_idx).and_then(|column| {
+                                        column.as_any().downcast_ref::<StringArray>()
+                                    })
+                                else {
+                                    return Ok(true);
+                                };
+                                let mut matched_rows = Vec::new();
+                                let mut matched_offsets = Vec::new();
+                                for (&row_idx, &row_offset) in
+                                    selected_rows.iter().zip(offsets.iter())
+                                {
+                                    if !values.is_null(row_idx)
+                                        && matcher.matches(values.value(row_idx))
+                                    {
+                                        matched_rows.push(row_idx);
+                                        matched_offsets.push(row_offset);
+                                    }
+                                }
+                                offset_collector.push_record_batch_selected_rows(
+                                    batch,
+                                    &topn_projection,
+                                    &matched_rows,
+                                    &matched_offsets,
+                                );
+                                Ok(true)
+                            },
+                        )
+                    }
+                })
+                .map_err(|message| EngineError { message })?;
+
+                let offsets = offset_collector.finish();
+                let rows = with_storage_write(|storage| {
+                    storage.scan_rows_for_table(scan_plan.table.oid(), Some(&offsets), &[], None)
+                })
+                .map_err(|message| EngineError { message })?;
+                return Ok(Some(QueryResult {
+                    columns: columns.to_vec(),
+                    rows_affected: rows.len() as u64,
+                    rows,
+                    command_tag: "SELECT".to_string(),
+                }));
+            }
+            if scan_plan.remaining_predicate.is_none() {
+                with_storage_write(|storage| {
+                    if scan_plan.scan_predicates.is_empty() {
+                        storage.scan_record_batches_for_table(
+                            scan_plan.table.oid(),
+                            &mut |batch, deleted_rows, batch_start| {
+                                for row_idx in 0..batch.num_rows() {
+                                    if deleted_rows.get(row_idx).copied().unwrap_or(false) {
+                                        continue;
+                                    }
+                                    offset_collector.push_record_batch_row(
+                                        batch,
+                                        &topn_projection,
+                                        row_idx,
+                                        batch_start + row_idx,
+                                    );
+                                }
+                                Ok(true)
+                            },
+                        )
+                    } else {
+                        storage.scan_selected_offsets_for_table(
+                            scan_plan.table.oid(),
+                            &scan_plan.scan_predicates,
+                            &mut |batch, selected_rows, offsets| {
+                                offset_collector.push_record_batch_selected_rows(
+                                    batch,
+                                    &topn_projection,
+                                    &selected_rows,
+                                    &offsets,
+                                );
+                                Ok(true)
+                            },
+                        )
+                    }
+                })
+                .map_err(|message| EngineError { message })?;
+
+                let offsets = offset_collector.finish();
+                let rows = with_storage_write(|storage| {
+                    storage.scan_rows_for_table(scan_plan.table.oid(), Some(&offsets), &[], None)
+                })
+                .map_err(|message| EngineError { message })?;
+                return Ok(Some(QueryResult {
+                    columns: columns.to_vec(),
+                    rows_affected: rows.len() as u64,
+                    rows,
+                    command_tag: "SELECT".to_string(),
+                }));
+            }
             with_storage_write(|storage| {
-                    storage.scan_batches_for_table_with_offsets(
+                    storage.scan_selected_batches_for_table_with_offsets(
                         scan_plan.table.oid(),
                         &scan_plan.scan_predicates,
                         Some(topn_projection.as_slice()),
-                        &mut |batch, offsets| {
+                        &mut |batch, selected_rows, offsets| {
                             if let Some((column_idx, matcher)) = &simple_like {
-                                offset_collector.push_matching_text_rows(
-                                    &batch,
-                                    *column_idx,
-                                    &offsets,
-                                    |value| matcher.matches(value),
+                                let _span = profiling::span(
+                                    "columnar_offset_topn_simple_like_match",
                                 );
+                                let mut matched_rows = Vec::new();
+                                let mut matched_offsets = Vec::new();
+                                if let Some(TypedColumn::Text(values, nulls)) =
+                                    batch.columns.get(*column_idx)
+                                {
+                                    for (&row_idx, &row_offset) in
+                                        selected_rows.iter().zip(offsets.iter())
+                                    {
+                                        if !nulls[row_idx] && matcher.matches(&values[row_idx]) {
+                                            matched_rows.push(row_idx);
+                                            matched_offsets.push(row_offset);
+                                        }
+                                    }
+                                }
+                                if !matched_rows.is_empty() {
+                                    offset_collector.push_selected_rows(
+                                        &batch,
+                                        &matched_rows,
+                                        &matched_offsets,
+                                    );
+                                }
                                 return Ok(true);
                             }
                             if let Some(predicate) = &scan_plan.remaining_predicate {
+                                let _span = profiling::span(
+                                    "columnar_offset_topn_predicate_filter",
+                                );
                                 let Some(mask) = eval_columnar_predicate(predicate, &batch) else {
                                     return Err(
                                         "columnar predicate could not be evaluated in fused wildcard pipeline"
                                             .to_string(),
                                     );
                                 };
-                                let selected_rows = mask
-                                    .iter()
-                                    .enumerate()
-                                    .filter_map(|(row_idx, selected)| selected.then_some(row_idx))
-                                    .collect::<Vec<_>>();
-                                let filtered_offsets = offsets
-                                    .iter()
-                                    .zip(mask.iter().copied())
-                                    .filter_map(|(offset, selected)| selected.then_some(*offset))
-                                    .collect::<Vec<_>>();
+                                let mut filtered_rows = Vec::new();
+                                let mut filtered_offsets = Vec::new();
+                                for (&row_idx, &row_offset) in
+                                    selected_rows.iter().zip(offsets.iter())
+                                {
+                                    if mask.get(row_idx).copied().unwrap_or(false) {
+                                        filtered_rows.push(row_idx);
+                                        filtered_offsets.push(row_offset);
+                                    }
+                                }
                                 offset_collector.push_selected_rows(
                                     &batch,
-                                    &selected_rows,
+                                    &filtered_rows,
                                     &filtered_offsets,
                                 );
                                 return Ok(true);
                             }
-                            if batch.row_count == 0 {
+                            if selected_rows.is_empty() {
                                 return Ok(true);
                             }
-                            offset_collector.push_batch(&batch, &offsets);
+                            let _span = profiling::span("columnar_offset_topn_push_selected_rows");
+                            offset_collector.push_selected_rows(&batch, &selected_rows, &offsets);
                             Ok(true)
                         },
                     )
@@ -1474,54 +1820,58 @@ async fn try_execute_simple_columnar_select(
                 .as_ref()
                 .and_then(|predicate| classify_simple_like_predicate(predicate, &topn_batch));
             with_storage_write(|storage| {
-                storage.scan_batches_for_table(
+                storage.scan_selected_batches_for_table(
                     scan_plan.table.oid(),
                     &scan_plan.scan_predicates,
                     Some(topn_projection.as_slice()),
-                    &mut |batch| {
+                    &mut |batch, selected_rows| {
                         if let Some((column_idx, matcher)) = &simple_like {
-                            let selected_rows = if let Some(TypedColumn::Text(values, nulls)) =
+                            let _span = profiling::span("columnar_topn_simple_like_match");
+                            let matched_rows = if let Some(TypedColumn::Text(values, nulls)) =
                                 batch.columns.get(*column_idx)
                             {
-                                values
+                                selected_rows
                                     .iter()
-                                    .zip(nulls.iter().copied())
-                                    .enumerate()
-                                    .filter_map(|(row_idx, (value, is_null))| {
-                                        (!is_null && matcher.matches(value)).then_some(row_idx)
+                                    .copied()
+                                    .filter(|row_idx| {
+                                        !nulls[*row_idx] && matcher.matches(&values[*row_idx])
                                     })
                                     .collect::<Vec<_>>()
                             } else {
                                 Vec::new()
                             };
-                            if selected_rows.is_empty() {
+                            if matched_rows.is_empty() {
                                 return Ok(true);
                             }
-                            topn_collector.push_selected_rows(&batch, &selected_rows);
+                            let _span = profiling::span("columnar_topn_push_selected_rows");
+                            topn_collector.push_selected_rows(&batch, &matched_rows);
                             return Ok(true);
                         }
                         if let Some(predicate) = &scan_plan.remaining_predicate {
+                            let _span = profiling::span("columnar_topn_predicate_filter");
                             let Some(mask) = eval_columnar_predicate(predicate, &batch) else {
                                 return Err(
                                     "columnar predicate could not be evaluated in fused projected pipeline"
                                         .to_string(),
                                 );
                             };
-                            let selected_rows = mask
+                            let filtered_rows = selected_rows
                                 .iter()
-                                .enumerate()
-                                .filter_map(|(row_idx, selected)| selected.then_some(row_idx))
+                                .copied()
+                                .filter(|row_idx| mask.get(*row_idx).copied().unwrap_or(false))
                                 .collect::<Vec<_>>();
-                            if selected_rows.is_empty() {
+                            if filtered_rows.is_empty() {
                                 return Ok(true);
                             }
-                            topn_collector.push_selected_rows(&batch, &selected_rows);
+                            let _span = profiling::span("columnar_topn_push_selected_rows");
+                            topn_collector.push_selected_rows(&batch, &filtered_rows);
                             return Ok(true);
                         }
-                        if batch.row_count == 0 {
+                        if selected_rows.is_empty() {
                             return Ok(true);
                         }
-                        topn_collector.push_batch(&batch);
+                        let _span = profiling::span("columnar_topn_push_selected_rows");
+                        topn_collector.push_selected_rows(&batch, &selected_rows);
                         Ok(true)
                     },
                 )
@@ -1557,6 +1907,7 @@ async fn try_execute_simple_columnar_select(
                 None,
                 &mut |batch| {
                     let filtered = if let Some(predicate) = &scan_plan.remaining_predicate {
+                        let _span = profiling::span("columnar_select_filter_batch");
                         let Some(mask) = eval_columnar_predicate(predicate, &batch) else {
                             return Err(
                                 "columnar predicate could not be evaluated in fused pipeline"
@@ -1574,6 +1925,7 @@ async fn try_execute_simple_columnar_select(
                     if projected.row_count == 0 {
                         return Ok(true);
                     }
+                    let _span = profiling::span("columnar_select_topn_push_batch");
                     topn_collector.push_batch(&projected);
                     Ok(true)
                 },
@@ -1658,6 +2010,7 @@ async fn try_execute_columnar_aggregation(
     columns: &[String],
     _outer_scope: Option<&EvalScope>,
 ) -> Result<Option<QueryResult>, EngineError> {
+    let _span = profiling::span("try_execute_columnar_aggregation");
     let Some(scan_plan) = prepare_columnar_relation_scan(rel, relation_predicates, params).await?
     else {
         return Ok(None);
@@ -1711,32 +2064,47 @@ async fn try_execute_columnar_aggregation(
             plan.output_exprs,
             plan.intermediate_columns.clone(),
         );
-        let mut pipeline: Box<dyn PipelineStage> = Box::new(AggregateSink::new(aggregator));
-        if let Some(predicate) = scan_plan.remaining_predicate.clone() {
-            if eval_columnar_predicate(&predicate, &scan_plan.schema_batch).is_none() {
-                return Ok(None);
-            }
-            pipeline = Box::new(FilterStage::new(predicate, pipeline));
+        let mut aggregator = aggregator;
+        if let Some(predicate) = scan_plan.remaining_predicate.clone()
+            && eval_columnar_predicate(&predicate, &scan_plan.schema_batch).is_none()
+        {
+            return Ok(None);
         }
 
         with_storage_write(|storage| {
-            storage.scan_batches_for_table(
+            storage.scan_selected_batches_for_table(
                 scan_plan.table.oid(),
                 &scan_plan.scan_predicates,
                 Some(projected_columns.as_slice()),
-                &mut |batch| {
-                    pipeline
-                        .push_batch(&batch)
-                        .map(|_| true)
+                &mut |batch, selected_rows| {
+                    let selected_rows = if let Some(predicate) = &scan_plan.remaining_predicate {
+                        let Some(mask) = eval_columnar_predicate(predicate, &batch) else {
+                            return Err(
+                                "columnar predicate could not be evaluated in grouped aggregation"
+                                    .to_string(),
+                            );
+                        };
+                        selected_rows
+                            .iter()
+                            .copied()
+                            .filter(|row_idx| mask.get(*row_idx).copied().unwrap_or(false))
+                            .collect::<Vec<_>>()
+                    } else {
+                        selected_rows
+                    };
+                    if selected_rows.is_empty() {
+                        return Ok(true);
+                    }
+                    aggregator
+                        .push_selected_rows(&batch, &selected_rows)
+                        .map(|()| true)
                         .map_err(|err| err.message)
                 },
             )
         })
         .map_err(|message| EngineError { message })?;
 
-        pipeline
-            .finish()?
-            .unwrap_or_else(|| ColumnBatch::empty(plan.intermediate_columns.clone()))
+        aggregator.finish()?
     };
 
     if let Some(projection_indices) =
@@ -1777,11 +2145,13 @@ async fn try_execute_columnar_aggregation(
     }
 
     let mut rows = Vec::with_capacity(result_batch.row_count);
+    let compiled_final_targets = compile_exprs(&plan.final_target_exprs)?;
     for row in result_batch.to_rows() {
         let scope = EvalScope::from_output_row(&plan.intermediate_columns, &row);
         let mut projected = Vec::with_capacity(plan.final_target_exprs.len());
-        for expr in &plan.final_target_exprs {
-            projected.push(eval_expr(expr, &scope, params).await?);
+        for (expr, compiled) in plan.final_target_exprs.iter().zip(&compiled_final_targets) {
+            projected
+                .push(eval_expr_maybe_compiled(expr, compiled.as_ref(), &scope, params).await?);
         }
         rows.push(projected);
     }
@@ -1933,6 +2303,7 @@ async fn try_execute_columnar_windows(
     columns: &[String],
     outer_scope: Option<&EvalScope>,
 ) -> Result<Option<QueryResult>, EngineError> {
+    let _span = profiling::span("try_execute_columnar_windows");
     let (table_eval, pushed_predicates) =
         evaluate_relation_with_predicates_columnar(rel, params, outer_scope, relation_predicates)
             .await?;
@@ -2385,6 +2756,7 @@ async fn try_execute_simple_count_star(
     outer_scope: Option<&EvalScope>,
     columns: &[String],
 ) -> Result<Option<QueryResult>, EngineError> {
+    let _span = profiling::span("try_execute_simple_count_star");
     if outer_scope.is_some()
         || select.targets.len() != 1
         || select.from.len() != 1
@@ -2524,6 +2896,7 @@ async fn execute_select_internal(
     params: &[Option<String>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<QueryResult, EngineError> {
+    let _span = profiling::span("execute_select_internal");
     let cte_columns = active_cte_context()
         .into_iter()
         .map(|(name, binding)| (name, binding.columns))
@@ -2711,6 +3084,7 @@ async fn execute_select_internal(
                     )
                     .await?
                     {
+                        profiling::record_duration("select_path_simple_columnar", 1);
                         return Ok(result);
                     }
                     if can_use_columnar_aggregation(select, has_aggregate, has_window, outer_scope)
@@ -2725,6 +3099,7 @@ async fn execute_select_internal(
                         )
                         .await?
                     {
+                        profiling::record_duration("select_path_columnar_aggregation", 1);
                         return Ok(result);
                     }
                     if can_use_columnar_windows(select, has_aggregate, has_window, outer_scope)
@@ -2739,6 +3114,7 @@ async fn execute_select_internal(
                         )
                         .await?
                     {
+                        profiling::record_duration("select_path_columnar_windows", 1);
                         return Ok(result);
                     }
                     let (table_eval, pushed_predicates) = evaluate_relation_with_predicates(
@@ -2797,19 +3173,39 @@ async fn execute_select_internal(
         }
     }
 
+    let compiled_remaining_predicate = remaining_predicate
+        .as_ref()
+        .map(try_compile_expr)
+        .transpose()?
+        .flatten();
+    let compiled_select_targets = compile_select_targets(&select.targets)?;
+
     let supports_direct_streaming =
         row_collector.is_some() && !has_aggregate && !has_window && select.quantifier.is_none();
     let emit_directly_to_collector = row_collector.is_some() && select.quantifier.is_none();
     if supports_direct_streaming {
         for scope in source_rows {
             if let Some(predicate) = &remaining_predicate
-                && !truthy(&eval_expr(predicate, &scope, params).await?)
+                && !truthy(
+                    &eval_expr_maybe_compiled(
+                        predicate,
+                        compiled_remaining_predicate.as_ref(),
+                        &scope,
+                        params,
+                    )
+                    .await?,
+                )
             {
                 continue;
             }
-            let row =
-                project_select_row(&select.targets, &scope, params, wildcard_columns.as_deref())
-                    .await?;
+            let row = project_select_row_compiled(
+                &select.targets,
+                &compiled_select_targets,
+                &scope,
+                params,
+                wildcard_columns.as_deref(),
+            )
+            .await?;
             if !row_collector
                 .as_mut()
                 .ok_or_else(|| EngineError {
@@ -2839,7 +3235,15 @@ async fn execute_select_internal(
     let filtered_rows = if let Some(predicate) = &remaining_predicate {
         let mut rows = Vec::with_capacity(source_rows.len());
         for scope in source_rows {
-            if !truthy(&eval_expr(predicate, &scope, params).await?) {
+            if !truthy(
+                &eval_expr_maybe_compiled(
+                    predicate,
+                    compiled_remaining_predicate.as_ref(),
+                    &scope,
+                    params,
+                )
+                .await?,
+            ) {
                 continue;
             }
             rows.push(scope);
@@ -3006,9 +3410,14 @@ async fn execute_select_internal(
         }
     } else {
         for scope in filtered_rows {
-            let row =
-                project_select_row(&select.targets, &scope, params, wildcard_columns.as_deref())
-                    .await?;
+            let row = project_select_row_compiled(
+                &select.targets,
+                &compiled_select_targets,
+                &scope,
+                params,
+                wildcard_columns.as_deref(),
+            )
+            .await?;
             if emit_directly_to_collector {
                 if !row_collector
                     .as_mut()

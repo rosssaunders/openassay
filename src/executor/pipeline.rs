@@ -1,6 +1,7 @@
 use crate::executor::column_batch::ColumnBatch;
 use crate::executor::column_filter::eval_columnar_predicate;
 use crate::executor::columnar_agg::ColumnarAggregator;
+use crate::executor::profiling;
 use crate::parser::ast::Expr;
 use crate::tcop::engine::EngineError;
 
@@ -22,6 +23,7 @@ impl FilterStage {
 
 impl PipelineStage for FilterStage {
     fn push_batch(&mut self, batch: &ColumnBatch) -> Result<usize, EngineError> {
+        let _span = profiling::span("pipeline_filter_push_batch");
         let Some(mask) = eval_columnar_predicate(&self.predicate, batch) else {
             return Err(EngineError {
                 message: "columnar predicate could not be evaluated in fused pipeline".to_string(),
@@ -55,6 +57,7 @@ impl ProjectStage {
 
 impl PipelineStage for ProjectStage {
     fn push_batch(&mut self, batch: &ColumnBatch) -> Result<usize, EngineError> {
+        let _span = profiling::span("pipeline_project_push_batch");
         let projected = batch.project(&self.output_indices);
         if projected.row_count == 0 {
             return Ok(0);
@@ -67,18 +70,22 @@ impl PipelineStage for ProjectStage {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct AggregateSink {
     aggregator: ColumnarAggregator,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl AggregateSink {
     pub(crate) fn new(aggregator: ColumnarAggregator) -> Self {
         Self { aggregator }
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl PipelineStage for AggregateSink {
     fn push_batch(&mut self, batch: &ColumnBatch) -> Result<usize, EngineError> {
+        let _span = profiling::span("pipeline_aggregate_push_batch");
         self.aggregator.push_batch(batch)?;
         Ok(batch.row_count)
     }
@@ -164,6 +171,7 @@ impl BatchCollector {
 
 impl PipelineStage for BatchCollector {
     fn push_batch(&mut self, batch: &ColumnBatch) -> Result<usize, EngineError> {
+        let _span = profiling::span("pipeline_batch_collector_push_batch");
         if let Some(existing) = &mut self.batch {
             existing
                 .append_batch(batch)

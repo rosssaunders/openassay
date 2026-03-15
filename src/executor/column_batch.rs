@@ -2,6 +2,7 @@ use arrow::array::{Array, BooleanArray, Date32Array, Float64Array, Int64Array, R
 use arrow::compute::filter_record_batch;
 use rust_decimal::Decimal;
 
+use crate::executor::profiling;
 use crate::storage::tuple::{ScalarValue, arrow_value_to_scalar_value};
 use crate::utils::adt::datetime::{datetime_from_epoch_seconds, format_date};
 
@@ -58,6 +59,7 @@ impl ColumnBatch {
         column_names: &[String],
         projected_columns: Option<&[usize]>,
     ) -> Self {
+        let _span = profiling::span("column_batch_from_record_batch_projected");
         let projected_batch = projected_columns.and_then(|projection| rb.project(projection).ok());
         let source_batch = projected_batch.as_ref().unwrap_or(rb);
         let projected_names = match projected_columns {
@@ -77,6 +79,35 @@ impl ColumnBatch {
             column_names: projected_names,
             row_count: source_batch.num_rows(),
             record_batch: Some(source_batch.clone()),
+        }
+    }
+
+    pub fn from_record_batch_projected_selected(
+        rb: &RecordBatch,
+        column_names: &[String],
+        projected_columns: Option<&[usize]>,
+        selected_rows: &[usize],
+    ) -> Self {
+        let _span = profiling::span("column_batch_from_record_batch_projected_selected");
+        let projected_batch = projected_columns.and_then(|projection| rb.project(projection).ok());
+        let source_batch = projected_batch.as_ref().unwrap_or(rb);
+        let projected_names = match projected_columns {
+            Some(projection) => projection
+                .iter()
+                .filter_map(|idx| column_names.get(*idx).cloned())
+                .collect(),
+            None => column_names.to_vec(),
+        };
+
+        Self {
+            columns: source_batch
+                .columns()
+                .iter()
+                .map(|column| typed_column_from_array_selected(column.as_ref(), selected_rows))
+                .collect(),
+            column_names: projected_names,
+            row_count: selected_rows.len(),
+            record_batch: None,
         }
     }
 
@@ -102,6 +133,7 @@ impl ColumnBatch {
     }
 
     pub fn to_rows(&self) -> Vec<Vec<ScalarValue>> {
+        let _span = profiling::span("column_batch_to_rows");
         let mut rows = Vec::with_capacity(self.row_count);
         for row_idx in 0..self.row_count {
             let mut row = Vec::with_capacity(self.columns.len());
@@ -128,6 +160,7 @@ impl ColumnBatch {
     }
 
     pub fn filter(&self, mask: &[bool]) -> Self {
+        let _span = profiling::span("column_batch_filter");
         let row_count = self.row_count.min(mask.len());
         if let Some(record_batch) = &self.record_batch {
             let arrow_mask = mask
@@ -158,6 +191,7 @@ impl ColumnBatch {
     }
 
     pub fn project(&self, indices: &[usize]) -> Self {
+        let _span = profiling::span("column_batch_project");
         let column_names = indices
             .iter()
             .filter_map(|idx| self.column_names.get(*idx).cloned())
@@ -530,6 +564,59 @@ fn typed_column_from_array(array: &dyn Array, row_count: usize) -> TypedColumn {
 
     let values = (0..row_count)
         .map(|row_idx| arrow_value_to_scalar_value(array, row_idx))
+        .collect::<Vec<_>>();
+    typed_column_from_scalars(values)
+}
+
+fn typed_column_from_array_selected(array: &dyn Array, selected_rows: &[usize]) -> TypedColumn {
+    if let Some(values) = array.as_any().downcast_ref::<BooleanArray>() {
+        let mut out = Vec::with_capacity(selected_rows.len());
+        let mut nulls = Vec::with_capacity(selected_rows.len());
+        for &row_idx in selected_rows {
+            let is_null = values.is_null(row_idx);
+            nulls.push(is_null);
+            out.push(if is_null {
+                false
+            } else {
+                values.value(row_idx)
+            });
+        }
+        return TypedColumn::Bool(out, nulls);
+    }
+    if let Some(values) = array.as_any().downcast_ref::<Int64Array>() {
+        let mut out = Vec::with_capacity(selected_rows.len());
+        let mut nulls = Vec::with_capacity(selected_rows.len());
+        for &row_idx in selected_rows {
+            let is_null = values.is_null(row_idx);
+            nulls.push(is_null);
+            out.push(if is_null { 0 } else { values.value(row_idx) });
+        }
+        return TypedColumn::Int64(out, nulls);
+    }
+    if let Some(values) = array.as_any().downcast_ref::<Float64Array>() {
+        let mut out = Vec::with_capacity(selected_rows.len());
+        let mut nulls = Vec::with_capacity(selected_rows.len());
+        for &row_idx in selected_rows {
+            let is_null = values.is_null(row_idx);
+            nulls.push(is_null);
+            out.push(if is_null { 0.0 } else { values.value(row_idx) });
+        }
+        return TypedColumn::Float64(out, nulls);
+    }
+    if let Some(values) = array.as_any().downcast_ref::<Date32Array>() {
+        let mut out = Vec::with_capacity(selected_rows.len());
+        let mut nulls = Vec::with_capacity(selected_rows.len());
+        for &row_idx in selected_rows {
+            let is_null = values.is_null(row_idx);
+            nulls.push(is_null);
+            out.push(if is_null { 0 } else { values.value(row_idx) });
+        }
+        return TypedColumn::Date(out, nulls);
+    }
+
+    let values = selected_rows
+        .iter()
+        .map(|row_idx| arrow_value_to_scalar_value(array, *row_idx))
         .collect::<Vec<_>>();
     typed_column_from_scalars(values)
 }

@@ -7,6 +7,7 @@ use crate::executor::exec_main::{
     compare_order_keys, eval_aggregate_function, execute_query_with_outer, is_aggregate_function,
     parse_non_negative_int, row_key,
 };
+use crate::executor::profiling;
 use crate::extensions::pgcrypto::eval_pgcrypto_function;
 use crate::extensions::pgvector::{eval_pgvector_function, eval_vector_distance_operator};
 use crate::extensions::uuid_ossp::eval_uuid_ossp_function;
@@ -71,6 +72,7 @@ impl EvalScope {
     }
 
     pub(crate) fn from_output_row(columns: &[String], row: &[ScalarValue]) -> Self {
+        let _span = profiling::span("eval_scope_from_output_row");
         let mut scope = Self::default();
         for (col, value) in columns.iter().zip(row.iter()) {
             scope.insert_unqualified(col, value.clone());
@@ -97,6 +99,7 @@ impl EvalScope {
     }
 
     pub(crate) fn lookup_identifier(&self, parts: &[String]) -> Result<ScalarValue, EngineError> {
+        let _span = profiling::span("eval_scope_lookup_identifier");
         if parts.is_empty() {
             return Err(EngineError {
                 message: "empty identifier".to_string(),
@@ -2261,6 +2264,7 @@ pub(crate) fn eval_cast_scalar(
 }
 
 pub(crate) fn like_match(value: &str, pattern: &str, escape: Option<char>) -> bool {
+    let _span = profiling::span("like_match");
     if let Some(matched) = like_match_fast_path(value, pattern, escape) {
         return matched;
     }
@@ -2380,7 +2384,10 @@ fn like_match_recursive(
     result
 }
 
-fn parse_param(index: i32, params: &[Option<String>]) -> Result<ScalarValue, EngineError> {
+pub(crate) fn parse_param(
+    index: i32,
+    params: &[Option<String>],
+) -> Result<ScalarValue, EngineError> {
     if index <= 0 {
         return Err(EngineError {
             message: format!("invalid parameter reference ${index}"),
