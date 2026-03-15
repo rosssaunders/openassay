@@ -13,6 +13,7 @@ use std::arch::x86_64::{
 };
 
 use crate::catalog::{SearchPath, TableKind, TypeSignature, with_catalog_read};
+use crate::executor::bytecode_expr::{CompiledExpr, try_compile_expr};
 use crate::executor::column_filter::eval_columnar_predicate;
 use crate::executor::exec_expr::{
     EngineFuture, EvalScope, eval_any_all, eval_between_predicate, eval_binary, eval_cast_scalar,
@@ -70,9 +71,10 @@ pub(crate) use set_operations::row_key;
 pub(crate) use table_functions::json_value_to_scalar;
 
 use aggregation::{
-    GroupingContext, collect_grouping_identifiers, contains_aggregate_expr, contains_window_expr,
-    eval_group_expr, expand_grouping_sets, group_by_contains_window_expr, group_by_exprs,
-    identifier_key, project_select_row, project_select_row_with_window, resolve_group_by_alias,
+    GroupingContext, collect_grouping_identifiers, compile_exprs, compile_select_targets,
+    contains_aggregate_expr, contains_window_expr, eval_expr_maybe_compiled, eval_group_expr,
+    expand_grouping_sets, group_by_contains_window_expr, group_by_exprs, identifier_key,
+    project_select_row_compiled, project_select_row_with_window, resolve_group_by_alias,
 };
 use from_clause::{
     collect_referenced_columns, decompose_and_conjuncts, evaluate_from_clause_with_pushdown,

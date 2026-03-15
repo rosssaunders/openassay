@@ -5,6 +5,7 @@ use std::hash::{Hash, Hasher};
 use rust_decimal::Decimal;
 
 use crate::executor::column_batch::{ColumnBatch, TypedColumn, typed_column_from_scalars};
+use crate::executor::profiling;
 use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::EngineError;
 use crate::utils::adt::datetime::{datetime_from_epoch_seconds, format_date};
@@ -137,12 +138,35 @@ impl ColumnarAggregator {
     }
 
     pub(crate) fn push_batch(&mut self, batch: &ColumnBatch) -> Result<(), EngineError> {
+        let _span = profiling::span("columnar_aggregator_push_batch");
         if batch.row_count == 0 {
             return Ok(());
         }
 
-        let mut group_indices = Vec::with_capacity(batch.row_count);
-        for row_idx in 0..batch.row_count {
+        let row_indices = (0..batch.row_count).collect::<Vec<_>>();
+        self.push_rows(batch, &row_indices)
+    }
+
+    pub(crate) fn push_selected_rows(
+        &mut self,
+        batch: &ColumnBatch,
+        row_indices: &[usize],
+    ) -> Result<(), EngineError> {
+        let _span = profiling::span("columnar_aggregator_push_selected_rows");
+        if row_indices.is_empty() {
+            return Ok(());
+        }
+
+        self.push_rows(batch, row_indices)
+    }
+
+    fn push_rows(&mut self, batch: &ColumnBatch, row_indices: &[usize]) -> Result<(), EngineError> {
+        if row_indices.is_empty() {
+            return Ok(());
+        }
+
+        let mut group_indices = Vec::with_capacity(row_indices.len());
+        for &row_idx in row_indices {
             let hash = hash_group_key_for_row(batch, &self.group_key_indices, row_idx);
             let group_idx = self
                 .find_group_for_row(batch, row_idx, hash)
@@ -151,13 +175,14 @@ impl ColumnarAggregator {
         }
 
         for accumulator in &mut self.accumulators {
-            accumulator.update_batch(batch, &group_indices)?;
+            accumulator.update_rows(batch, Some(row_indices), &group_indices)?;
         }
 
         Ok(())
     }
 
     pub(crate) fn finish(mut self) -> Result<ColumnBatch, EngineError> {
+        let _span = profiling::span("columnar_aggregator_finish");
         if self.group_count == 0 && self.group_key_indices.is_empty() {
             self.ensure_group(Vec::new());
         }
@@ -403,9 +428,10 @@ impl AggAccumulator {
         }
     }
 
-    fn update_batch(
+    fn update_rows(
         &mut self,
         batch: &ColumnBatch,
+        row_indices: Option<&[usize]>,
         group_indices: &[usize],
     ) -> Result<(), EngineError> {
         match self {
@@ -413,9 +439,9 @@ impl AggAccumulator {
                 counts,
                 column_index: None,
             } => {
-                for &group_idx in group_indices {
+                for_each_row_group(row_indices, group_indices, |_, group_idx| {
                     counts[group_idx] += 1;
-                }
+                });
                 Ok(())
             }
             Self::Count {
@@ -423,68 +449,145 @@ impl AggAccumulator {
                 column_index: Some(column_index),
             } => {
                 let column = &batch.columns[*column_index];
-                for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+                for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
                     if !is_null_at(column, row_idx) {
                         counts[group_idx] += 1;
                     }
-                }
+                });
                 Ok(())
             }
             Self::CountDistinctInt {
                 counts,
                 seen,
                 column_index,
-            } => update_count_distinct_int(batch, group_indices, *column_index, counts, seen),
+            } => update_count_distinct_int(
+                batch,
+                row_indices,
+                group_indices,
+                *column_index,
+                counts,
+                seen,
+            ),
             Self::CountDistinctText {
                 counts,
                 seen,
                 column_index,
-            } => update_count_distinct_text(batch, group_indices, *column_index, counts, seen),
+            } => update_count_distinct_text(
+                batch,
+                row_indices,
+                group_indices,
+                *column_index,
+                counts,
+                seen,
+            ),
             Self::SumInt {
                 sums,
                 saw_non_null,
                 column_index,
-            } => update_sum_int(batch, group_indices, *column_index, sums, saw_non_null),
+            } => update_sum_int(
+                batch,
+                row_indices,
+                group_indices,
+                *column_index,
+                sums,
+                saw_non_null,
+            ),
             Self::SumFloat {
                 sums,
                 saw_non_null,
                 column_index,
-            } => update_sum_float(batch, group_indices, *column_index, sums, saw_non_null),
+            } => update_sum_float(
+                batch,
+                row_indices,
+                group_indices,
+                *column_index,
+                sums,
+                saw_non_null,
+            ),
             Self::SumNumeric {
                 sums,
                 saw_non_null,
                 column_index,
-            } => update_sum_numeric(batch, group_indices, *column_index, sums, saw_non_null),
+            } => update_sum_numeric(
+                batch,
+                row_indices,
+                group_indices,
+                *column_index,
+                sums,
+                saw_non_null,
+            ),
             Self::AvgInt {
                 sums,
                 counts,
                 column_index,
-            } => update_avg_int(batch, group_indices, *column_index, sums, counts),
+            } => update_avg_int(
+                batch,
+                row_indices,
+                group_indices,
+                *column_index,
+                sums,
+                counts,
+            ),
             Self::AvgFloat {
                 sums,
                 counts,
                 column_index,
-            } => update_avg_float(batch, group_indices, *column_index, sums, counts),
+            } => update_avg_float(
+                batch,
+                row_indices,
+                group_indices,
+                *column_index,
+                sums,
+                counts,
+            ),
             Self::AvgNumericInt {
                 sums,
                 counts,
                 column_index,
-            } => update_avg_numeric_int(batch, group_indices, *column_index, sums, counts),
+            } => update_avg_numeric_int(
+                batch,
+                row_indices,
+                group_indices,
+                *column_index,
+                sums,
+                counts,
+            ),
             Self::AvgNumeric {
                 sums,
                 counts,
                 column_index,
-            } => update_avg_numeric(batch, group_indices, *column_index, sums, counts),
+            } => update_avg_numeric(
+                batch,
+                row_indices,
+                group_indices,
+                *column_index,
+                sums,
+                counts,
+            ),
             Self::MinMaxDate {
                 values,
                 column_index,
                 is_min,
-            } => update_min_max_date(batch, group_indices, *column_index, values, *is_min),
+            } => update_min_max_date(
+                batch,
+                row_indices,
+                group_indices,
+                *column_index,
+                values,
+                *is_min,
+            ),
             Self::MinMaxScalar {
                 values,
                 column_index,
                 is_min,
-            } => update_min_max(batch, group_indices, *column_index, values, *is_min),
+            } => update_min_max(
+                batch,
+                row_indices,
+                group_indices,
+                *column_index,
+                values,
+                *is_min,
+            ),
         }
     }
 
@@ -565,8 +668,29 @@ impl AggAccumulator {
     }
 }
 
+fn for_each_row_group(
+    row_indices: Option<&[usize]>,
+    group_indices: &[usize],
+    mut callback: impl FnMut(usize, usize),
+) {
+    match row_indices {
+        Some(row_indices) => {
+            debug_assert_eq!(row_indices.len(), group_indices.len());
+            for (&row_idx, &group_idx) in row_indices.iter().zip(group_indices.iter()) {
+                callback(row_idx, group_idx);
+            }
+        }
+        None => {
+            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+                callback(row_idx, group_idx);
+            }
+        }
+    }
+}
+
 fn update_count_distinct_int(
     batch: &ColumnBatch,
+    row_indices: Option<&[usize]>,
     group_indices: &[usize],
     column_index: usize,
     counts: &mut [i64],
@@ -574,14 +698,14 @@ fn update_count_distinct_int(
 ) -> Result<(), EngineError> {
     match &batch.columns[column_index] {
         TypedColumn::Int64(values, nulls) => {
-            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+            for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
                 if nulls[row_idx] {
-                    continue;
+                    return;
                 }
                 if seen.insert((group_idx, values[row_idx])) {
                     counts[group_idx] += 1;
                 }
-            }
+            });
             Ok(())
         }
         _ => Err(EngineError {
@@ -592,6 +716,7 @@ fn update_count_distinct_int(
 
 fn update_count_distinct_text(
     batch: &ColumnBatch,
+    row_indices: Option<&[usize]>,
     group_indices: &[usize],
     column_index: usize,
     counts: &mut [i64],
@@ -599,15 +724,15 @@ fn update_count_distinct_text(
 ) -> Result<(), EngineError> {
     match &batch.columns[column_index] {
         TypedColumn::Text(values, nulls) => {
-            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+            for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
                 if nulls[row_idx] {
-                    continue;
+                    return;
                 }
                 let group_seen = seen.entry(group_idx).or_default();
                 if group_seen.insert(values[row_idx].clone()) {
                     counts[group_idx] += 1;
                 }
-            }
+            });
             Ok(())
         }
         _ => Err(EngineError {
@@ -618,6 +743,7 @@ fn update_count_distinct_text(
 
 fn update_sum_int(
     batch: &ColumnBatch,
+    row_indices: Option<&[usize]>,
     group_indices: &[usize],
     column_index: usize,
     sums: &mut [i128],
@@ -625,13 +751,13 @@ fn update_sum_int(
 ) -> Result<(), EngineError> {
     match &batch.columns[column_index] {
         TypedColumn::Int64(values, nulls) => {
-            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+            for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
                 if nulls[row_idx] {
-                    continue;
+                    return;
                 }
                 sums[group_idx] += i128::from(values[row_idx]);
                 saw_non_null[group_idx] = true;
-            }
+            });
             Ok(())
         }
         _ => Err(EngineError {
@@ -642,6 +768,7 @@ fn update_sum_int(
 
 fn update_sum_float(
     batch: &ColumnBatch,
+    row_indices: Option<&[usize]>,
     group_indices: &[usize],
     column_index: usize,
     sums: &mut [f64],
@@ -649,13 +776,13 @@ fn update_sum_float(
 ) -> Result<(), EngineError> {
     match &batch.columns[column_index] {
         TypedColumn::Float64(values, nulls) => {
-            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+            for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
                 if nulls[row_idx] {
-                    continue;
+                    return;
                 }
                 sums[group_idx] += values[row_idx];
                 saw_non_null[group_idx] = true;
-            }
+            });
             Ok(())
         }
         _ => Err(EngineError {
@@ -666,6 +793,7 @@ fn update_sum_float(
 
 fn update_sum_numeric(
     batch: &ColumnBatch,
+    row_indices: Option<&[usize]>,
     group_indices: &[usize],
     column_index: usize,
     sums: &mut [Decimal],
@@ -673,13 +801,13 @@ fn update_sum_numeric(
 ) -> Result<(), EngineError> {
     match &batch.columns[column_index] {
         TypedColumn::Numeric(values, nulls) => {
-            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+            for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
                 if nulls[row_idx] {
-                    continue;
+                    return;
                 }
                 sums[group_idx] += values[row_idx];
                 saw_non_null[group_idx] = true;
-            }
+            });
             Ok(())
         }
         _ => Err(EngineError {
@@ -690,6 +818,7 @@ fn update_sum_numeric(
 
 fn update_avg_int(
     batch: &ColumnBatch,
+    row_indices: Option<&[usize]>,
     group_indices: &[usize],
     column_index: usize,
     sums: &mut [i128],
@@ -697,13 +826,13 @@ fn update_avg_int(
 ) -> Result<(), EngineError> {
     match &batch.columns[column_index] {
         TypedColumn::Int64(values, nulls) => {
-            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+            for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
                 if nulls[row_idx] {
-                    continue;
+                    return;
                 }
                 sums[group_idx] += i128::from(values[row_idx]);
                 counts[group_idx] += 1;
-            }
+            });
             Ok(())
         }
         _ => Err(EngineError {
@@ -714,6 +843,7 @@ fn update_avg_int(
 
 fn update_avg_float(
     batch: &ColumnBatch,
+    row_indices: Option<&[usize]>,
     group_indices: &[usize],
     column_index: usize,
     sums: &mut [f64],
@@ -721,13 +851,13 @@ fn update_avg_float(
 ) -> Result<(), EngineError> {
     match &batch.columns[column_index] {
         TypedColumn::Float64(values, nulls) => {
-            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+            for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
                 if nulls[row_idx] {
-                    continue;
+                    return;
                 }
                 sums[group_idx] += values[row_idx];
                 counts[group_idx] += 1;
-            }
+            });
             Ok(())
         }
         _ => Err(EngineError {
@@ -738,6 +868,7 @@ fn update_avg_float(
 
 fn update_avg_numeric(
     batch: &ColumnBatch,
+    row_indices: Option<&[usize]>,
     group_indices: &[usize],
     column_index: usize,
     sums: &mut [Decimal],
@@ -745,13 +876,13 @@ fn update_avg_numeric(
 ) -> Result<(), EngineError> {
     match &batch.columns[column_index] {
         TypedColumn::Numeric(values, nulls) => {
-            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+            for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
                 if nulls[row_idx] {
-                    continue;
+                    return;
                 }
                 sums[group_idx] += values[row_idx];
                 counts[group_idx] += 1;
-            }
+            });
             Ok(())
         }
         _ => Err(EngineError {
@@ -762,6 +893,7 @@ fn update_avg_numeric(
 
 fn update_avg_numeric_int(
     batch: &ColumnBatch,
+    row_indices: Option<&[usize]>,
     group_indices: &[usize],
     column_index: usize,
     sums: &mut [i128],
@@ -769,13 +901,13 @@ fn update_avg_numeric_int(
 ) -> Result<(), EngineError> {
     match &batch.columns[column_index] {
         TypedColumn::Int64(values, nulls) => {
-            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+            for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
                 if nulls[row_idx] {
-                    continue;
+                    return;
                 }
                 sums[group_idx] += i128::from(values[row_idx]);
                 counts[group_idx] += 1;
-            }
+            });
             Ok(())
         }
         _ => Err(EngineError {
@@ -787,20 +919,31 @@ fn update_avg_numeric_int(
 
 fn update_min_max(
     batch: &ColumnBatch,
+    row_indices: Option<&[usize]>,
     group_indices: &[usize],
     column_index: usize,
     values: &mut [Option<ScalarValue>],
     is_min: bool,
 ) -> Result<(), EngineError> {
-    for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+    let mut error = None;
+    for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
+        if error.is_some() {
+            return;
+        }
         let value = scalar_value_at(&batch.columns[column_index], row_idx);
         if matches!(value, ScalarValue::Null) {
-            continue;
+            return;
         }
         match &values[group_idx] {
             None => values[group_idx] = Some(value),
             Some(existing) => {
-                let cmp = compare_values_for_predicate(&value, existing)?;
+                let cmp = match compare_values_for_predicate(&value, existing) {
+                    Ok(cmp) => cmp,
+                    Err(err) => {
+                        error = Some(err);
+                        return;
+                    }
+                };
                 let take = if is_min {
                     cmp == Ordering::Less
                 } else {
@@ -811,12 +954,16 @@ fn update_min_max(
                 }
             }
         }
+    });
+    if let Some(error) = error {
+        return Err(error);
     }
     Ok(())
 }
 
 fn update_min_max_date(
     batch: &ColumnBatch,
+    row_indices: Option<&[usize]>,
     group_indices: &[usize],
     column_index: usize,
     values: &mut [Option<i32>],
@@ -824,9 +971,9 @@ fn update_min_max_date(
 ) -> Result<(), EngineError> {
     match &batch.columns[column_index] {
         TypedColumn::Date(days, nulls) => {
-            for (row_idx, &group_idx) in group_indices.iter().enumerate() {
+            for_each_row_group(row_indices, group_indices, |row_idx, group_idx| {
                 if nulls[row_idx] {
-                    continue;
+                    return;
                 }
                 let candidate = days[row_idx];
                 match values[group_idx] {
@@ -842,7 +989,7 @@ fn update_min_max_date(
                         }
                     }
                 }
-            }
+            });
             Ok(())
         }
         _ => Err(EngineError {
@@ -1253,6 +1400,40 @@ mod tests {
                 ScalarValue::Int(1),
                 ScalarValue::Numeric(Decimal::new(250, 2)),
             ]]
+        );
+    }
+
+    #[test]
+    fn aggregates_selected_rows_without_filter_materialization() {
+        let batch = ColumnBatch::from_rows(
+            &[
+                vec![ScalarValue::Text("a".to_string()), ScalarValue::Int(1)],
+                vec![ScalarValue::Text("skip".to_string()), ScalarValue::Int(20)],
+                vec![ScalarValue::Text("a".to_string()), ScalarValue::Int(3)],
+                vec![ScalarValue::Text("b".to_string()), ScalarValue::Int(4)],
+            ],
+            &["dept".to_string(), "salary".to_string()],
+        );
+        let mut aggregator = ColumnarAggregator::new(
+            vec![0],
+            vec![AggSpec {
+                kind: AggKind::SumInt { column_index: 1 },
+            }],
+            vec![OutputExpr::GroupKey(0), OutputExpr::Aggregate(0)],
+            vec!["dept".to_string(), "sum".to_string()],
+        );
+
+        aggregator
+            .push_selected_rows(&batch, &[0, 2, 3])
+            .expect("selected rows should aggregate");
+        let output = aggregator.finish().expect("finish should succeed");
+
+        assert_eq!(
+            output.to_rows(),
+            vec![
+                vec![ScalarValue::Text("a".to_string()), ScalarValue::Int(4)],
+                vec![ScalarValue::Text("b".to_string()), ScalarValue::Int(4)],
+            ]
         );
     }
 

@@ -6,6 +6,7 @@ use arrow::compute::{and_kleene, ilike, like, nilike, nlike, not, or_kleene};
 
 use crate::executor::column_batch::{ColumnBatch, TypedColumn};
 use crate::executor::exec_expr::like_match;
+use crate::executor::profiling;
 use crate::parser::ast::{BinaryOp, Expr, UnaryOp};
 use crate::storage::tuple::ScalarValue;
 use crate::utils::adt::misc::compare_values_for_predicate;
@@ -40,6 +41,7 @@ impl LikeLiteralMatcher {
 }
 
 pub(crate) fn eval_columnar_predicate(expr: &Expr, batch: &ColumnBatch) -> Option<Vec<bool>> {
+    let _span = profiling::span("eval_columnar_predicate");
     eval_predicate(expr, batch).map(|truths| {
         truths
             .into_iter()

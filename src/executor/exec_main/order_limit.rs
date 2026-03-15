@@ -1,6 +1,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::executor::column_batch::{ColumnBatch, TypedColumn};
+use crate::executor::column_batch::ColumnBatch;
+use crate::executor::profiling;
+use crate::storage::tuple::arrow_value_to_scalar_value;
+use arrow::array::{Array, Float64Array, Int64Array, RecordBatch, TimestampMicrosecondArray};
 use std::collections::BinaryHeap;
 
 pub(super) struct QueryRowCollector {
@@ -122,6 +125,7 @@ impl QueryRowCollector {
         row: Vec<ScalarValue>,
         params: &[Option<String>],
     ) -> Result<bool, EngineError> {
+        let _span = profiling::span("query_row_collector_push_row");
         match &mut self.strategy {
             RowCollectionStrategy::All { rows, order_by, .. } => {
                 let keys = if order_by.is_empty() {
@@ -265,6 +269,7 @@ impl SimpleTopNCollector {
     }
 
     pub(super) fn push_batch(&mut self, batch: &ColumnBatch) {
+        let _span = profiling::span("simple_topn_push_batch");
         if self.capacity == 0 {
             return;
         }
@@ -275,6 +280,7 @@ impl SimpleTopNCollector {
     }
 
     pub(super) fn push_selected_rows(&mut self, batch: &ColumnBatch, row_indices: &[usize]) {
+        let _span = profiling::span("simple_topn_push_selected_rows");
         if self.capacity == 0 {
             return;
         }
@@ -347,22 +353,13 @@ impl OffsetTopNCollector {
         }))
     }
 
-    pub(super) fn push_batch(&mut self, batch: &ColumnBatch, offsets: &[usize]) {
-        if self.capacity == 0 {
-            return;
-        }
-
-        for (row_idx, row_offset) in offsets.iter().copied().enumerate().take(batch.row_count) {
-            self.push_row(batch, row_idx, row_offset);
-        }
-    }
-
     pub(super) fn push_selected_rows(
         &mut self,
         batch: &ColumnBatch,
         row_indices: &[usize],
         offsets: &[usize],
     ) {
+        let _span = profiling::span("offset_topn_push_selected_rows");
         if self.capacity == 0 {
             return;
         }
@@ -372,27 +369,20 @@ impl OffsetTopNCollector {
         }
     }
 
-    pub(super) fn push_matching_text_rows<F>(
+    pub(super) fn push_record_batch_selected_rows(
         &mut self,
-        batch: &ColumnBatch,
-        column_idx: usize,
+        batch: &RecordBatch,
+        projected_columns: &[usize],
+        row_indices: &[usize],
         offsets: &[usize],
-        mut matches: F,
-    ) where
-        F: FnMut(&str) -> bool,
-    {
-        let Some(TypedColumn::Text(values, nulls)) = batch.columns.get(column_idx) else {
+    ) {
+        let _span = profiling::span("offset_topn_push_record_batch_selected_rows");
+        if self.capacity == 0 {
             return;
-        };
-        for (row_idx, ((value, is_null), row_offset)) in values
-            .iter()
-            .zip(nulls.iter().copied())
-            .zip(offsets.iter().copied())
-            .enumerate()
-        {
-            if !is_null && matches(value) {
-                self.push_row(batch, row_idx, row_offset);
-            }
+        }
+
+        for (&row_idx, &row_offset) in row_indices.iter().zip(offsets.iter()) {
+            self.push_record_batch_row(batch, projected_columns, row_idx, row_offset);
         }
     }
 
@@ -421,6 +411,39 @@ impl OffsetTopNCollector {
         }
     }
 
+    pub(super) fn push_record_batch_row(
+        &mut self,
+        batch: &RecordBatch,
+        projected_columns: &[usize],
+        row_idx: usize,
+        row_offset: usize,
+    ) {
+        if self.capacity == 0 || row_idx >= batch.num_rows() {
+            return;
+        }
+
+        let mut keys = Vec::with_capacity(self.order_indices.len());
+        for column_idx in &self.order_indices {
+            let Some(projected_idx) = projected_columns.get(*column_idx) else {
+                return;
+            };
+            let Some(column) = batch.columns().get(*projected_idx) else {
+                return;
+            };
+            keys.push(arrow_order_key_to_scalar_value(column.as_ref(), row_idx));
+        }
+
+        let probe = OffsetTopNEntry::new(keys, &self.order_by, row_offset, self.sequence);
+        self.sequence += 1;
+
+        if self.heap.len() < self.capacity {
+            self.heap.push(probe);
+        } else if self.heap.peek().is_some_and(|worst| probe < *worst) {
+            let _ = self.heap.pop();
+            self.heap.push(probe);
+        }
+    }
+
     pub(super) fn finish(self) -> Vec<usize> {
         let mut offsets = self
             .heap
@@ -431,6 +454,22 @@ impl OffsetTopNCollector {
         apply_offset_limit_items(&mut offsets, self.offset, Some(self.limit));
         offsets
     }
+}
+
+fn arrow_order_key_to_scalar_value(array: &dyn Array, index: usize) -> ScalarValue {
+    if array.is_null(index) {
+        return ScalarValue::Null;
+    }
+    if let Some(array) = array.as_any().downcast_ref::<Int64Array>() {
+        return ScalarValue::Int(array.value(index));
+    }
+    if let Some(array) = array.as_any().downcast_ref::<Float64Array>() {
+        return ScalarValue::Float(array.value(index));
+    }
+    if let Some(array) = array.as_any().downcast_ref::<TimestampMicrosecondArray>() {
+        return ScalarValue::Int(array.value(index));
+    }
+    arrow_value_to_scalar_value(array, index)
 }
 
 impl TopNEntry {
@@ -539,6 +578,7 @@ async fn resolve_order_keys(
     row: &[ScalarValue],
     params: &[Option<String>],
 ) -> Result<Vec<ScalarValue>, EngineError> {
+    let _span = profiling::span("resolve_order_keys");
     let scope = EvalScope::from_output_row(columns, row);
     let mut keys = Vec::with_capacity(order_by.len());
     for spec in order_by {
@@ -574,23 +614,32 @@ fn apply_offset_limit_to_rows(
 /// Collect identifiers from ORDER BY that are not present in the SELECT output columns.
 /// These need to be temporarily added to the SELECT for sorting.
 pub(super) fn collect_extra_order_by_columns(query: &Query) -> Vec<Expr> {
-    let select_columns: HashSet<String> = match &query.body {
-        QueryExpr::Select(select) => select
-            .targets
-            .iter()
-            .filter_map(|target| {
-                if let Some(alias) = &target.alias {
-                    return Some(alias.to_ascii_lowercase());
+    let select_columns: HashSet<String> =
+        match &query.body {
+            QueryExpr::Select(select) => {
+                if select.targets.iter().any(|target| {
+                    matches!(target.expr, Expr::Wildcard | Expr::QualifiedWildcard(_))
+                }) {
+                    return Vec::new();
                 }
-                if let Expr::Identifier(parts) = &target.expr {
-                    parts.last().map(|p| p.to_ascii_lowercase())
-                } else {
-                    None
-                }
-            })
-            .collect(),
-        _ => return Vec::new(),
-    };
+
+                select
+                    .targets
+                    .iter()
+                    .filter_map(|target| {
+                        if let Some(alias) = &target.alias {
+                            return Some(alias.to_ascii_lowercase());
+                        }
+                        if let Expr::Identifier(parts) = &target.expr {
+                            parts.last().map(|p| p.to_ascii_lowercase())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            }
+            _ => return Vec::new(),
+        };
 
     let mut extras = Vec::new();
     for spec in &query.order_by {
@@ -785,5 +834,39 @@ pub fn parse_non_negative_int(value: &ScalarValue, what: &str) -> Result<usize, 
         _ => Err(EngineError {
             message: format!("{what} must be a non-negative integer"),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_select_does_not_add_hidden_order_by_columns() {
+        let query = Query {
+            with: None,
+            body: QueryExpr::Select(SelectStatement {
+                targets: vec![SelectItem {
+                    expr: Expr::Wildcard,
+                    alias: None,
+                }],
+                from: Vec::new(),
+                where_clause: None,
+                group_by: Vec::new(),
+                having: None,
+                quantifier: None,
+                distinct_on: Vec::new(),
+                window_definitions: Vec::new(),
+            }),
+            order_by: vec![OrderByExpr {
+                expr: Expr::Identifier(vec!["eventtime".to_string()]),
+                ascending: Some(true),
+                using_operator: None,
+            }],
+            limit: Some(Expr::Integer(10)),
+            offset: None,
+        };
+
+        assert!(collect_extra_order_by_columns(&query).is_empty());
     }
 }

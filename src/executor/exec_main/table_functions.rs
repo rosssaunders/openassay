@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::executor::profiling;
 
 pub(super) async fn evaluate_table_function(
     function: &TableFunctionRef,
@@ -1222,6 +1223,7 @@ async fn evaluate_relation_with_predicates_impl(
                 .collect::<Vec<_>>();
             let columns = projected_column_names(&all_columns, projected_columns.as_deref());
             let batch = if supports_columnar_batch {
+                let _span = profiling::span("storage_scan_columnar_for_table");
                 Some(
                     crate::tcop::engine::with_storage_write(|storage| {
                         storage.scan_columnar_for_table(
@@ -1237,8 +1239,10 @@ async fn evaluate_relation_with_predicates_impl(
             };
             let rows = if materialize_rows {
                 if let Some(batch) = &batch {
+                    let _span = profiling::span("table_eval_batch_to_rows");
                     batch.to_rows()
                 } else {
+                    let _span = profiling::span("storage_scan_rows_for_table");
                     crate::tcop::engine::with_storage_write(|storage| {
                         storage.scan_rows_for_table(
                             table.oid(),
@@ -1307,8 +1311,11 @@ async fn evaluate_relation_with_predicates_impl(
     }
 
     let mut scoped_rows = Vec::with_capacity(rows.len());
-    for row in &rows {
-        scoped_rows.push(scope_from_row(&columns, row, &qualifiers, &columns));
+    {
+        let _span = profiling::span("table_eval_rows_to_scopes");
+        for row in &rows {
+            scoped_rows.push(scope_from_row(&columns, row, &qualifiers, &columns));
+        }
     }
     let null_values = vec![ScalarValue::Null; columns.len()];
     let null_scope = scope_from_row(&columns, &null_values, &qualifiers, &columns);

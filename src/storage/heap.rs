@@ -10,6 +10,7 @@ use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use crate::catalog::oid::Oid;
 use crate::catalog::{TypeSignature, with_catalog_read};
 use crate::executor::column_batch::ColumnBatch;
+use crate::executor::profiling;
 use crate::storage::btree::{BTreeIndex, CompositeKey};
 use crate::storage::tuple::{
     ScalarValue, append_scalar_value_to_builder, arrow_value_to_scalar_value, scalar_values_schema,
@@ -18,6 +19,11 @@ use crate::utils::adt::misc::{compare_values_for_predicate, like_matches};
 
 pub(crate) const DEFAULT_BTREE_ORDER: usize = 48;
 pub(crate) const COLUMNAR_BATCH_SIZE: usize = 1_024;
+
+type SelectedOffsetsBatchCallback<'a> =
+    dyn FnMut(&RecordBatch, Vec<usize>, Vec<usize>) -> Result<bool, String> + 'a;
+type RecordBatchScanCallback<'a> =
+    dyn FnMut(&RecordBatch, &[bool], usize) -> Result<bool, String> + 'a;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ColumnarBatch {
@@ -69,6 +75,71 @@ pub(crate) struct ScanPredicate {
     pub(crate) op: ScanPredicateOp,
     pub(crate) value: ScalarValue,
     pub(crate) escape: Option<char>,
+}
+
+enum LikePredicateMatcher {
+    Exact(String),
+    Prefix(String),
+    Suffix(String),
+    Contains(String),
+    Generic {
+        pattern: String,
+        escape: Option<char>,
+        case_insensitive: bool,
+    },
+}
+
+impl LikePredicateMatcher {
+    fn new(pattern: String, escape: Option<char>, case_insensitive: bool) -> Self {
+        classify_like_pattern(&pattern, escape, case_insensitive).unwrap_or(Self::Generic {
+            pattern,
+            escape,
+            case_insensitive,
+        })
+    }
+
+    fn matches(&self, value: &str) -> bool {
+        match self {
+            Self::Exact(literal) => value == literal,
+            Self::Prefix(literal) => value.starts_with(literal),
+            Self::Suffix(literal) => value.ends_with(literal),
+            Self::Contains(literal) => value.contains(literal),
+            Self::Generic {
+                pattern,
+                escape,
+                case_insensitive,
+            } => {
+                if *case_insensitive {
+                    like_matches(
+                        &value.to_ascii_lowercase(),
+                        &pattern.to_ascii_lowercase(),
+                        *escape,
+                    )
+                } else {
+                    like_matches(value, pattern, *escape)
+                }
+            }
+        }
+    }
+}
+
+enum CompiledScanPredicate<'a> {
+    Int64 {
+        values: &'a Int64Array,
+        op: ScanPredicateOp,
+        literal: i64,
+    },
+    Float64 {
+        values: &'a Float64Array,
+        op: ScanPredicateOp,
+        literal: f64,
+    },
+    Text {
+        values: &'a StringArray,
+        op: ScanPredicateOp,
+        literal: String,
+        like_matcher: Option<LikePredicateMatcher>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -442,6 +513,7 @@ impl InMemoryStorage {
         offsets: Option<&[usize]>,
         predicates: &[ScanPredicate],
     ) -> Result<usize, String> {
+        let _span = profiling::span("storage_count_rows_for_table");
         self.ensure_table(table_oid)?;
         self.flush_pending(table_oid)?;
         let Some(table) = self.columnar_by_table.get(&table_oid) else {
@@ -475,6 +547,7 @@ impl InMemoryStorage {
         table_oid: Oid,
         requests: &[ColumnAggregateRequest],
     ) -> Result<Option<Vec<ScalarValue>>, String> {
+        let _span = profiling::span("storage_aggregate_columns_for_table");
         self.ensure_table(table_oid)?;
         self.flush_pending(table_oid)?;
         let Some(table) = self.columnar_by_table.get(&table_oid) else {
@@ -510,6 +583,7 @@ impl InMemoryStorage {
         group_column_indexes: &[usize],
         requests: &[ColumnAggregateRequest],
     ) -> Result<Option<Vec<(Vec<ScalarValue>, Vec<ScalarValue>)>>, String> {
+        let _span = profiling::span("storage_group_aggregate_columns_for_table");
         self.ensure_table(table_oid)?;
         self.flush_pending(table_oid)?;
         let Some(table) = self.columnar_by_table.get(&table_oid) else {
@@ -576,6 +650,7 @@ impl InMemoryStorage {
         predicates: &[ScanPredicate],
         projected_columns: Option<&[usize]>,
     ) -> Result<ColumnBatch, String> {
+        let _span = profiling::span("storage_scan_columnar_for_table");
         self.ensure_table(table_oid)?;
         self.flush_pending(table_oid)?;
         let Some(table) = self.columnar_by_table.get(&table_oid) else {
@@ -615,6 +690,7 @@ impl InMemoryStorage {
         projected_columns: Option<&[usize]>,
         callback: &mut dyn FnMut(ColumnBatch) -> Result<bool, String>,
     ) -> Result<(), String> {
+        let _span = profiling::span("storage_scan_batches_for_table");
         self.ensure_table(table_oid)?;
         self.flush_pending(table_oid)?;
         let Some(table) = self.columnar_by_table.get(&table_oid) else {
@@ -647,6 +723,7 @@ impl InMemoryStorage {
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn scan_batches_for_table_with_offsets(
         &mut self,
         table_oid: Oid,
@@ -695,6 +772,142 @@ impl InMemoryStorage {
                 break;
             }
             batch_start += batch_len;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn scan_selected_batches_for_table(
+        &mut self,
+        table_oid: Oid,
+        predicates: &[ScanPredicate],
+        projected_columns: Option<&[usize]>,
+        callback: &mut dyn FnMut(ColumnBatch, Vec<usize>) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let _span = profiling::span("storage_scan_selected_batches_for_table");
+        self.ensure_table(table_oid)?;
+        self.flush_pending(table_oid)?;
+        let Some(table) = self.columnar_by_table.get(&table_oid) else {
+            return Ok(());
+        };
+        if table.batches.is_empty() {
+            return Ok(());
+        }
+
+        for batch in &table.batches {
+            let selected_rows = matching_row_offsets_in_batch(batch, predicates, None)?;
+            if selected_rows.is_empty() {
+                continue;
+            }
+            let batch_columns = ColumnBatch::from_record_batch_projected_selected(
+                &batch.record_batch,
+                &table.column_names,
+                projected_columns,
+                &selected_rows,
+            );
+            let dense_rows = (0..selected_rows.len()).collect::<Vec<_>>();
+            if !callback(batch_columns, dense_rows)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn scan_selected_batches_for_table_with_offsets(
+        &mut self,
+        table_oid: Oid,
+        predicates: &[ScanPredicate],
+        projected_columns: Option<&[usize]>,
+        callback: &mut dyn FnMut(ColumnBatch, Vec<usize>, Vec<usize>) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let _span = profiling::span("storage_scan_selected_batches_for_table_with_offsets");
+        self.ensure_table(table_oid)?;
+        self.flush_pending(table_oid)?;
+        let Some(table) = self.columnar_by_table.get(&table_oid) else {
+            return Ok(());
+        };
+        if table.batches.is_empty() {
+            return Ok(());
+        }
+
+        let mut batch_start = 0usize;
+        for batch in &table.batches {
+            let batch_len = batch.record_batch.num_rows();
+            let selected_rows = matching_row_offsets_in_batch(batch, predicates, None)?;
+            if !selected_rows.is_empty() {
+                let global_offsets = selected_rows
+                    .iter()
+                    .map(|local_offset| batch_start + local_offset)
+                    .collect::<Vec<_>>();
+                let batch_columns = ColumnBatch::from_record_batch_projected_selected(
+                    &batch.record_batch,
+                    &table.column_names,
+                    projected_columns,
+                    &selected_rows,
+                );
+                let dense_rows = (0..selected_rows.len()).collect::<Vec<_>>();
+                if !callback(batch_columns, dense_rows, global_offsets)? {
+                    break;
+                }
+            }
+            batch_start += batch_len;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn scan_selected_offsets_for_table(
+        &mut self,
+        table_oid: Oid,
+        predicates: &[ScanPredicate],
+        callback: &mut SelectedOffsetsBatchCallback<'_>,
+    ) -> Result<(), String> {
+        let _span = profiling::span("storage_scan_selected_offsets_for_table");
+        self.ensure_table(table_oid)?;
+        self.flush_pending(table_oid)?;
+        let Some(table) = self.columnar_by_table.get(&table_oid) else {
+            return Ok(());
+        };
+        if table.batches.is_empty() {
+            return Ok(());
+        }
+
+        let mut batch_start = 0usize;
+        for batch in &table.batches {
+            let selected_rows = matching_row_offsets_in_batch(batch, predicates, None)?;
+            if !selected_rows.is_empty() {
+                let global_offsets = selected_rows
+                    .iter()
+                    .map(|local_offset| batch_start + local_offset)
+                    .collect::<Vec<_>>();
+                if !callback(&batch.record_batch, selected_rows, global_offsets)? {
+                    break;
+                }
+            }
+            batch_start += batch.record_batch.num_rows();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn scan_record_batches_for_table(
+        &mut self,
+        table_oid: Oid,
+        callback: &mut RecordBatchScanCallback<'_>,
+    ) -> Result<(), String> {
+        let _span = profiling::span("storage_scan_record_batches_for_table");
+        self.ensure_table(table_oid)?;
+        self.flush_pending(table_oid)?;
+        let Some(table) = self.columnar_by_table.get(&table_oid) else {
+            return Ok(());
+        };
+        if table.batches.is_empty() {
+            return Ok(());
+        }
+
+        let mut batch_start = 0usize;
+        for batch in &table.batches {
+            if !callback(&batch.record_batch, &batch.deleted_rows, batch_start)? {
+                break;
+            }
+            batch_start += batch.record_batch.num_rows();
         }
         Ok(())
     }
@@ -856,40 +1069,60 @@ impl InMemoryStorage {
         predicates: &[ScanPredicate],
         projected_columns: Option<&[usize]>,
     ) -> Result<Vec<Vec<ScalarValue>>, String> {
-        let mut rows_by_offset = HashMap::new();
-        let requested_offsets = offsets.iter().copied().collect::<HashSet<_>>();
+        let projected = projected_columns
+            .map(<[usize]>::to_vec)
+            .unwrap_or_else(|| (0..table.column_names.len()).collect());
+        let mut rows_by_request = vec![None; offsets.len()];
         let mut batch_start = 0usize;
 
         for batch in &table.batches {
             let batch_len = batch.record_batch.num_rows();
             let batch_end = batch_start + batch_len;
-            let relevant = requested_offsets
+            let relevant = offsets
                 .iter()
-                .copied()
-                .filter(|offset| *offset >= batch_start && *offset < batch_end)
+                .enumerate()
+                .filter_map(|(request_idx, offset)| {
+                    if *offset >= batch_start && *offset < batch_end {
+                        Some((request_idx, *offset - batch_start))
+                    } else {
+                        None
+                    }
+                })
                 .collect::<Vec<_>>();
             if relevant.is_empty() {
                 batch_start = batch_end;
                 continue;
             }
 
-            let mut selected_rows = vec![false; batch_len];
-            for offset in &relevant {
-                selected_rows[*offset - batch_start] = true;
-            }
-            let (filtered_batch, surviving_local_offsets) =
-                filter_batch(batch, predicates, Some(&selected_rows))?;
-            let batch_rows = record_batch_to_rows(&filtered_batch, projected_columns);
-            for (local_offset, row) in surviving_local_offsets.into_iter().zip(batch_rows) {
-                rows_by_offset.insert(batch_start + local_offset, row);
+            for (request_idx, local_offset) in relevant {
+                if batch
+                    .deleted_rows
+                    .get(local_offset)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                if !predicates.is_empty()
+                    && !record_batch_row_matches_predicates(
+                        &batch.record_batch,
+                        local_offset,
+                        predicates,
+                    )?
+                {
+                    continue;
+                }
+
+                rows_by_request[request_idx] = Some(record_batch_row_to_values(
+                    &batch.record_batch,
+                    local_offset,
+                    &projected,
+                ));
             }
             batch_start = batch_end;
         }
 
-        Ok(offsets
-            .iter()
-            .filter_map(|offset| rows_by_offset.get(offset).cloned())
-            .collect())
+        Ok(rows_by_request.into_iter().flatten().collect())
     }
 
     fn count_all_rows(
@@ -1313,6 +1546,7 @@ fn filter_batch(
     predicates: &[ScanPredicate],
     selected_rows: Option<&[bool]>,
 ) -> Result<(RecordBatch, Vec<usize>), String> {
+    let _span = profiling::span("heap_filter_batch");
     let mask = build_filter_mask(batch, predicates, selected_rows)?;
     let surviving_offsets = mask
         .iter()
@@ -1324,15 +1558,226 @@ fn filter_batch(
     Ok((filtered, surviving_offsets))
 }
 
+fn matching_row_offsets_in_batch(
+    batch: &ColumnarBatch,
+    predicates: &[ScanPredicate],
+    selected_rows: Option<&[bool]>,
+) -> Result<Vec<usize>, String> {
+    let _span = profiling::span("heap_matching_row_offsets_in_batch");
+    if let Some(offsets) = try_matching_row_offsets_fast(batch, predicates, selected_rows)? {
+        return Ok(offsets);
+    }
+    Ok(build_filter_mask(batch, predicates, selected_rows)?
+        .iter()
+        .enumerate()
+        .filter_map(|(row_idx, selected)| matches!(selected, Some(true)).then_some(row_idx))
+        .collect())
+}
+
 fn count_matching_rows_in_batch(
     batch: &ColumnarBatch,
     predicates: &[ScanPredicate],
     selected_rows: Option<&[bool]>,
 ) -> Result<usize, String> {
+    if let Some(offsets) = try_matching_row_offsets_fast(batch, predicates, selected_rows)? {
+        return Ok(offsets.len());
+    }
     Ok(build_filter_mask(batch, predicates, selected_rows)?
         .iter()
         .filter(|selected| matches!(selected, Some(true)))
         .count())
+}
+
+fn try_matching_row_offsets_fast(
+    batch: &ColumnarBatch,
+    predicates: &[ScanPredicate],
+    selected_rows: Option<&[bool]>,
+) -> Result<Option<Vec<usize>>, String> {
+    let _span = profiling::span("heap_matching_row_offsets_fast");
+    let Some(compiled_predicates) = compile_scan_predicates(batch, predicates)? else {
+        return Ok(None);
+    };
+
+    let mut offsets = Vec::new();
+    for row_idx in 0..batch.record_batch.num_rows() {
+        let selected = selected_rows.is_none_or(|rows| rows.get(row_idx).copied().unwrap_or(false));
+        let deleted = batch.deleted_rows.get(row_idx).copied().unwrap_or(false);
+        if !selected || deleted {
+            continue;
+        }
+        if compiled_predicates
+            .iter()
+            .all(|predicate| predicate.matches(row_idx))
+        {
+            offsets.push(row_idx);
+        }
+    }
+    Ok(Some(offsets))
+}
+
+fn compile_scan_predicates<'a>(
+    batch: &'a ColumnarBatch,
+    predicates: &[ScanPredicate],
+) -> Result<Option<Vec<CompiledScanPredicate<'a>>>, String> {
+    let mut compiled = Vec::with_capacity(predicates.len());
+    for predicate in predicates {
+        let Some(column) = batch.record_batch.columns().get(predicate.column_index) else {
+            return Err(format!(
+                "row does not have predicate column offset {}",
+                predicate.column_index
+            ));
+        };
+        let compiled_predicate = if let (Some(values), ScalarValue::Int(literal)) = (
+            column.as_any().downcast_ref::<Int64Array>(),
+            &predicate.value,
+        ) {
+            CompiledScanPredicate::Int64 {
+                values,
+                op: predicate.op,
+                literal: *literal,
+            }
+        } else if let (Some(values), ScalarValue::Float(literal)) = (
+            column.as_any().downcast_ref::<Float64Array>(),
+            &predicate.value,
+        ) {
+            CompiledScanPredicate::Float64 {
+                values,
+                op: predicate.op,
+                literal: *literal,
+            }
+        } else if let Some(values) = column.as_any().downcast_ref::<StringArray>() {
+            let literal = match &predicate.value {
+                ScalarValue::Text(text) => text.clone(),
+                other => other.render(),
+            };
+            let like_matcher = match predicate.op {
+                ScanPredicateOp::Like | ScanPredicateOp::NotLike => Some(
+                    LikePredicateMatcher::new(literal.clone(), predicate.escape, false),
+                ),
+                ScanPredicateOp::ILike | ScanPredicateOp::NotILike => Some(
+                    LikePredicateMatcher::new(literal.clone(), predicate.escape, true),
+                ),
+                _ => None,
+            };
+            CompiledScanPredicate::Text {
+                values,
+                op: predicate.op,
+                literal,
+                like_matcher,
+            }
+        } else {
+            return Ok(None);
+        };
+        compiled.push(compiled_predicate);
+    }
+    Ok(Some(compiled))
+}
+
+impl CompiledScanPredicate<'_> {
+    fn matches(&self, row_idx: usize) -> bool {
+        match self {
+            Self::Int64 {
+                values,
+                op,
+                literal,
+            } => {
+                if values.is_null(row_idx) {
+                    return false;
+                }
+                compare_ordering(values.value(row_idx).cmp(literal), *op)
+            }
+            Self::Float64 {
+                values,
+                op,
+                literal,
+            } => {
+                if values.is_null(row_idx) {
+                    return false;
+                }
+                let value = values.value(row_idx);
+                let ordering = value.partial_cmp(literal).unwrap_or(Ordering::Equal);
+                compare_ordering(ordering, *op)
+            }
+            Self::Text {
+                values,
+                op,
+                literal,
+                like_matcher,
+            } => {
+                if values.is_null(row_idx) {
+                    return false;
+                }
+                let value = values.value(row_idx);
+                match op {
+                    ScanPredicateOp::Eq => value == literal,
+                    ScanPredicateOp::NotEq => value != literal,
+                    ScanPredicateOp::Lt => value < literal.as_str(),
+                    ScanPredicateOp::Lte => value <= literal.as_str(),
+                    ScanPredicateOp::Gt => value > literal.as_str(),
+                    ScanPredicateOp::Gte => value >= literal.as_str(),
+                    ScanPredicateOp::Like | ScanPredicateOp::ILike => like_matcher
+                        .as_ref()
+                        .is_some_and(|matcher| matcher.matches(value)),
+                    ScanPredicateOp::NotLike | ScanPredicateOp::NotILike => like_matcher
+                        .as_ref()
+                        .is_some_and(|matcher| !matcher.matches(value)),
+                }
+            }
+        }
+    }
+}
+
+fn compare_ordering(ordering: Ordering, op: ScanPredicateOp) -> bool {
+    match op {
+        ScanPredicateOp::Eq => ordering == Ordering::Equal,
+        ScanPredicateOp::NotEq => ordering != Ordering::Equal,
+        ScanPredicateOp::Lt => ordering == Ordering::Less,
+        ScanPredicateOp::Lte => matches!(ordering, Ordering::Less | Ordering::Equal),
+        ScanPredicateOp::Gt => ordering == Ordering::Greater,
+        ScanPredicateOp::Gte => matches!(ordering, Ordering::Greater | Ordering::Equal),
+        ScanPredicateOp::Like
+        | ScanPredicateOp::NotLike
+        | ScanPredicateOp::ILike
+        | ScanPredicateOp::NotILike => false,
+    }
+}
+
+fn classify_like_pattern(
+    pattern: &str,
+    escape: Option<char>,
+    case_insensitive: bool,
+) -> Option<LikePredicateMatcher> {
+    if pattern.contains('_') || escape.is_some() {
+        return None;
+    }
+
+    let normalized = if case_insensitive {
+        pattern.to_ascii_lowercase()
+    } else {
+        pattern.to_string()
+    };
+
+    if let Some(literal) = normalized
+        .strip_prefix('%')
+        .and_then(|value| value.strip_suffix('%'))
+        && !literal.contains('%')
+    {
+        return Some(LikePredicateMatcher::Contains(literal.to_string()));
+    }
+    if let Some(literal) = normalized.strip_prefix('%')
+        && !literal.contains('%')
+    {
+        return Some(LikePredicateMatcher::Suffix(literal.to_string()));
+    }
+    if let Some(literal) = normalized.strip_suffix('%')
+        && !literal.contains('%')
+    {
+        return Some(LikePredicateMatcher::Prefix(literal.to_string()));
+    }
+    if !normalized.contains('%') {
+        return Some(LikePredicateMatcher::Exact(normalized));
+    }
+    None
 }
 
 fn build_filter_mask(
@@ -1340,6 +1785,7 @@ fn build_filter_mask(
     predicates: &[ScanPredicate],
     selected_rows: Option<&[bool]>,
 ) -> Result<BooleanArray, String> {
+    let _span = profiling::span("heap_build_filter_mask");
     if let Some(mask) = try_build_arrow_filter_mask(batch, predicates, selected_rows)? {
         return Ok(mask);
     }
@@ -1351,6 +1797,7 @@ fn try_build_arrow_filter_mask(
     predicates: &[ScanPredicate],
     selected_rows: Option<&[bool]>,
 ) -> Result<Option<BooleanArray>, String> {
+    let _span = profiling::span("heap_try_build_arrow_filter_mask");
     let mut mask = visibility_mask(batch, selected_rows);
     for predicate in predicates {
         let Some(column) = batch.record_batch.columns().get(predicate.column_index) else {
@@ -1373,6 +1820,7 @@ fn build_filter_mask_row(
     predicates: &[ScanPredicate],
     selected_rows: Option<&[bool]>,
 ) -> Result<BooleanArray, String> {
+    let _span = profiling::span("heap_build_filter_mask_row");
     let row_count = batch.record_batch.num_rows();
     let values = (0..row_count)
         .map(|row_idx| {
@@ -1478,6 +1926,7 @@ fn record_batch_to_rows(
     batch: &RecordBatch,
     projected_columns: Option<&[usize]>,
 ) -> Vec<Vec<ScalarValue>> {
+    let _span = profiling::span("heap_record_batch_to_rows");
     let projected = projected_columns
         .map(<[usize]>::to_vec)
         .unwrap_or_else(|| (0..batch.num_columns()).collect());
@@ -1492,6 +1941,21 @@ fn record_batch_to_rows(
         rows.push(row);
     }
     rows
+}
+
+fn record_batch_row_to_values(
+    batch: &RecordBatch,
+    row_idx: usize,
+    projected_columns: &[usize],
+) -> Vec<ScalarValue> {
+    let _span = profiling::span("heap_record_batch_row_to_values");
+    let mut row = Vec::with_capacity(projected_columns.len());
+    for column_idx in projected_columns {
+        if let Some(column) = batch.columns().get(*column_idx) {
+            row.push(arrow_value_to_scalar_value(column.as_ref(), row_idx));
+        }
+    }
+    row
 }
 
 fn projected_column_names(columns: &[String], projected_columns: Option<&[usize]>) -> Vec<String> {
@@ -1671,6 +2135,33 @@ mod tests {
     }
 
     #[test]
+    fn scan_rows_for_table_honors_offsets_with_projection() {
+        let mut storage = InMemoryStorage::default();
+        storage
+            .replace_rows_for_table(
+                42,
+                vec![
+                    vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())],
+                    vec![ScalarValue::Int(2), ScalarValue::Text("b".to_string())],
+                    vec![ScalarValue::Int(3), ScalarValue::Text("c".to_string())],
+                ],
+            )
+            .expect("replace rows");
+
+        let rows = storage
+            .scan_rows_for_table(42, Some(&[2, 1]), &[], Some(&[1]))
+            .expect("scan should succeed");
+
+        assert_eq!(
+            rows,
+            vec![
+                vec![ScalarValue::Text("c".to_string())],
+                vec![ScalarValue::Text("b".to_string())],
+            ]
+        );
+    }
+
+    #[test]
     fn append_flushes_pending_rows_into_record_batches() {
         let mut storage = InMemoryStorage::default();
         storage.rows_by_table.insert(7, Vec::new());
@@ -1778,6 +2269,143 @@ mod tests {
                 vec![ScalarValue::Text("alpha".to_string())],
                 vec![ScalarValue::Text("alphabet".to_string())],
             ]
+        );
+    }
+
+    #[test]
+    fn scan_selected_batches_with_offsets_reports_original_positions() {
+        let mut storage = InMemoryStorage::default();
+        storage
+            .replace_rows_for_table(
+                88,
+                vec![
+                    vec![ScalarValue::Int(1), ScalarValue::Text("a".to_string())],
+                    vec![ScalarValue::Int(2), ScalarValue::Text("b".to_string())],
+                    vec![ScalarValue::Int(3), ScalarValue::Text("c".to_string())],
+                ],
+            )
+            .expect("replace rows");
+
+        let mut seen = Vec::new();
+        storage
+            .scan_selected_batches_for_table_with_offsets(
+                88,
+                &[ScanPredicate {
+                    column_index: 0,
+                    op: ScanPredicateOp::Gt,
+                    value: ScalarValue::Int(1),
+                    escape: None,
+                }],
+                Some(&[1]),
+                &mut |batch, selected_rows, offsets| {
+                    let values = selected_rows
+                        .iter()
+                        .map(|row_idx| batch.columns[0].value_at(*row_idx))
+                        .collect::<Vec<_>>();
+                    seen.push((offsets, values));
+                    Ok(true)
+                },
+            )
+            .expect("selected scan should succeed");
+
+        assert_eq!(
+            seen,
+            vec![(
+                vec![1, 2],
+                vec![
+                    ScalarValue::Text("b".to_string()),
+                    ScalarValue::Text("c".to_string()),
+                ],
+            )]
+        );
+    }
+
+    #[test]
+    fn scan_selected_batches_handles_like_and_not_like_fast_path() {
+        let mut storage = InMemoryStorage::default();
+        storage
+            .replace_rows_for_table(
+                89,
+                vec![
+                    vec![
+                        ScalarValue::Text("https://example.com/widget/a".to_string()),
+                        ScalarValue::Text("keep".to_string()),
+                    ],
+                    vec![
+                        ScalarValue::Text("https://example.com/widget.internal".to_string()),
+                        ScalarValue::Text("drop".to_string()),
+                    ],
+                    vec![
+                        ScalarValue::Text("https://example.com/widget/b".to_string()),
+                        ScalarValue::Text("keep".to_string()),
+                    ],
+                ],
+            )
+            .expect("replace rows");
+
+        let mut rows = Vec::new();
+        storage
+            .scan_selected_batches_for_table(
+                89,
+                &[
+                    ScanPredicate {
+                        column_index: 0,
+                        op: ScanPredicateOp::Like,
+                        value: ScalarValue::Text("%widget%".to_string()),
+                        escape: None,
+                    },
+                    ScanPredicate {
+                        column_index: 0,
+                        op: ScanPredicateOp::NotLike,
+                        value: ScalarValue::Text("%.internal%".to_string()),
+                        escape: None,
+                    },
+                ],
+                Some(&[1]),
+                &mut |batch, selected_rows| {
+                    rows.extend(
+                        selected_rows
+                            .into_iter()
+                            .map(|row_idx| batch.columns[0].value_at(row_idx)),
+                    );
+                    Ok(true)
+                },
+            )
+            .expect("selected batch scan should succeed");
+
+        assert_eq!(
+            rows,
+            vec![
+                ScalarValue::Text("keep".to_string()),
+                ScalarValue::Text("keep".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_record_batches_for_table_reports_batch_start_offsets() {
+        let mut storage = InMemoryStorage::default();
+        let rows = (0..=COLUMNAR_BATCH_SIZE)
+            .map(|idx| vec![ScalarValue::Int(idx as i64)])
+            .collect::<Vec<_>>();
+        storage
+            .replace_rows_for_table(90, rows)
+            .expect("replace rows");
+
+        let mut starts = Vec::new();
+        let mut lengths = Vec::new();
+        storage
+            .scan_record_batches_for_table(90, &mut |batch, deleted_rows, batch_start| {
+                starts.push(batch_start);
+                lengths.push((batch.num_rows(), deleted_rows.len()));
+                Ok(true)
+            })
+            .expect("raw batch scan should succeed");
+
+        assert_eq!(starts, vec![0, COLUMNAR_BATCH_SIZE]);
+        assert_eq!(
+            lengths,
+            vec![(COLUMNAR_BATCH_SIZE, COLUMNAR_BATCH_SIZE), (1, 1)]
         );
     }
 

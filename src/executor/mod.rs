@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
+pub mod bytecode_expr;
 pub mod column_batch;
 pub mod column_filter;
 pub mod columnar_agg;
@@ -23,6 +24,7 @@ pub mod node_sort;
 pub mod node_subquery;
 pub mod node_window_agg;
 pub mod pipeline;
+pub mod profiling;
 pub mod window_eval;
 
 static COLUMNAR_EXECUTION_ENABLED: AtomicBool = AtomicBool::new(true);
