@@ -189,6 +189,73 @@ fn executes_parameterized_expression() {
 }
 
 #[test]
+fn executes_compiled_filter_and_projection_expressions() {
+    let results = run_batch(&[
+        "CREATE TABLE t (id int8, payload text)",
+        "INSERT INTO t SELECT g, format('row-%s', g) FROM generate_series(1, 150) AS g",
+        "SELECT CAST(id AS int4) + 1 FROM t WHERE payload ILIKE 'row-1%' AND CAST(id AS int4) > 100 LIMIT 3",
+    ]);
+    assert_eq!(
+        results[2].rows,
+        vec![
+            vec![ScalarValue::Int(102)],
+            vec![ScalarValue::Int(103)],
+            vec![ScalarValue::Int(104)],
+        ]
+    );
+}
+
+#[test]
+fn executes_wildcard_filter_order_limit_through_selected_offsets() {
+    let results = run_batch(&[
+        "CREATE TABLE t (id int8, event_time int8, url text)",
+        "INSERT INTO t VALUES (1, 30, 'https://example.com/plain'), (2, 10, 'https://example.com/widget/a'), (3, 20, 'https://example.com/widget/b'), (4, 40, 'https://example.com/widget/c')",
+        "SELECT * FROM t WHERE url LIKE '%widget%' ORDER BY event_time LIMIT 2",
+    ]);
+    assert_eq!(
+        results[2].rows,
+        vec![
+            vec![
+                ScalarValue::Int(2),
+                ScalarValue::Int(10),
+                ScalarValue::Text("https://example.com/widget/a".to_string()),
+            ],
+            vec![
+                ScalarValue::Int(3),
+                ScalarValue::Int(20),
+                ScalarValue::Text("https://example.com/widget/b".to_string()),
+            ],
+        ]
+    );
+}
+
+#[test]
+fn executes_grouped_aggregation_with_storage_selected_rows() {
+    let results = run_batch(&[
+        "CREATE TABLE hits (search_phrase text, url text, user_id int8)",
+        "INSERT INTO hits VALUES ('alpha', 'https://example.com/a', 1), ('alpha', 'https://example.com/b', 2), ('beta', 'https://example.com/c', 2), ('beta', 'https://other.test/d', 3), ('', 'https://example.com/skip', 4)",
+        "SELECT search_phrase, MIN(url), COUNT(*) AS c, COUNT(DISTINCT user_id) FROM hits WHERE url LIKE '%example%' AND search_phrase <> '' GROUP BY search_phrase ORDER BY c DESC, search_phrase",
+    ]);
+    assert_eq!(
+        results[2].rows,
+        vec![
+            vec![
+                ScalarValue::Text("alpha".to_string()),
+                ScalarValue::Text("https://example.com/a".to_string()),
+                ScalarValue::Int(2),
+                ScalarValue::Int(2),
+            ],
+            vec![
+                ScalarValue::Text("beta".to_string()),
+                ScalarValue::Text("https://example.com/c".to_string()),
+                ScalarValue::Int(1),
+                ScalarValue::Int(1),
+            ],
+        ]
+    );
+}
+
+#[test]
 fn exposes_pg_catalog_virtual_relations_for_introspection() {
     let results = run_batch(&[
         "CREATE TABLE users (id int8)",

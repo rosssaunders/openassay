@@ -1,14 +1,47 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::executor::profiling;
 
-pub(super) async fn project_select_row(
+pub(super) fn compile_exprs(exprs: &[Expr]) -> Result<Vec<Option<CompiledExpr>>, EngineError> {
+    exprs.iter().map(try_compile_expr).collect()
+}
+
+pub(super) fn compile_select_targets(
     targets: &[crate::parser::ast::SelectItem],
+) -> Result<Vec<Option<CompiledExpr>>, EngineError> {
+    targets
+        .iter()
+        .map(|target| match &target.expr {
+            Expr::Wildcard | Expr::QualifiedWildcard(_) => Ok(None),
+            expr => try_compile_expr(expr),
+        })
+        .collect()
+}
+
+pub(super) async fn eval_expr_maybe_compiled(
+    expr: &Expr,
+    compiled: Option<&CompiledExpr>,
+    scope: &EvalScope,
+    params: &[Option<String>],
+) -> Result<ScalarValue, EngineError> {
+    if let Some(compiled) = compiled {
+        let _span = profiling::span("compiled_expr_eval");
+        compiled.evaluate(scope, params)
+    } else {
+        let _span = profiling::span("tree_expr_eval");
+        eval_expr(expr, scope, params).await
+    }
+}
+
+pub(super) async fn project_select_row_compiled(
+    targets: &[crate::parser::ast::SelectItem],
+    compiled_targets: &[Option<CompiledExpr>],
     scope: &EvalScope,
     params: &[Option<String>],
     wildcard_columns: Option<&[ExpandedFromColumn]>,
 ) -> Result<Vec<ScalarValue>, EngineError> {
     let mut row = Vec::new();
-    for target in targets {
+    for (index, target) in targets.iter().enumerate() {
         if matches!(target.expr, Expr::Wildcard) {
             let Some(expanded) = wildcard_columns else {
                 return Err(EngineError {
@@ -29,7 +62,15 @@ pub(super) async fn project_select_row(
             expand_qualified_wildcard(qualifier, expanded, scope, &mut row)?;
             continue;
         }
-        row.push(eval_expr(&target.expr, scope, params).await?);
+        row.push(
+            eval_expr_maybe_compiled(
+                &target.expr,
+                compiled_targets.get(index).and_then(Option::as_ref),
+                scope,
+                params,
+            )
+            .await?,
+        );
     }
     Ok(row)
 }
