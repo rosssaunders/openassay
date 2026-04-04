@@ -41,8 +41,7 @@ jobs:
           **Update checklist:**
           - [ ] Update compatibility suite to PG${LATEST_MAJOR} regression tests
           - [ ] Update \`compat.yml\` workflow references
-          - [ ] Update \`COMPATIBILITY.md\`
-          - [ ] Update \`README.md\` version references
+          - [ ] Update \`README.md\` compatibility table and version references
           - [ ] Run full regression suite against PG${LATEST_MAJOR}
           - [ ] Update \`CURRENT_MAJOR\` in this workflow
           EOF

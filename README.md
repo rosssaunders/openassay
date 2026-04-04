@@ -26,11 +26,37 @@ Browser builds expose `execute_sql`, `execute_sql_json`, `execute_sql_arrow`, an
 ### Native / pgwire
 ![OpenAssay CLI Demo](assets/demo.gif)
 
-## PostgreSQL Compatibility
+## PostgreSQL 18 Compatibility
 
-> The checked-in PostgreSQL 18 compatibility report records `12,329 / 12,329` statements passed.
->
-> That denominator comes from the selected corpus under `tests/regression/pg_compat/sql`, which `tests/regression/pg_compat.rs` runs against matching expected outputs in `tests/regression/pg_compat/expected`, plus shared setup. The generated report covers 39 regression SQL files plus setup, not the entire upstream PostgreSQL regression suite.
+**12,329 / 12,329 statements passed (100.0%)** across 39 regression SQL files plus setup.
+
+The corpus lives under `tests/regression/pg_compat/sql` and is executed by `tests/regression/pg_compat.rs` against matching expected outputs in `tests/regression/pg_compat/expected`. This covers the selected subset, not the entire upstream PostgreSQL regression suite.
+
+| File | Pass / Total | | File | Pass / Total |
+|------|-------------:|-|------|-------------:|
+| setup | 69 / 69 | | insert | 397 / 397 |
+| select | 87 / 87 | | update | 303 / 303 |
+| select_distinct | 105 / 105 | | delete | 10 / 10 |
+| select_having | 23 / 23 | | insert_conflict | 265 / 265 |
+| select_implicit | 44 / 44 | | create_table | 339 / 339 |
+| join | 919 / 919 | | create_view | 311 / 311 |
+| subselect | 365 / 365 | | create_index | 685 / 685 |
+| aggregates | 619 / 619 | | sequence | 261 / 261 |
+| window | 429 / 429 | | groupingsets | 219 / 219 |
+| union | 207 / 207 | | merge | 645 / 645 |
+| case | 70 / 70 | | explain | 77 / 77 |
+| with | 314 / 314 | | date | 271 / 271 |
+| boolean | 98 / 98 | | time | 44 / 44 |
+| strings | 550 / 550 | | timestamp | 177 / 177 |
+| text | 73 / 73 | | interval | 450 / 450 |
+| int2 | 76 / 76 | | arrays | 529 / 529 |
+| int4 | 94 / 94 | | matview | 187 / 187 |
+| int8 | 174 / 174 | | |
+| float4 | 100 / 100 | | |
+| float8 | 184 / 184 | | |
+| numeric | 1,059 / 1,059 | | |
+| json | 469 / 469 | | |
+| jsonb | 1,100 / 1,100 | | |
 
 Additional compatibility evidence in-tree:
 
@@ -192,9 +218,30 @@ Broad comparison against DuckDB-WASM, sql.js, and PGlite. OpenAssay entries are 
 - `pg_server` in `src/bin/pg_server.rs`
 - `web_server` in `src/bin/web_server.rs`
 - `tui` in `src/bin/tui.rs`
+- `openassay-mcp` MCP server in `mcp/` — exposes the engine as an [MCP](https://modelcontextprotocol.io) tool server over stdio
 - JSON/JSONB functions in `src/utils/adt/json.rs`
 - `pgvector` distance operators and helper functions in `src/extensions/pgvector.rs`
 - Native Iceberg table reads exercised by `tests/iceberg_tests.rs`
+
+### MCP Server
+
+The `openassay-mcp` binary exposes the SQL engine as an MCP tool server over stdio, letting AI assistants execute queries directly.
+
+```bash
+cargo build --release -p openassay-mcp
+```
+
+Add it to your MCP client config (e.g. Claude Code `settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "openassay": {
+      "command": "target/release/openassay-mcp"
+    }
+  }
+}
+```
 
 ## Scope
 
