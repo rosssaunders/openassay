@@ -229,6 +229,7 @@ pub(super) async fn evaluate_set_returning_function(
         "json_table" => eval_json_table_function(args, &fn_name).await,
         "iceberg_scan" => eval_iceberg_scan_function(args, &fn_name).await,
         "iceberg_metadata" => eval_iceberg_metadata_function(args, &fn_name).await,
+        "parquet_scan" => eval_parquet_scan_function(args, &fn_name).await,
         "pg_get_keywords" => eval_pg_get_keywords(),
         "messages" if function.name.len() == 2 && function.name[0].eq_ignore_ascii_case("ws") => {
             execute_ws_messages(args).await
@@ -690,6 +691,48 @@ pub(super) async fn eval_iceberg_scan_function(
 
 #[cfg(target_arch = "wasm32")]
 pub(super) async fn eval_iceberg_scan_function(
+    _args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    Err(EngineError {
+        message: format!("{fn_name}() is not supported on wasm targets"),
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) async fn eval_parquet_scan_function(
+    args: &[ScalarValue],
+    fn_name: &str,
+) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {
+    if args.len() != 1 {
+        return Err(EngineError {
+            message: format!("{fn_name}() expects exactly one argument (file or directory path)"),
+        });
+    }
+    if matches!(args[0], ScalarValue::Null) {
+        return Ok((vec!["value".to_string()], Vec::new()));
+    }
+
+    let input_path = match &args[0] {
+        ScalarValue::Text(text) => text.trim().to_string(),
+        other => other.render(),
+    };
+    if input_path.is_empty() {
+        return Err(EngineError {
+            message: format!("{fn_name}() path argument cannot be empty"),
+        });
+    }
+
+    let scan_plan = crate::catalog::iceberg::plan_parquet_scan(&input_path)
+        .await
+        .map_err(|error| EngineError {
+            message: format!("{fn_name}(): {}", error.message),
+        })?;
+    Ok((scan_plan.columns, scan_plan.rows))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(super) async fn eval_parquet_scan_function(
     _args: &[ScalarValue],
     fn_name: &str,
 ) -> Result<(Vec<String>, Vec<Vec<ScalarValue>>), EngineError> {

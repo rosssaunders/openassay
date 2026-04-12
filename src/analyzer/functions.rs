@@ -193,6 +193,7 @@ const KNOWN_FUNCTIONS: &[(&str, usize, usize)] = &[
     ("json_table", 1, 255),     // url + optional variadic path segments
     ("iceberg_scan", 1, 1),     // table root directory or metadata file path
     ("iceberg_metadata", 1, 1), // table root directory or metadata file path
+    ("parquet_scan", 1, 1),     // single parquet file or directory of parquet files
     // HTTP extension functions
     ("http_get", 1, 2),
     ("http_post", 2, 3),

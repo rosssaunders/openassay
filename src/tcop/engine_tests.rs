@@ -2077,6 +2077,110 @@ fn iceberg_scan_uses_metadata_schema_when_empty() {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn parquet_scan_reads_single_file() {
+    with_isolated_state(|| {
+        let dir = make_temp_iceberg_table_root("parquet-scan-single");
+        std::fs::create_dir_all(&dir).expect("temp dir should be created");
+
+        write_parquet_id_name_rows(&dir.join("data.parquet"), &[10, 20], &["alice", "bob"]);
+
+        let sql = format!(
+            "SELECT * FROM parquet_scan('{}') ORDER BY id",
+            sql_path_literal(&dir.join("data.parquet"))
+        );
+        let result = run_statement(&sql, &[]);
+        assert_eq!(result.columns, vec!["id", "name"]);
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![ScalarValue::Int(10), ScalarValue::Text("alice".to_string())],
+                vec![ScalarValue::Int(20), ScalarValue::Text("bob".to_string())],
+            ]
+        );
+
+        std::fs::remove_dir_all(dir).expect("temp dir should clean up");
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn parquet_scan_reads_directory() {
+    with_isolated_state(|| {
+        let dir = make_temp_iceberg_table_root("parquet-scan-dir");
+        std::fs::create_dir_all(&dir).expect("temp dir should be created");
+
+        write_parquet_id_name_rows(&dir.join("part-001.parquet"), &[1, 2], &["ada", "grace"]);
+        write_parquet_id_name_rows(&dir.join("part-002.parquet"), &[3, 4], &["eve", "mallory"]);
+
+        let sql = format!(
+            "SELECT * FROM parquet_scan('{}') ORDER BY id",
+            sql_path_literal(&dir)
+        );
+        let result = run_statement(&sql, &[]);
+        assert_eq!(result.columns, vec!["id", "name"]);
+        assert_eq!(result.rows.len(), 4);
+        assert_eq!(result.rows[0][0], ScalarValue::Int(1));
+        assert_eq!(result.rows[3][0], ScalarValue::Int(4));
+
+        std::fs::remove_dir_all(dir).expect("temp dir should clean up");
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn parquet_scan_with_where_clause() {
+    with_isolated_state(|| {
+        let dir = make_temp_iceberg_table_root("parquet-scan-where");
+        std::fs::create_dir_all(&dir).expect("temp dir should be created");
+
+        write_parquet_id_name_rows(
+            &dir.join("data.parquet"),
+            &[1, 2, 3],
+            &["alpha", "beta", "gamma"],
+        );
+
+        let sql = format!(
+            "SELECT name FROM parquet_scan('{}') WHERE id > 1 ORDER BY id",
+            sql_path_literal(&dir.join("data.parquet"))
+        );
+        let result = run_statement(&sql, &[]);
+        assert_eq!(result.columns, vec!["name"]);
+        assert_eq!(
+            result.rows,
+            vec![
+                vec![ScalarValue::Text("beta".to_string())],
+                vec![ScalarValue::Text("gamma".to_string())],
+            ]
+        );
+
+        std::fs::remove_dir_all(dir).expect("temp dir should clean up");
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn parquet_scan_empty_directory_errors() {
+    with_isolated_state(|| {
+        let dir = make_temp_iceberg_table_root("parquet-scan-empty");
+        std::fs::create_dir_all(&dir).expect("temp dir should be created");
+
+        let sql = format!("SELECT * FROM parquet_scan('{}')", sql_path_literal(&dir));
+        let statement = parse_statement(&sql).expect("statement should parse");
+        let planned = plan_statement(statement).expect("statement should plan");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("empty directory should error");
+        assert!(
+            err.message.contains("no parquet files"),
+            "expected 'no parquet files' error, got: {}",
+            err.message
+        );
+
+        std::fs::remove_dir_all(dir).expect("temp dir should clean up");
+    });
+}
+
 #[test]
 fn executes_array_constructors() {
     with_isolated_state(|| {

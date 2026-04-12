@@ -992,6 +992,177 @@ fn parse_partition_values(
     out
 }
 
+pub async fn plan_parquet_scan(path: &str) -> Result<IcebergScanPlan, CatalogError> {
+    let location = IcebergObjectLocation::parse(path)?;
+    let storage = IcebergStorage::from_location(&location).await?;
+
+    let files = discover_raw_parquet_files(&storage, &location).await?;
+    if files.is_empty() {
+        return Err(catalog_error(format!(
+            "no parquet files found at {}",
+            location.raw()
+        )));
+    }
+
+    let schema_fields = {
+        let first = &files[0];
+        if storage.kind == IcebergStorageKind::Local {
+            let file = std::fs::File::open(first.path()).map_err(to_catalog_error)?;
+            let reader = SerializedFileReader::new(file).map_err(to_catalog_error)?;
+            infer_schema_from_parquet(&reader)?
+        } else {
+            let bytes = Bytes::from(storage.read_bytes(first).await?);
+            let reader = SerializedFileReader::new(bytes).map_err(to_catalog_error)?;
+            infer_schema_from_parquet(&reader)?
+        }
+    };
+
+    let output_columns = schema_fields
+        .iter()
+        .map(|field| field.name.clone())
+        .collect::<Vec<_>>();
+    let output_index = schema_fields
+        .iter()
+        .enumerate()
+        .map(|(idx, field)| (field.name.to_ascii_lowercase(), idx))
+        .collect::<HashMap<_, _>>();
+    let empty_aliases = HashMap::new();
+
+    let scanned_files = files.len();
+    let mut rows = Vec::new();
+    for file in &files {
+        let file_rows = scan_single_parquet_file(
+            &storage,
+            file,
+            &schema_fields,
+            &output_index,
+            &empty_aliases,
+        )
+        .await?;
+        rows.extend(file_rows);
+    }
+
+    Ok(IcebergScanPlan {
+        columns: output_columns,
+        rows,
+        scanned_files,
+        pruned_files: 0,
+        metadata: IcebergTableMetadata {
+            table_root: location.raw().to_string(),
+            metadata_file: String::new(),
+            table_uuid: None,
+            format_version: None,
+            last_updated_ms: None,
+            current_schema_id: None,
+            partition_spec_json: String::new(),
+            snapshot_count: 0,
+            total_data_files: scanned_files as i64,
+            partition_columns: Vec::new(),
+            column_aliases: HashMap::new(),
+        },
+    })
+}
+
+async fn discover_raw_parquet_files(
+    storage: &IcebergStorage,
+    location: &IcebergObjectLocation,
+) -> Result<Vec<IcebergObjectLocation>, CatalogError> {
+    if location
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("parquet"))
+    {
+        if storage.kind == IcebergStorageKind::Local && !Path::new(location.path()).exists() {
+            return Err(catalog_error(format!(
+                "parquet file not found: {}",
+                location.raw()
+            )));
+        }
+        return Ok(vec![location.clone()]);
+    }
+
+    let mut candidates = storage.list_recursive(location).await?;
+    candidates.retain(|entry| {
+        entry
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("parquet"))
+    });
+    candidates.sort_by(|a, b| a.raw().cmp(b.raw()));
+    Ok(candidates)
+}
+
+fn infer_schema_from_parquet<R>(
+    reader: &SerializedFileReader<R>,
+) -> Result<Vec<IcebergSchemaField>, CatalogError>
+where
+    R: parquet::file::reader::ChunkReader + 'static,
+{
+    let schema = reader.metadata().file_metadata().schema_descr();
+    let root = schema.root_schema();
+    let fields = match root {
+        parquet::schema::types::Type::GroupType { fields, .. } => fields,
+        _ => {
+            return Err(catalog_error("parquet file has no column schema"));
+        }
+    };
+
+    let mut result = Vec::with_capacity(fields.len());
+    for (idx, field) in fields.iter().enumerate() {
+        let name = field.name().to_string();
+        let type_signature = parquet_type_to_type_signature(field);
+        let nullable = field.get_basic_info().has_repetition()
+            && field.get_basic_info().repetition() != parquet::basic::Repetition::REQUIRED;
+        result.push(IcebergSchemaField {
+            id: idx as i64,
+            name,
+            type_signature,
+            nullable,
+        });
+    }
+    Ok(result)
+}
+
+fn parquet_type_to_type_signature(field: &parquet::schema::types::Type) -> TypeSignature {
+    use parquet::basic::ConvertedType;
+
+    if !field.is_primitive() {
+        return TypeSignature::Text;
+    }
+
+    let physical = field.get_physical_type();
+    let converted = field.get_basic_info().converted_type();
+
+    if let Some(logical) = field.get_basic_info().logical_type_ref() {
+        use parquet::basic::LogicalType;
+        match logical {
+            LogicalType::String | LogicalType::Enum | LogicalType::Uuid | LogicalType::Json => {
+                return TypeSignature::Text;
+            }
+            LogicalType::Integer { .. } => return TypeSignature::Int8,
+            LogicalType::Decimal { .. } => return TypeSignature::Numeric,
+            LogicalType::Date => return TypeSignature::Date,
+            LogicalType::Timestamp { .. } => return TypeSignature::Timestamp,
+            LogicalType::Float16 => return TypeSignature::Float8,
+            _ => {}
+        }
+    }
+
+    match converted {
+        ConvertedType::UTF8 | ConvertedType::ENUM | ConvertedType::JSON => TypeSignature::Text,
+        ConvertedType::DATE => TypeSignature::Date,
+        ConvertedType::TIMESTAMP_MILLIS | ConvertedType::TIMESTAMP_MICROS => {
+            TypeSignature::Timestamp
+        }
+        ConvertedType::DECIMAL => TypeSignature::Numeric,
+        _ => match physical {
+            parquet::basic::Type::BOOLEAN => TypeSignature::Bool,
+            parquet::basic::Type::INT32 | parquet::basic::Type::INT64 => TypeSignature::Int8,
+            parquet::basic::Type::FLOAT | parquet::basic::Type::DOUBLE => TypeSignature::Float8,
+            parquet::basic::Type::INT96 => TypeSignature::Timestamp,
+            _ => TypeSignature::Text,
+        },
+    }
+}
+
 async fn scan_single_parquet_file(
     storage: &IcebergStorage,
     file: &IcebergObjectLocation,

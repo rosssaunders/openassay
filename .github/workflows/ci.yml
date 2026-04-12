@@ -28,6 +28,39 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy -- -D warnings
 
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      minio:
+        image: minio/minio:latest
+        ports:
+          - 9000:9000
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        options: >-
+          --health-cmd "curl -sf http://localhost:9000/minio/health/live || exit 1"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_ENDPOINT: http://localhost:9000
+      AWS_REGION: us-east-1
+      AWS_ALLOW_HTTP: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Create S3 test bucket
+        run: scripts/setup_s3_test_bucket.sh
+      - name: Run S3 integration tests
+        run: cargo test --test s3_integration -- --ignored
+
   wasm:
     runs-on: ubuntu-latest
     steps:
