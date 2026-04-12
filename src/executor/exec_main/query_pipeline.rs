@@ -343,7 +343,7 @@ pub(super) async fn execute_values(
 
 /// Check if any FROM table function has dynamic columns (unknown until execution).
 pub(super) fn from_has_dynamic_columns(from: &[TableExpression]) -> bool {
-    const DYNAMIC_FUNCTIONS: &[&str] = &["json_table", "iceberg_scan"];
+    const DYNAMIC_FUNCTIONS: &[&str] = &["json_table", "iceberg_scan", "parquet_scan"];
     for item in from {
         if let TableExpression::Function(f) = item
             && f.column_aliases.is_empty()
