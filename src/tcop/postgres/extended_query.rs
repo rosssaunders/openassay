@@ -199,9 +199,16 @@ impl PostgresSession {
 
         match &prepared.operation {
             PlannedOperation::ParsedQuery(plan) if plan.returns_data() => {
-                out.push(BackendMessage::RowDescription {
-                    fields: describe_fields_for_plan(plan, &[])?,
-                });
+                let fields = describe_fields_for_plan(plan, &[])?;
+                if fields.is_empty() {
+                    // Dynamic-column functions (e.g. parquet_scan, iceberg_scan):
+                    // columns are unknown until execution, so report NoData at
+                    // Describe time — the Execute response will include the real
+                    // RowDescription.
+                    out.push(BackendMessage::NoData);
+                } else {
+                    out.push(BackendMessage::RowDescription { fields });
+                }
             }
             _ => out.push(BackendMessage::NoData),
         }
@@ -228,9 +235,12 @@ impl PostgresSession {
 
         match &portal.operation {
             PlannedOperation::ParsedQuery(plan) if plan.returns_data() => {
-                out.push(BackendMessage::RowDescription {
-                    fields: describe_fields_for_plan(plan, &portal.result_format_codes)?,
-                });
+                let fields = describe_fields_for_plan(plan, &portal.result_format_codes)?;
+                if fields.is_empty() {
+                    out.push(BackendMessage::NoData);
+                } else {
+                    out.push(BackendMessage::RowDescription { fields });
+                }
             }
             _ => out.push(BackendMessage::NoData),
         }
