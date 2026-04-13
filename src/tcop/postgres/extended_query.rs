@@ -199,16 +199,9 @@ impl PostgresSession {
 
         match &prepared.operation {
             PlannedOperation::ParsedQuery(plan) if plan.returns_data() => {
-                let fields = describe_fields_for_plan(plan, &[])?;
-                if fields.is_empty() {
-                    // Dynamic-column functions (e.g. parquet_scan, iceberg_scan):
-                    // columns are unknown until execution, so report NoData at
-                    // Describe time — the Execute response will include the real
-                    // RowDescription.
-                    out.push(BackendMessage::NoData);
-                } else {
-                    out.push(BackendMessage::RowDescription { fields });
-                }
+                out.push(BackendMessage::RowDescription {
+                    fields: describe_fields_for_plan(plan, &[])?,
+                });
             }
             _ => out.push(BackendMessage::NoData),
         }
@@ -216,7 +209,7 @@ impl PostgresSession {
         Ok(())
     }
 
-    pub(super) fn exec_describe_portal_message(
+    pub(super) async fn exec_describe_portal_message(
         &mut self,
         portal_name: &str,
         out: &mut Vec<BackendMessage>,
@@ -237,7 +230,43 @@ impl PostgresSession {
             PlannedOperation::ParsedQuery(plan) if plan.returns_data() => {
                 let fields = describe_fields_for_plan(plan, &portal.result_format_codes)?;
                 if fields.is_empty() {
-                    out.push(BackendMessage::NoData);
+                    // Dynamic-column functions (parquet_scan, iceberg_scan, etc.):
+                    // columns are unknown until execution. Execute eagerly and
+                    // cache the result so we can send the real RowDescription now
+                    // and reuse the result during Execute.
+                    let operation = portal.operation.clone();
+                    let params = portal.params.clone();
+                    let result_formats = portal.result_format_codes.clone();
+                    let outcome = self.execute_operation(&operation, &params).await?;
+                    if let ExecutionOutcome::Query(ref result) = outcome {
+                        let inferred = infer_row_description_fields(&result.columns, &result.rows);
+                        let portal = self.portals.get_mut(&key).ok_or_else(|| SessionError {
+                            message: format!("portal \"{portal_name}\" does not exist"),
+                        })?;
+                        portal.result_cache = Some(result.clone());
+                        portal.row_description_sent = true;
+                        let desc = if inferred.is_empty() {
+                            inferred
+                        } else {
+                            // Re-apply format codes from Bind
+                            let format_codes = normalize_format_codes(
+                                &result_formats,
+                                inferred.len(),
+                                "describe portal format codes",
+                            )?;
+                            inferred
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, mut f)| {
+                                    f.format_code = format_codes[i];
+                                    f
+                                })
+                                .collect()
+                        };
+                        out.push(BackendMessage::RowDescription { fields: desc });
+                    } else {
+                        out.push(BackendMessage::NoData);
+                    }
                 } else {
                     out.push(BackendMessage::RowDescription { fields });
                 }

@@ -717,7 +717,7 @@ impl PostgresSession {
                 Ok(ControlFlow::Continue)
             }
             FrontendMessage::DescribePortal { portal_name } => {
-                self.exec_describe_portal_message(&portal_name, out)?;
+                self.exec_describe_portal_message(&portal_name, out).await?;
                 Ok(ControlFlow::Continue)
             }
             FrontendMessage::CloseStatement { statement_name } => {
