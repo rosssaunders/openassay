@@ -173,6 +173,7 @@ pub(crate) fn column_spec_from_ast(
     Ok(ColumnSpec {
         name: column.name.clone(),
         type_signature: type_signature_from_ast(column.data_type.clone()),
+        sql_type: Some(sql_type_from_ast(&column.data_type)),
         subscript_value_type: subscript_value_type_from_ast(&column.data_type),
         nullable: column.nullable && !column.primary_key,
         unique: column.unique || column.primary_key,
@@ -293,6 +294,83 @@ pub(crate) fn type_signature_from_ast(ty: TypeName) -> TypeSignature {
     }
 }
 
+/// Lower the parser's `TypeName` into a `SqlType` that preserves everything
+/// the wire layer cares about: int2 vs int4 vs int8, varchar(N) lengths,
+/// numeric(p, s) precision and scale, array element types, etc.
+///
+/// `TypeSignature` (above) is deliberately coarser because it's the
+/// persistent catalog-level representation; `SqlType` is the shape drivers
+/// see in RowDescription.
+pub(crate) fn sql_type_from_ast(ty: &TypeName) -> crate::types::SqlType {
+    use crate::parser::ast::TypeName as TN;
+    use crate::types::SqlType;
+    match ty {
+        TN::Bool => SqlType::Bool,
+        TN::Int2 => SqlType::Int2,
+        TN::Int4 | TN::Serial => SqlType::Int4,
+        TN::Int8 | TN::BigSerial => SqlType::Int8,
+        TN::Float4 => SqlType::Float4,
+        TN::Float8 => SqlType::Float8,
+        TN::Numeric => SqlType::Numeric {
+            precision: None,
+            scale: None,
+        },
+        TN::Text => SqlType::Text,
+        TN::Varchar => SqlType::Varchar(None),
+        TN::Char => SqlType::BpChar(None),
+        TN::Bytea => SqlType::Bytea,
+        TN::Uuid => SqlType::Uuid,
+        TN::Json => SqlType::Json,
+        TN::Jsonb => SqlType::Jsonb,
+        TN::Interval => SqlType::Interval,
+        TN::Time => SqlType::Time,
+        TN::Date => SqlType::Date,
+        TN::Timestamp => SqlType::Timestamp,
+        TN::TimestampTz => SqlType::Timestamptz,
+        TN::Vector(dim) => SqlType::Vector(dim.unwrap_or(0)),
+        TN::Array(inner) => SqlType::Array(Box::new(sql_type_from_ast(inner))),
+        TN::Name => SqlType::Name,
+    }
+}
+
+/// Reverse of `sql_type.oid()` for the OIDs that can appear in
+/// `PlannedOutputColumn.type_oid`. Used by CREATE TABLE AS to preserve a
+/// source query's declared column types. Unknown OIDs yield `None` and fall
+/// back to the column's `TypeSignature`.
+pub(crate) fn sql_type_from_oid(oid: u32) -> Option<crate::types::SqlType> {
+    use crate::types::SqlType;
+    Some(match oid {
+        16 => SqlType::Bool,
+        17 => SqlType::Bytea,
+        18 => SqlType::InternalChar,
+        19 => SqlType::Name,
+        20 => SqlType::Int8,
+        21 => SqlType::Int2,
+        23 => SqlType::Int4,
+        24 => SqlType::Regproc,
+        25 => SqlType::Text,
+        26 => SqlType::Oid,
+        114 => SqlType::Json,
+        700 => SqlType::Float4,
+        701 => SqlType::Float8,
+        1042 => SqlType::BpChar(None),
+        1043 => SqlType::Varchar(None),
+        1082 => SqlType::Date,
+        1083 => SqlType::Time,
+        1114 => SqlType::Timestamp,
+        1184 => SqlType::Timestamptz,
+        1186 => SqlType::Interval,
+        1266 => SqlType::Timetz,
+        1700 => SqlType::Numeric {
+            precision: None,
+            scale: None,
+        },
+        2950 => SqlType::Uuid,
+        3802 => SqlType::Jsonb,
+        _ => return None,
+    })
+}
+
 pub(crate) fn subscript_value_type_from_ast(ty: &TypeName) -> SubscriptValueType {
     match ty {
         TypeName::Jsonb => SubscriptValueType::Jsonb,
@@ -329,9 +407,14 @@ async fn execute_create_table_as_select(
                 6000 => TypeSignature::Vector(None),     // vector
                 _ => TypeSignature::Text,                // default to text for unknown types
             };
+            // Map the OID back to a SqlType so CREATE TABLE AS preserves
+            // int4 / varchar / timestamptz distinctions from the source
+            // query's column descriptors.
+            let sql_type = sql_type_from_oid(col.type_oid);
             ColumnSpec {
                 name: col.name.clone(),
                 type_signature,
+                sql_type,
                 subscript_value_type: col.subscript_value_type.clone(),
                 nullable: true,
                 unique: false,

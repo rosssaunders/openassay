@@ -1504,7 +1504,7 @@ pub(super) fn virtual_relation_rows(
                                 table.oid(),
                                 column.ordinal(),
                                 column.name().to_string(),
-                                type_signature_to_oid(column.type_signature()),
+                                column.wire_type_oid(),
                                 !column.nullable(),
                                 column.default().is_some(),
                             ));

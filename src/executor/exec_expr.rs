@@ -2178,7 +2178,10 @@ pub(crate) fn eval_cast_scalar(
                 message: "cannot cast value to double precision".to_string(),
             }),
         },
-        "text" => {
+        // varchar / bpchar / char internally share the text coercion rules;
+        // the typmod (varchar(N) length limit) isn't enforced yet — if a
+        // value needs truncation, it will fail a CHECK at column level.
+        "text" | "varchar" | "bpchar" => {
             // PostgreSQL's boolout outputs "true"/"false" when casting to text
             match &value {
                 ScalarValue::Bool(v) => Ok(ScalarValue::Text(
@@ -2222,7 +2225,11 @@ pub(crate) fn eval_cast_scalar(
                 microsecond,
             )))
         }
-        "timestamp" => {
+        // timestamp and timestamptz share the same internal representation
+        // (a text-rendered date-time); timezone semantics will land with the
+        // typed-bind work. The distinction matters on the wire — OID 1114 vs
+        // 1184 — which is handled by RowDescription emission, not here.
+        "timestamp" | "timestamptz" => {
             let dt = parse_datetime_scalar(&value)?;
             Ok(ScalarValue::Text(format_timestamp(dt)))
         }

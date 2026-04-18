@@ -25,6 +25,24 @@ pub enum TypeSignature {
     Vector(Option<usize>),
 }
 
+/// Minimal `TypeSignature` → PG OID mapping used as a fallback when no
+/// finer `SqlType` is attached to a column. Kept here (next to
+/// `TypeSignature`) rather than in `tcop/pquery` so `Column::wire_type_oid`
+/// doesn't pull the whole query-planner module into catalog-layer
+/// consumers (browser, replication, tests).
+const fn type_signature_oid(ty: TypeSignature) -> u32 {
+    match ty {
+        TypeSignature::Bool => 16,
+        TypeSignature::Int8 => 20,
+        TypeSignature::Float8 => 701,
+        TypeSignature::Numeric => 1700,
+        TypeSignature::Text => 25,
+        TypeSignature::Date => 1082,
+        TypeSignature::Timestamp => 1114,
+        TypeSignature::Vector(_) => 6000,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForeignKeySpec {
     pub table_name: Vec<String>,
@@ -79,6 +97,12 @@ pub struct Column {
     oid: Oid,
     name: String,
     type_signature: TypeSignature,
+    /// Fine-grained SQL type (int2 vs int4 vs int8, varchar(N), numeric(p, s), …).
+    /// Preserved from CREATE TABLE so RowDescription emits the declared OID
+    /// rather than the coarse TypeSignature equivalent. `None` means the
+    /// column was created by a code path that hasn't been threaded yet —
+    /// consumers should fall back to `type_signature` in that case.
+    sql_type: Option<crate::types::SqlType>,
     subscript_value_type: SubscriptValueType,
     ordinal: u16,
     nullable: bool,
@@ -108,6 +132,7 @@ impl Column {
             oid,
             name,
             type_signature,
+            sql_type: None,
             subscript_value_type,
             ordinal,
             nullable,
@@ -117,6 +142,29 @@ impl Column {
             check,
             default,
         }
+    }
+
+    /// Attach the declared SQL type (preserving int2 vs int4 vs int8,
+    /// varchar(N)'s length, numeric(p, s)'s precision/scale, etc.) used for
+    /// wire-level RowDescription and pg_attribute/information_schema reads.
+    pub fn with_sql_type(mut self, sql_type: crate::types::SqlType) -> Self {
+        self.sql_type = Some(sql_type);
+        self
+    }
+
+    pub fn sql_type(&self) -> Option<&crate::types::SqlType> {
+        self.sql_type.as_ref()
+    }
+
+    /// Wire-level PG type OID for this column. Prefers the declared
+    /// `SqlType` when present (preserves int2/int4 vs int8, varchar vs
+    /// text, timestamptz vs timestamp) and falls back to the coarse
+    /// `TypeSignature` equivalent.
+    pub fn wire_type_oid(&self) -> u32 {
+        if let Some(sql) = &self.sql_type {
+            return sql.oid();
+        }
+        type_signature_oid(self.type_signature)
     }
 
     pub fn oid(&self) -> Oid {
@@ -194,6 +242,11 @@ impl Column {
 pub struct ColumnSpec {
     pub name: String,
     pub type_signature: TypeSignature,
+    /// Declared SQL type with full precision. Optional for backwards
+    /// compatibility — callers without a declared type can omit it and the
+    /// column's wire-level OID will fall back to the `TypeSignature`
+    /// equivalent (losing int2/int4, varchar(N), numeric(p, s) distinctions).
+    pub sql_type: Option<crate::types::SqlType>,
     pub subscript_value_type: SubscriptValueType,
     pub nullable: bool,
     pub unique: bool,
@@ -208,6 +261,7 @@ impl ColumnSpec {
         Self {
             name: name.into(),
             type_signature,
+            sql_type: None,
             subscript_value_type: SubscriptValueType::Other,
             nullable: true,
             unique: false,

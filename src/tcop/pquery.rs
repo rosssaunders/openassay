@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::catalog::search_path::SearchPath;
 use crate::catalog::system_catalogs::lookup_virtual_relation;
-use crate::catalog::{TypeSignature, with_catalog_read};
+use crate::catalog::with_catalog_read;
 use crate::executor::exec_expr::{EvalScope, eval_expr};
 use crate::executor::exec_main::{scope_for_table_row, scope_for_table_row_with_qualifiers};
 use crate::parser::ast::{
@@ -18,24 +18,17 @@ const PG_BOOL_OID: u32 = 16;
 const PG_INT8_OID: u32 = 20;
 const PG_TEXT_OID: u32 = 25;
 const PG_FLOAT8_OID: u32 = 701;
-const PG_NUMERIC_OID: u32 = 1700;
 const PG_DATE_OID: u32 = 1082;
 const PG_TIMESTAMP_OID: u32 = 1114;
 const PG_VECTOR_OID: u32 = 6000;
 const PG_FLOAT4_ARRAY_OID: u32 = 1021;
 
-pub(crate) fn type_signature_to_oid(ty: TypeSignature) -> u32 {
-    match ty {
-        TypeSignature::Bool => PG_BOOL_OID,
-        TypeSignature::Int8 => PG_INT8_OID,
-        TypeSignature::Float8 => PG_FLOAT8_OID,
-        TypeSignature::Numeric => PG_NUMERIC_OID,
-        TypeSignature::Text => PG_TEXT_OID,
-        TypeSignature::Date => PG_DATE_OID,
-        TypeSignature::Timestamp => PG_TIMESTAMP_OID,
-        TypeSignature::Vector(_) => PG_VECTOR_OID,
-    }
-}
+// `type_signature_to_oid` lived here historically. With Phase 2's declared
+// SqlType threading, callers prefer `Column::wire_type_oid()` (which falls
+// back to a local TypeSignature→OID mapping when no SqlType is attached).
+// Removing the old entry point keeps the coarse fallback out of the
+// planner's callable surface so new code can't accidentally regress to
+// collapsed OIDs.
 
 pub fn type_oid_size(type_oid: u32) -> i16 {
     match type_oid {
@@ -173,15 +166,11 @@ fn common_array_element_subscript_type(
 }
 
 fn cast_type_name_to_oid(type_name: &str) -> u32 {
-    match type_name.to_ascii_lowercase().as_str() {
-        "boolean" | "bool" => PG_BOOL_OID,
-        "int8" | "int4" | "int2" | "bigint" | "integer" | "smallint" => PG_INT8_OID,
-        "float8" | "float4" | "numeric" | "decimal" | "real" => PG_FLOAT8_OID,
-        "date" => PG_DATE_OID,
-        "timestamp" | "timestamptz" => PG_TIMESTAMP_OID,
-        "vector" => PG_VECTOR_OID,
-        _ => PG_TEXT_OID,
-    }
+    // Prefer the structured parser so int2/int4/int8 don't collapse to int8,
+    // varchar(N) / numeric(p, s) keep their distinct OIDs, array types pick
+    // up their canonical `_<elem>` OID, etc. Unknown names fall back to text
+    // (preserves pre-Phase-2 permissive behaviour for exotic/custom types).
+    crate::types::parse_sql_type_name(type_name).map_or(PG_TEXT_OID, |t| t.oid())
 }
 
 fn infer_numeric_result_oid(left: u32, right: u32) -> u32 {
@@ -573,10 +562,7 @@ fn extend_scope_with_table(
         .map(|name| name.to_string())
         .unwrap_or_else(|| table.name().to_string());
     for column in table.columns() {
-        let resolved = ResolvedExprType::new(
-            type_signature_to_oid(column.type_signature()),
-            column.subscript_value_type(),
-        );
+        let resolved = ResolvedExprType::new(column.wire_type_oid(), column.subscript_value_type());
         scope.insert_unqualified(column.name(), resolved.clone());
         scope.insert_qualified(
             &[qualifier.clone(), column.name().to_string()],
@@ -1966,7 +1952,7 @@ fn derive_returning_column_type_oids_from_table(
 ) -> Result<Vec<u32>, EngineError> {
     let mut scope = TypeScope::default();
     for column in table.columns() {
-        let oid = type_signature_to_oid(column.type_signature());
+        let oid = column.wire_type_oid();
         let resolved = ResolvedExprType::new(oid, column.subscript_value_type());
         scope.insert_unqualified(column.name(), resolved.clone());
         scope.insert_qualified(
@@ -1990,7 +1976,7 @@ fn derive_returning_column_type_oids_from_table(
                 table
                     .columns()
                     .iter()
-                    .map(|column| type_signature_to_oid(column.type_signature())),
+                    .map(crate::catalog::Column::wire_type_oid),
             );
             continue;
         }
@@ -2331,7 +2317,7 @@ fn expand_table_expression_columns_typed(
                 .map(|column| ExpandedFromTypeColumn {
                     label: column.name().to_string(),
                     lookup_parts: vec![qualifier.clone(), column.name().to_string()],
-                    type_oid: type_signature_to_oid(column.type_signature()),
+                    type_oid: column.wire_type_oid(),
                     subscript_value_type: column.subscript_value_type().clone(),
                 })
                 .collect())
@@ -2816,7 +2802,7 @@ fn lookup_insert_target_column_types(table_name: &[String], columns: &[String]) 
         return table
             .columns()
             .iter()
-            .map(|col| type_signature_to_oid(col.type_signature()))
+            .map(crate::catalog::Column::wire_type_oid)
             .collect();
     }
     columns
@@ -2826,7 +2812,7 @@ fn lookup_insert_target_column_types(table_name: &[String], columns: &[String]) 
                 .columns()
                 .iter()
                 .find(|col| col.name().eq_ignore_ascii_case(name))
-                .map_or(0, |col| type_signature_to_oid(col.type_signature()))
+                .map_or(0, crate::catalog::Column::wire_type_oid)
         })
         .collect()
 }
@@ -2842,12 +2828,7 @@ fn lookup_table_column_type_map(table_name: &[String]) -> HashMap<String, u32> {
     table
         .columns()
         .iter()
-        .map(|col| {
-            (
-                col.name().to_ascii_lowercase(),
-                type_signature_to_oid(col.type_signature()),
-            )
-        })
+        .map(|col| (col.name().to_ascii_lowercase(), col.wire_type_oid()))
         .collect()
 }
 

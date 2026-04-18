@@ -173,7 +173,8 @@ impl Catalog {
                     ),
                 });
             }
-            normalized_columns.push(Column::new(
+            let sql_type = column.sql_type.clone();
+            let built = Column::new(
                 self.oid_gen.next_oid()?,
                 column_name,
                 column.type_signature,
@@ -185,7 +186,11 @@ impl Catalog {
                 column.references,
                 column.check,
                 column.default,
-            ));
+            );
+            normalized_columns.push(match sql_type {
+                Some(t) => built.with_sql_type(t),
+                None => built,
+            });
         }
 
         let mut all_key_constraints: Vec<KeyConstraint> = Vec::new();

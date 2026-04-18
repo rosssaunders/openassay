@@ -25,7 +25,7 @@ pub(crate) use crate::storage::heap::{with_storage_read, with_storage_write};
 pub(crate) use crate::tcop::pquery::{
     CteBinding, ExpandedFromColumn, active_cte_context, current_cte_binding, derive_query_columns,
     derive_select_columns, expand_from_columns, query_references_relation, type_oid_size,
-    type_signature_to_oid, validate_recursive_cte_terms, with_cte_context_async,
+    validate_recursive_cte_terms, with_cte_context_async,
 };
 use crate::tcop::pquery::{
     derive_dml_returning_column_type_oids, derive_dml_returning_columns,
@@ -1014,7 +1014,7 @@ pub async fn copy_table_binary_snapshot(
         .iter()
         .map(|column| CopyBinaryColumn {
             name: column.name().to_string(),
-            type_oid: type_signature_to_oid(column.type_signature()),
+            type_oid: column.wire_type_oid(),
         })
         .collect();
 
@@ -1045,7 +1045,7 @@ pub fn copy_table_column_oids(table_name: &[String]) -> Result<Vec<u32>, EngineE
     Ok(table
         .columns()
         .iter()
-        .map(|column| type_signature_to_oid(column.type_signature()))
+        .map(crate::catalog::Column::wire_type_oid)
         .collect())
 }
 
