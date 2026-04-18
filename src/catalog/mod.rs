@@ -7,6 +7,7 @@ use std::future::Future;
 use std::sync::Mutex;
 use std::sync::{OnceLock, RwLock};
 
+pub mod builtin_types;
 pub mod dependency;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod iceberg;
@@ -16,7 +17,7 @@ pub mod search_path;
 pub mod system_catalogs;
 pub mod table;
 
-use oid::{Oid, OidGenerator};
+use oid::{Oid, OidGenerator, PG_CATALOG_NAMESPACE_OID, PUBLIC_NAMESPACE_OID};
 use schema::Schema;
 pub use search_path::SearchPath;
 pub use table::{
@@ -55,10 +56,14 @@ impl Catalog {
             oid_gen: OidGenerator::default(),
             schemas: HashMap::new(),
         };
-        if let Err(error) = catalog.create_schema("pg_catalog") {
+        // Bootstrap schemas get PG-canonical fixed OIDs so catalog JOINs on
+        // `pg_type.typnamespace = pg_namespace.oid` and equivalent match real
+        // Postgres. User-created schemas come from the OID generator, which
+        // starts at FIRST_NORMAL_OID (16384) — well above any bootstrap OID.
+        if let Err(error) = catalog.create_builtin_schema("pg_catalog", PG_CATALOG_NAMESPACE_OID) {
             unreachable!("bootstrap should create pg_catalog: {}", error.message);
         }
-        if let Err(error) = catalog.create_schema("public") {
+        if let Err(error) = catalog.create_builtin_schema("public", PUBLIC_NAMESPACE_OID) {
             unreachable!("bootstrap should create public schema: {}", error.message);
         }
         if let Err(error) = catalog.create_table(
@@ -72,6 +77,18 @@ impl Catalog {
             unreachable!("bootstrap should create pg_catalog.dual: {}", error.message);
         }
         catalog
+    }
+
+    fn create_builtin_schema(&mut self, name: &str, oid: Oid) -> Result<(), CatalogError> {
+        let normalized_name = normalize_name(name)?;
+        if self.schemas.contains_key(&normalized_name) {
+            return Err(CatalogError {
+                message: format!("schema \"{name}\" already exists"),
+            });
+        }
+        self.schemas
+            .insert(normalized_name.clone(), Schema::new(oid, normalized_name));
+        Ok(())
     }
 
     pub fn schemas(&self) -> impl Iterator<Item = &Schema> {

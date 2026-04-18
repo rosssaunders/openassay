@@ -2539,3 +2539,511 @@ fn table_function_output_type_oids(function: &TableFunctionRef, count: usize) ->
     }
     oids
 }
+
+// ─── Parameter-type inference ────────────────────────────────────────────────
+//
+// At Parse time the extended-query protocol lets the server declare each `$N`'s
+// type in the subsequent ParameterDescription message. Real Postgres infers
+// those types from the query's AST: `WHERE col = $1` makes `$1` match col's
+// type; `SELECT $1::int4` makes `$1` int4; `INSERT INTO t(c) VALUES ($1)` uses
+// t.c's declared type.
+//
+// Without inference the server reports OID 0 ("unknown") for every bare `$N`.
+// tokio-postgres and sqlx react by trying to resolve OID 0 through pg_type,
+// which returns zero rows, so they retry — recursing until the client stack
+// overflows. So inference is *structurally required* for any driver that uses
+// the extended protocol with bare parameters.
+//
+// This pass covers the common patterns real drivers and ORMs actually rely on:
+//   - `$N :: type` -> cast type
+//   - `col = $N` / `$N = col` (and other comparisons) -> col's catalog type
+//   - `INSERT INTO t(c1,c2) VALUES ($1, $2)` -> each column's catalog type
+//   - `UPDATE t SET c1 = $1 WHERE ...` -> c1's catalog type
+//
+// It is intentionally conservative: when a slot can't be confidently inferred
+// the existing (likely 0) value stays. A wrong type is worse than no type.
+
+/// Walk `stmt` looking for bare `$N` parameter references and return
+/// `existing` with any previously-unknown slots filled in from context.
+/// Never errors — if inference trips over anything it doesn't understand,
+/// the unchanged input is returned.
+pub(crate) fn infer_statement_parameter_types(stmt: &Statement, existing: Vec<u32>) -> Vec<u32> {
+    let mut inferred = existing;
+    let mut ctx = ParamInferCtx::default();
+    match stmt {
+        Statement::Query(query) => walk_query(query, &mut ctx, &mut inferred),
+        Statement::Insert(ins) => walk_insert(ins, &mut ctx, &mut inferred),
+        Statement::Update(upd) => walk_update(upd, &mut ctx, &mut inferred),
+        Statement::Delete(del) => walk_delete(del, &mut ctx, &mut inferred),
+        _ => {}
+    }
+    inferred
+}
+
+#[derive(Default)]
+struct ParamInferCtx {
+    cte_types: HashMap<String, Vec<PlannedOutputColumn>>,
+}
+
+fn assign_param(params: &mut [u32], index: i32, type_oid: u32) {
+    if type_oid == 0 || index <= 0 {
+        return;
+    }
+    let idx = (index - 1) as usize;
+    if let Some(slot) = params.get_mut(idx)
+        && *slot == 0
+    {
+        *slot = type_oid;
+    }
+}
+
+fn walk_query(query: &crate::parser::ast::Query, ctx: &mut ParamInferCtx, params: &mut Vec<u32>) {
+    // CTEs: process each before the main body so they contribute to scope.
+    if let Some(with) = &query.with {
+        let snapshot = ctx.cte_types.clone();
+        for cte in &with.ctes {
+            walk_query(&cte.query, ctx, params);
+            if let Ok(cols) = derive_query_output_columns_with_ctes(&cte.query, &mut ctx.cte_types)
+            {
+                ctx.cte_types.insert(cte.name.clone(), cols);
+            }
+        }
+        walk_query_expr(&query.body, ctx, params);
+        ctx.cte_types = snapshot;
+    } else {
+        walk_query_expr(&query.body, ctx, params);
+    }
+    for ob in &query.order_by {
+        walk_expr(&ob.expr, None, &TypeScope::default(), ctx, params);
+    }
+    if let Some(limit) = &query.limit {
+        walk_expr(limit, Some(PG_INT8_OID), &TypeScope::default(), ctx, params);
+    }
+    if let Some(offset) = &query.offset {
+        walk_expr(
+            offset,
+            Some(PG_INT8_OID),
+            &TypeScope::default(),
+            ctx,
+            params,
+        );
+    }
+}
+
+fn walk_query_expr(body: &QueryExpr, ctx: &mut ParamInferCtx, params: &mut Vec<u32>) {
+    match body {
+        QueryExpr::Select(select) => walk_select(select, ctx, params),
+        QueryExpr::SetOperation { left, right, .. } => {
+            walk_query_expr(left, ctx, params);
+            walk_query_expr(right, ctx, params);
+        }
+        QueryExpr::Nested(inner) => walk_query(inner, ctx, params),
+        QueryExpr::Values(rows) => {
+            // Without a target column list we can't infer. Recurse so nested
+            // subquery params still get inferred, but without expected types.
+            let scope = TypeScope::default();
+            for row in rows {
+                for expr in row {
+                    walk_expr(expr, None, &scope, ctx, params);
+                }
+            }
+        }
+        QueryExpr::Insert(ins) => walk_insert(ins, ctx, params),
+        QueryExpr::Update(upd) => walk_update(upd, ctx, params),
+        QueryExpr::Delete(del) => walk_delete(del, ctx, params),
+    }
+}
+
+fn walk_select(select: &SelectStatement, ctx: &mut ParamInferCtx, params: &mut Vec<u32>) {
+    // Build the TypeScope from FROM. Failure = empty scope; still walk for
+    // cast-based inference and nested subqueries.
+    let scope = expand_from_columns_typed(&select.from, &ctx.cte_types)
+        .map(build_scope_from_columns)
+        .unwrap_or_default();
+
+    for item in &select.targets {
+        walk_expr(&item.expr, None, &scope, ctx, params);
+    }
+    walk_from_for_join_conditions(&select.from, &scope, ctx, params);
+    if let Some(where_clause) = &select.where_clause {
+        walk_expr(where_clause, Some(PG_BOOL_OID), &scope, ctx, params);
+    }
+    for gb in &select.group_by {
+        if let GroupByExpr::Expr(expr) = gb {
+            walk_expr(expr, None, &scope, ctx, params);
+        }
+    }
+    if let Some(having) = &select.having {
+        walk_expr(having, Some(PG_BOOL_OID), &scope, ctx, params);
+    }
+}
+
+fn walk_from_for_join_conditions(
+    from: &[TableExpression],
+    scope: &TypeScope,
+    ctx: &mut ParamInferCtx,
+    params: &mut Vec<u32>,
+) {
+    for table in from {
+        walk_table_expression_for_joins(table, scope, ctx, params);
+    }
+}
+
+fn walk_table_expression_for_joins(
+    table: &TableExpression,
+    scope: &TypeScope,
+    ctx: &mut ParamInferCtx,
+    params: &mut Vec<u32>,
+) {
+    match table {
+        TableExpression::Relation(_) => {}
+        TableExpression::Subquery(sub) => walk_query(&sub.query, ctx, params),
+        TableExpression::Function(tf) => {
+            for arg in &tf.args {
+                walk_expr(arg, None, scope, ctx, params);
+            }
+        }
+        TableExpression::Join(join) => {
+            walk_table_expression_for_joins(&join.left, scope, ctx, params);
+            walk_table_expression_for_joins(&join.right, scope, ctx, params);
+            if let Some(JoinCondition::On(expr)) = &join.condition {
+                walk_expr(expr, Some(PG_BOOL_OID), scope, ctx, params);
+            }
+        }
+    }
+}
+
+fn walk_insert(
+    ins: &crate::parser::ast::InsertStatement,
+    ctx: &mut ParamInferCtx,
+    params: &mut Vec<u32>,
+) {
+    // Resolve the target table's column types so we can match VALUES to columns.
+    let column_types = lookup_insert_target_column_types(&ins.table_name, &ins.columns);
+    match &ins.source {
+        crate::parser::ast::InsertSource::Values(rows) => {
+            let scope = TypeScope::default();
+            for row in rows {
+                for (i, expr) in row.iter().enumerate() {
+                    let expected = column_types.get(i).copied();
+                    walk_expr(expr, expected, &scope, ctx, params);
+                }
+            }
+        }
+        crate::parser::ast::InsertSource::Query(query) => walk_query(query, ctx, params),
+    }
+    if let Some(crate::parser::ast::OnConflictClause::DoUpdate {
+        assignments,
+        where_clause,
+        ..
+    }) = &ins.on_conflict
+    {
+        let scope = TypeScope::default();
+        for assn in assignments {
+            let expected = column_types
+                .iter()
+                .zip(ins.columns.iter())
+                .find_map(|(ty, name)| (name == &assn.column).then_some(*ty));
+            walk_expr(&assn.value, expected, &scope, ctx, params);
+        }
+        if let Some(where_expr) = where_clause {
+            walk_expr(where_expr, Some(PG_BOOL_OID), &scope, ctx, params);
+        }
+    }
+}
+
+fn walk_update(
+    upd: &crate::parser::ast::UpdateStatement,
+    ctx: &mut ParamInferCtx,
+    params: &mut Vec<u32>,
+) {
+    let scope = update_or_delete_scope(&upd.table_name, upd.alias.as_deref(), &upd.from, ctx);
+    let table_columns = lookup_table_column_type_map(&upd.table_name);
+    for assn in &upd.assignments {
+        let expected = table_columns
+            .get(&assn.column.to_ascii_lowercase())
+            .copied();
+        walk_expr(&assn.value, expected, &scope, ctx, params);
+    }
+    if let Some(where_expr) = &upd.where_clause {
+        walk_expr(where_expr, Some(PG_BOOL_OID), &scope, ctx, params);
+    }
+}
+
+fn walk_delete(
+    del: &crate::parser::ast::DeleteStatement,
+    ctx: &mut ParamInferCtx,
+    params: &mut Vec<u32>,
+) {
+    let scope = update_or_delete_scope(&del.table_name, None, &del.using, ctx);
+    if let Some(where_expr) = &del.where_clause {
+        walk_expr(where_expr, Some(PG_BOOL_OID), &scope, ctx, params);
+    }
+}
+
+fn update_or_delete_scope(
+    table_name: &[String],
+    alias: Option<&str>,
+    from: &[TableExpression],
+    ctx: &ParamInferCtx,
+) -> TypeScope {
+    let mut scope = TypeScope::default();
+    let _ = extend_scope_with_table(&mut scope, table_name, alias);
+    if let Ok(cols) = expand_from_columns_typed(from, &ctx.cte_types) {
+        let extra = build_scope_from_columns(cols);
+        // Merge `extra` into `scope`; on conflict prefer the target table.
+        for (k, v) in extra.unqualified {
+            scope.unqualified.entry(k).or_insert(v);
+        }
+        for (k, v) in extra.qualified {
+            scope.qualified.entry(k).or_insert(v);
+        }
+    }
+    scope
+}
+
+fn lookup_insert_target_column_types(table_name: &[String], columns: &[String]) -> Vec<u32> {
+    let table = with_catalog_read(|catalog| {
+        catalog
+            .resolve_table(table_name, &SearchPath::default())
+            .cloned()
+    });
+    let table = match table {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+    if columns.is_empty() {
+        return table
+            .columns()
+            .iter()
+            .map(|col| type_signature_to_oid(col.type_signature()))
+            .collect();
+    }
+    columns
+        .iter()
+        .map(|name| {
+            table
+                .columns()
+                .iter()
+                .find(|col| col.name().eq_ignore_ascii_case(name))
+                .map_or(0, |col| type_signature_to_oid(col.type_signature()))
+        })
+        .collect()
+}
+
+fn lookup_table_column_type_map(table_name: &[String]) -> HashMap<String, u32> {
+    let Ok(table) = with_catalog_read(|catalog| {
+        catalog
+            .resolve_table(table_name, &SearchPath::default())
+            .cloned()
+    }) else {
+        return HashMap::new();
+    };
+    table
+        .columns()
+        .iter()
+        .map(|col| {
+            (
+                col.name().to_ascii_lowercase(),
+                type_signature_to_oid(col.type_signature()),
+            )
+        })
+        .collect()
+}
+
+fn walk_expr(
+    expr: &Expr,
+    expected: Option<u32>,
+    scope: &TypeScope,
+    ctx: &mut ParamInferCtx,
+    params: &mut Vec<u32>,
+) {
+    match expr {
+        Expr::Parameter(n) => {
+            if let Some(ty) = expected {
+                assign_param(params, *n, ty);
+            }
+        }
+        Expr::Cast {
+            expr: inner,
+            type_name,
+        } => {
+            let ty = cast_type_name_to_oid(type_name);
+            walk_expr(inner, Some(ty), scope, ctx, params);
+        }
+        Expr::TypedLiteral { .. } => {}
+        Expr::Binary { left, op, right } => {
+            if matches!(
+                op,
+                BinaryOp::Eq
+                    | BinaryOp::NotEq
+                    | BinaryOp::Lt
+                    | BinaryOp::Lte
+                    | BinaryOp::Gt
+                    | BinaryOp::Gte
+            ) {
+                // Comparison: each side takes on the other side's inferred type.
+                let left_ty = if matches!(left.as_ref(), Expr::Parameter(_)) {
+                    None
+                } else {
+                    Some(infer_expr_type(left, scope, &ctx.cte_types).type_oid)
+                };
+                let right_ty = if matches!(right.as_ref(), Expr::Parameter(_)) {
+                    None
+                } else {
+                    Some(infer_expr_type(right, scope, &ctx.cte_types).type_oid)
+                };
+                walk_expr(left, right_ty, scope, ctx, params);
+                walk_expr(right, left_ty, scope, ctx, params);
+            } else {
+                walk_expr(left, None, scope, ctx, params);
+                walk_expr(right, None, scope, ctx, params);
+            }
+        }
+        Expr::AnyAll { left, right, .. } => {
+            walk_expr(left, None, scope, ctx, params);
+            walk_expr(right, None, scope, ctx, params);
+        }
+        Expr::Unary { expr: inner, .. } => {
+            walk_expr(inner, expected, scope, ctx, params);
+        }
+        Expr::FunctionCall { args, filter, .. } => {
+            for arg in args {
+                walk_expr(arg, None, scope, ctx, params);
+            }
+            if let Some(f) = filter {
+                walk_expr(f, Some(PG_BOOL_OID), scope, ctx, params);
+            }
+        }
+        Expr::InList {
+            expr: probe, list, ..
+        } => {
+            // In `x IN (a, b, ...)` every list element's type should match x.
+            let probe_ty = if matches!(probe.as_ref(), Expr::Parameter(_)) {
+                None
+            } else {
+                Some(infer_expr_type(probe, scope, &ctx.cte_types).type_oid)
+            };
+            walk_expr(probe, None, scope, ctx, params);
+            for item in list {
+                walk_expr(item, probe_ty, scope, ctx, params);
+            }
+        }
+        Expr::InSubquery {
+            expr: probe,
+            subquery,
+            ..
+        } => {
+            walk_expr(probe, None, scope, ctx, params);
+            walk_query(subquery, ctx, params);
+        }
+        Expr::Between {
+            expr: probe,
+            low,
+            high,
+            ..
+        } => {
+            let probe_ty = if matches!(probe.as_ref(), Expr::Parameter(_)) {
+                None
+            } else {
+                Some(infer_expr_type(probe, scope, &ctx.cte_types).type_oid)
+            };
+            walk_expr(probe, None, scope, ctx, params);
+            walk_expr(low, probe_ty, scope, ctx, params);
+            walk_expr(high, probe_ty, scope, ctx, params);
+        }
+        Expr::Like {
+            expr: probe,
+            pattern,
+            escape,
+            ..
+        } => {
+            walk_expr(probe, Some(PG_TEXT_OID), scope, ctx, params);
+            walk_expr(pattern, Some(PG_TEXT_OID), scope, ctx, params);
+            if let Some(e) = escape {
+                walk_expr(e, Some(PG_TEXT_OID), scope, ctx, params);
+            }
+        }
+        Expr::IsNull { expr: inner, .. } | Expr::BooleanTest { expr: inner, .. } => {
+            walk_expr(inner, None, scope, ctx, params);
+        }
+        Expr::IsDistinctFrom { left, right, .. } => {
+            let left_ty = if matches!(left.as_ref(), Expr::Parameter(_)) {
+                None
+            } else {
+                Some(infer_expr_type(left, scope, &ctx.cte_types).type_oid)
+            };
+            let right_ty = if matches!(right.as_ref(), Expr::Parameter(_)) {
+                None
+            } else {
+                Some(infer_expr_type(right, scope, &ctx.cte_types).type_oid)
+            };
+            walk_expr(left, right_ty, scope, ctx, params);
+            walk_expr(right, left_ty, scope, ctx, params);
+        }
+        Expr::CaseSimple {
+            operand,
+            when_then,
+            else_expr,
+        } => {
+            walk_expr(operand, None, scope, ctx, params);
+            for (w, t) in when_then {
+                walk_expr(w, None, scope, ctx, params);
+                walk_expr(t, expected, scope, ctx, params);
+            }
+            if let Some(e) = else_expr {
+                walk_expr(e, expected, scope, ctx, params);
+            }
+        }
+        Expr::CaseSearched {
+            when_then,
+            else_expr,
+        } => {
+            for (w, t) in when_then {
+                walk_expr(w, Some(PG_BOOL_OID), scope, ctx, params);
+                walk_expr(t, expected, scope, ctx, params);
+            }
+            if let Some(e) = else_expr {
+                walk_expr(e, expected, scope, ctx, params);
+            }
+        }
+        Expr::ArrayConstructor(items) | Expr::RowConstructor(items) => {
+            for item in items {
+                walk_expr(item, None, scope, ctx, params);
+            }
+        }
+        Expr::Exists(q) | Expr::ScalarSubquery(q) | Expr::ArraySubquery(q) => {
+            walk_query(q, ctx, params);
+        }
+        Expr::ArraySubscript {
+            expr: inner, index, ..
+        } => {
+            walk_expr(inner, None, scope, ctx, params);
+            walk_expr(index, Some(PG_INT8_OID), scope, ctx, params);
+        }
+        Expr::ArraySlice {
+            expr: inner,
+            start,
+            end,
+            ..
+        } => {
+            walk_expr(inner, None, scope, ctx, params);
+            if let Some(s) = start {
+                walk_expr(s, Some(PG_INT8_OID), scope, ctx, params);
+            }
+            if let Some(e) = end {
+                walk_expr(e, Some(PG_INT8_OID), scope, ctx, params);
+            }
+        }
+        Expr::MultiColumnSubqueryRef { subquery, .. } => walk_query(subquery, ctx, params),
+        Expr::Identifier(_)
+        | Expr::String(_)
+        | Expr::Integer(_)
+        | Expr::Float(_)
+        | Expr::Boolean(_)
+        | Expr::Null
+        | Expr::Default
+        | Expr::Wildcard
+        | Expr::QualifiedWildcard(_) => {}
+    }
+}

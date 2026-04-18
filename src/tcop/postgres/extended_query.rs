@@ -1,5 +1,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::parser::sql_parser::parse_statement;
+use crate::tcop::pquery::infer_statement_parameter_types;
 
 impl PostgresSession {
     pub(super) fn exec_parse_message(
@@ -19,6 +21,18 @@ impl PostgresSession {
         }
 
         let parameter_types = resolve_parse_parameter_types(query_string, parameter_types)?;
+        // Fill in any slots still marked unknown (0) by walking the AST and
+        // inferring from context (casts, comparisons, DML targets). Without
+        // this, drivers like tokio-postgres recurse trying to resolve OID 0
+        // through pg_type.
+        let parameter_types = if parameter_types.contains(&0) {
+            match parse_statement(query_string) {
+                Ok(stmt) => infer_statement_parameter_types(&stmt, parameter_types),
+                Err(_) => parameter_types,
+            }
+        } else {
+            parameter_types
+        };
         let prepared = PreparedStatement {
             operation,
             parameter_types,
@@ -103,7 +117,6 @@ impl PostgresSession {
             result_format_codes: normalized_result_formats,
             result_cache: None,
             cursor: 0,
-            row_description_sent: false,
         };
 
         let key = portal_key(portal_name);
@@ -122,7 +135,7 @@ impl PostgresSession {
         self.start_xact_command();
 
         let key = portal_key(portal_name);
-        let (operation, params, result_formats, cached_result, cursor, row_desc_sent) = {
+        let (operation, params, result_formats, cached_result, cursor) = {
             let portal = self.portals.get(&key).ok_or_else(|| SessionError {
                 message: format!("portal \"{portal_name}\" does not exist"),
             })?;
@@ -132,7 +145,6 @@ impl PostgresSession {
                 portal.result_format_codes.clone(),
                 portal.result_cache.clone(),
                 portal.cursor,
-                portal.row_description_sent,
             )
         };
 
@@ -168,7 +180,7 @@ impl PostgresSession {
             out,
             outcome,
             max_rows,
-            Some((portal, cursor, row_desc_sent)),
+            Some((portal, cursor)),
             row_description.as_deref(),
         )?;
 

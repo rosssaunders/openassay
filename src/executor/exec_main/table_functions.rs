@@ -1,5 +1,11 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::catalog::builtin_types::{
+    BUILTIN_COLLATIONS, BUILTIN_LANGUAGES, BUILTIN_RANGES, BUILTIN_TYPES,
+};
+use crate::catalog::oid::{
+    BOOTSTRAP_SUPERUSER_OID, PG_CATALOG_NAMESPACE_OID, PUBLIC_NAMESPACE_OID,
+};
 use crate::executor::profiling;
 
 pub(super) async fn evaluate_table_function(
@@ -1446,7 +1452,7 @@ pub(super) fn virtual_relation_rows(
                     vec![
                         ScalarValue::Int(oid as i64),
                         ScalarValue::Text(name),
-                        ScalarValue::Int(10), // nspowner: superuser OID
+                        ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
                     ]
                 })
                 .collect())
@@ -1478,8 +1484,8 @@ pub(super) fn virtual_relation_rows(
                         ScalarValue::Text(relname),
                         ScalarValue::Int(relnamespace as i64),
                         ScalarValue::Text(relkind),
-                        ScalarValue::Int(10), // relowner: superuser OID
-                        ScalarValue::Int(0),  // reltoastrelid
+                        ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
+                        ScalarValue::Int(0), // reltoastrelid
                         ScalarValue::Bool(relhasindex),
                         ScalarValue::Bool(false), // relhasrules
                         ScalarValue::Bool(false), // relhastriggers
@@ -1526,59 +1532,115 @@ pub(super) fn virtual_relation_rows(
                 .collect())
         }
         ("pg_catalog", "pg_type") => {
-            // typnamespace 11 = pg_catalog OID, typowner 10 = superuser
-            // typlen: -1 = variable, otherwise fixed byte length
-            let mut entries = vec![
-                (16u32, "bool", 11u32, 10u32, 1i64, false, "b", 0u32, 0u32),
-                (20u32, "int8", 11u32, 10u32, 8i64, true, "b", 0u32, 0u32),
-                (25u32, "text", 11u32, 10u32, -1i64, false, "b", 0u32, 0u32),
-                (701u32, "float8", 11u32, 10u32, 8i64, true, "b", 0u32, 0u32),
-                (1082u32, "date", 11u32, 10u32, 4i64, true, "b", 0u32, 0u32),
-                (
-                    1114u32,
-                    "timestamp",
-                    11u32,
-                    10u32,
-                    8i64,
-                    true,
-                    "b",
-                    0u32,
-                    0u32,
-                ),
-                (
-                    1700u32, "numeric", 11u32, 10u32, -1i64, false, "b", 0u32, 0u32,
-                ),
-            ];
-            entries.sort_by_key(|a| a.0);
-            Ok(entries
-                .into_iter()
-                .map(
-                    |(
-                        oid,
-                        typname,
-                        typnamespace,
-                        typowner,
-                        typlen,
-                        typbyval,
-                        typtype,
-                        typelem,
-                        typarray,
-                    )| {
-                        vec![
-                            ScalarValue::Int(oid as i64),
-                            ScalarValue::Text(typname.to_string()),
-                            ScalarValue::Int(typnamespace as i64),
-                            ScalarValue::Int(typowner as i64),
-                            ScalarValue::Int(typlen),
-                            ScalarValue::Bool(typbyval),
-                            ScalarValue::Text(typtype.to_string()),
-                            ScalarValue::Int(typelem as i64),
-                            ScalarValue::Int(typarray as i64),
-                        ]
-                    },
-                )
+            // Source of truth: src/catalog/builtin_types.rs. Column set and
+            // order must match system_catalogs.rs pg_type column defs.
+            Ok(BUILTIN_TYPES
+                .iter()
+                .map(|t| {
+                    vec![
+                        ScalarValue::Int(t.oid as i64),
+                        ScalarValue::Text(t.name.to_string()),
+                        ScalarValue::Int(PG_CATALOG_NAMESPACE_OID as i64),
+                        ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
+                        ScalarValue::Int(t.typlen as i64),
+                        ScalarValue::Bool(t.typbyval),
+                        ScalarValue::Text(t.typtype.to_string()),
+                        ScalarValue::Text(t.typcategory.to_string()),
+                        ScalarValue::Bool(false), // typispreferred
+                        ScalarValue::Bool(true),  // typisdefined
+                        ScalarValue::Text(t.typdelim.to_string()),
+                        ScalarValue::Int(0), // typrelid (0 for non-composite)
+                        ScalarValue::Int(t.typelem as i64),
+                        ScalarValue::Int(t.typarray as i64),
+                        ScalarValue::Int(0), // typinput regproc
+                        ScalarValue::Int(0), // typoutput regproc
+                        ScalarValue::Int(0), // typreceive regproc
+                        ScalarValue::Int(0), // typsend regproc
+                        ScalarValue::Int(0), // typmodin regproc
+                        ScalarValue::Int(0), // typmodout regproc
+                        ScalarValue::Int(0), // typanalyze regproc
+                        ScalarValue::Text(t.typalign.to_string()),
+                        ScalarValue::Text(t.typstorage.to_string()),
+                        ScalarValue::Bool(false), // typnotnull
+                        ScalarValue::Int(0),      // typbasetype (0 for non-domain)
+                        ScalarValue::Int(-1),     // typtypmod
+                        ScalarValue::Int(0),      // typndims
+                        ScalarValue::Int(0),      // typcollation (0 = not collatable)
+                        ScalarValue::Null,        // typdefault
+                    ]
+                })
                 .collect())
         }
+        ("pg_catalog", "pg_range") => Ok(BUILTIN_RANGES
+            .iter()
+            .map(|r| {
+                vec![
+                    ScalarValue::Int(r.rngtypid as i64),
+                    ScalarValue::Int(r.rngsubtype as i64),
+                    ScalarValue::Int(r.rngmultitypid as i64),
+                    ScalarValue::Int(0), // rngcollation
+                    ScalarValue::Int(0), // rngsubopc
+                    ScalarValue::Int(0), // rngcanonical regproc
+                    ScalarValue::Int(0), // rngsubdiff regproc
+                ]
+            })
+            .collect()),
+        ("pg_catalog", "pg_enum") => {
+            // No user-defined enums surfaced yet. When CREATE TYPE ... AS ENUM
+            // lands (Phase 5), populate from catalog.
+            Ok(Vec::new())
+        }
+        ("pg_catalog", "pg_description") => Ok(Vec::new()),
+        ("pg_catalog", "pg_operator") => Ok(Vec::new()),
+        ("pg_catalog", "pg_collation") => Ok(BUILTIN_COLLATIONS
+            .iter()
+            .map(|c| {
+                vec![
+                    ScalarValue::Int(c.oid as i64),
+                    ScalarValue::Text(c.name.to_string()),
+                    ScalarValue::Int(PG_CATALOG_NAMESPACE_OID as i64),
+                    ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
+                    ScalarValue::Text("d".to_string()), // collprovider: 'd' default
+                    ScalarValue::Bool(true),            // collisdeterministic
+                    ScalarValue::Int(c.encoding as i64),
+                    ScalarValue::Text(c.collcollate.to_string()),
+                    ScalarValue::Text(c.collctype.to_string()),
+                    ScalarValue::Null, // collversion
+                ]
+            })
+            .collect()),
+        ("pg_catalog", "pg_language") => Ok(BUILTIN_LANGUAGES
+            .iter()
+            .map(|l| {
+                vec![
+                    ScalarValue::Int(l.oid as i64),
+                    ScalarValue::Text(l.name.to_string()),
+                    ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
+                    ScalarValue::Bool(l.lanispl),
+                    ScalarValue::Bool(l.lanpltrusted),
+                    ScalarValue::Int(0), // lanplcallfoid
+                    ScalarValue::Int(0), // laninline
+                    ScalarValue::Int(0), // lanvalidator
+                ]
+            })
+            .collect()),
+        ("pg_catalog", "pg_auth_members") => Ok(Vec::new()),
+        ("pg_catalog", "pg_authid") => Ok(vec![vec![
+            ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
+            ScalarValue::Text("postgres".to_string()),
+            ScalarValue::Bool(true), // rolsuper
+            ScalarValue::Bool(true), // rolinherit
+            ScalarValue::Bool(true), // rolcreaterole
+            ScalarValue::Bool(true), // rolcreatedb
+            ScalarValue::Bool(true), // rolcanlogin
+            ScalarValue::Bool(true), // rolreplication
+            ScalarValue::Bool(true), // rolbypassrls
+            ScalarValue::Int(-1),    // rolconnlimit
+            ScalarValue::Null,       // rolpassword
+            ScalarValue::Null,       // rolvaliduntil
+        ]]),
+        ("pg_catalog", "pg_trigger") => Ok(Vec::new()),
+        ("pg_catalog", "pg_rewrite") => Ok(Vec::new()),
         ("information_schema", "tables") => {
             let mut entries = with_catalog_read(|catalog| {
                 let mut out = Vec::new();
@@ -1919,8 +1981,10 @@ pub(super) fn virtual_relation_rows(
                         vec![
                             ScalarValue::Int(90000 + i as i64),
                             ScalarValue::Text(f.name.last().cloned().unwrap_or_default()),
-                            ScalarValue::Int(0),  // pronamespace placeholder
-                            ScalarValue::Int(10), // proowner: superuser
+                            // User-declared functions default to `public`.
+                            // Schema-qualified declarations are a Phase 5 concern.
+                            ScalarValue::Int(PUBLIC_NAMESPACE_OID as i64),
+                            ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
                             ScalarValue::Int(14), // prolang: 14 = sql
                             ScalarValue::Text(f.body.clone()), // prosrc
                             ScalarValue::Text(proargnames),

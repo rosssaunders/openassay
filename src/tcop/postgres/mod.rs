@@ -232,7 +232,6 @@ pub(super) struct Portal {
     result_format_codes: Vec<i16>,
     result_cache: Option<QueryResult>,
     cursor: usize,
-    row_description_sent: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -797,7 +796,7 @@ impl PostgresSession {
         out: &mut Vec<BackendMessage>,
         outcome: ExecutionOutcome,
         max_rows: i64,
-        portal_state: Option<(&mut Portal, usize, bool)>,
+        portal_state: Option<(&mut Portal, usize)>,
         row_description: Option<&[RowDescriptionField]>,
     ) -> Result<(), SessionError> {
         match outcome {
@@ -809,19 +808,18 @@ impl PostgresSession {
                 Ok(())
             }
             ExecutionOutcome::Query(result) => {
-                if let Some((portal, prev_cursor, prev_desc_sent)) = portal_state {
+                if let Some((portal, prev_cursor)) = portal_state {
+                    // Execute MUST NOT emit RowDescription. Per PG protocol spec
+                    // (Message Flow / Extended Query): "Execute doesn't cause
+                    // ReadyForQuery or RowDescription to be issued." RowDescription
+                    // is sent only in response to Describe; clients that want
+                    // column metadata must send Describe before Execute.
                     let fields = row_description
                         .filter(|f| !f.is_empty())
                         .map(|fields| fields.to_vec())
                         .unwrap_or_else(|| {
                             infer_row_description_fields(&result.columns, &result.rows)
                         });
-                    if !prev_desc_sent {
-                        out.push(BackendMessage::RowDescription {
-                            fields: fields.clone(),
-                        });
-                        portal.row_description_sent = true;
-                    }
 
                     let limit = if max_rows <= 0 {
                         usize::MAX
