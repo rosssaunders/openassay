@@ -150,6 +150,23 @@ pub(super) fn encode_binary_scalar(
             let micros = parse_pg_timestamp_micros(v)?;
             Ok(micros.to_be_bytes().to_vec())
         }
+        // ── time: i64 microseconds since 00:00:00
+        (1083, ScalarValue::Text(v)) => {
+            let micros = parse_pg_time_micros(v)?;
+            Ok(micros.to_be_bytes().to_vec())
+        }
+        // ── interval: i64 microseconds, i32 days, i32 months (16 bytes).
+        // The engine's `IntervalValue::seconds` is second-precision only, so
+        // sub-second fractions of the text form are already truncated before
+        // we reach this encoder — we multiply seconds × 1_000_000 on the wire.
+        (1186, ScalarValue::Text(v)) => {
+            let (months, days, micros) = parse_pg_interval_parts(v)?;
+            let mut out = Vec::with_capacity(16);
+            out.extend_from_slice(&micros.to_be_bytes());
+            out.extend_from_slice(&days.to_be_bytes());
+            out.extend_from_slice(&months.to_be_bytes());
+            Ok(out)
+        }
         // ── jsonb: 1-byte version prefix (always 1 per PG 9.4+) then JSON text
         (3802, ScalarValue::Text(v)) => {
             let mut out = Vec::with_capacity(v.len() + 1);
@@ -342,6 +359,32 @@ pub(super) fn decode_binary_scalar(
             ]);
             Ok(ScalarValue::Text(format_pg_timestamp_from_micros(micros)))
         }
+        1083 => {
+            if raw.len() != 8 {
+                return Err(SessionError {
+                    message: format!("{context} time field length must be 8"),
+                });
+            }
+            let micros = i64::from_be_bytes([
+                raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+            ]);
+            Ok(ScalarValue::Text(format_pg_time_from_micros(micros)))
+        }
+        1186 => {
+            if raw.len() != 16 {
+                return Err(SessionError {
+                    message: format!("{context} interval field length must be 16"),
+                });
+            }
+            let micros = i64::from_be_bytes([
+                raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+            ]);
+            let days = i32::from_be_bytes([raw[8], raw[9], raw[10], raw[11]]);
+            let months = i32::from_be_bytes([raw[12], raw[13], raw[14], raw[15]]);
+            Ok(ScalarValue::Text(format_pg_interval_from_parts(
+                months, days, micros,
+            )))
+        }
         // jsonb binary format: 1-byte version prefix (1), then UTF-8 JSON text
         3802 => {
             if raw.is_empty() {
@@ -399,6 +442,95 @@ pub(super) fn format_pg_date_from_days(days: i32) -> String {
     let absolute_days = pg_epoch + days as i64;
     let (year, month, day) = civil_from_days(absolute_days);
     format!("{year:04}-{month:02}-{day:02}")
+}
+
+pub(super) fn parse_pg_time_micros(text: &str) -> Result<i64, SessionError> {
+    let (hour, minute, second, micros) = parse_time_hms_micros(text.trim())?;
+    Ok((hour as i64) * 3_600_000_000
+        + (minute as i64) * 60_000_000
+        + (second as i64) * 1_000_000
+        + (micros as i64))
+}
+
+pub(super) fn format_pg_time_from_micros(micros: i64) -> String {
+    let day_micros = 86_400_000_000i64;
+    let clamped = micros.rem_euclid(day_micros);
+    let hour = clamped / 3_600_000_000;
+    let minute = (clamped % 3_600_000_000) / 60_000_000;
+    let second = (clamped % 60_000_000) / 1_000_000;
+    let fractional = clamped % 1_000_000;
+    if fractional == 0 {
+        format!("{hour:02}:{minute:02}:{second:02}")
+    } else {
+        format!("{hour:02}:{minute:02}:{second:02}.{fractional:06}")
+    }
+}
+
+/// Parse the engine's interval text format `"M mons D days [-]HH:MM:SS"` into
+/// `(months, days, microseconds)` for the wire encoder. The engine stores
+/// seconds with no sub-second precision, so we multiply by 1_000_000 here.
+pub(super) fn parse_pg_interval_parts(text: &str) -> Result<(i32, i32, i64), SessionError> {
+    let trimmed = text.trim();
+    let invalid = || SessionError {
+        message: format!("interval text `{trimmed}` is invalid"),
+    };
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.len() != 5 || parts[1] != "mons" || parts[3] != "days" {
+        return Err(invalid());
+    }
+    let months: i32 = parts[0].parse().map_err(|_| invalid())?;
+    let days: i32 = parts[2].parse().map_err(|_| invalid())?;
+    let time_part = parts[4];
+    let (sign, hms) = match time_part.strip_prefix('-') {
+        Some(rest) => (-1i64, rest),
+        None => (1i64, time_part),
+    };
+    // Interval HMS is unbounded — `INTERVAL '36 hours'` renders as
+    // `"36:00:00"`, which `parse_time_hms_micros` would reject. Split
+    // inline without the 24-hour cap.
+    let hms_parts: Vec<&str> = hms.split(':').collect();
+    if hms_parts.len() != 3 {
+        return Err(invalid());
+    }
+    let hour: u64 = hms_parts[0].parse().map_err(|_| invalid())?;
+    let minute: u64 = hms_parts[1].parse().map_err(|_| invalid())?;
+    if minute >= 60 {
+        return Err(invalid());
+    }
+    let (second, micros_frac) = if let Some((sec, frac)) = hms_parts[2].split_once('.') {
+        let second: u64 = sec.parse().map_err(|_| invalid())?;
+        let digits: String = frac.chars().take(6).collect();
+        let mut padded = digits;
+        while padded.len() < 6 {
+            padded.push('0');
+        }
+        let micros: u64 = padded.parse().map_err(|_| invalid())?;
+        (second, micros)
+    } else {
+        let second: u64 = hms_parts[2].parse().map_err(|_| invalid())?;
+        (second, 0)
+    };
+    if second >= 60 {
+        return Err(invalid());
+    }
+    let magnitude = (hour as i64) * 3_600_000_000
+        + (minute as i64) * 60_000_000
+        + (second as i64) * 1_000_000
+        + (micros_frac as i64);
+    Ok((months, days, sign * magnitude))
+}
+
+/// Format `(months, days, microseconds)` back into the engine's interval text
+/// format so callers see a consistent `ScalarValue::Text` representation.
+pub(super) fn format_pg_interval_from_parts(months: i32, days: i32, micros: i64) -> String {
+    let sign = if micros < 0 { "-" } else { "" };
+    let abs = micros.unsigned_abs();
+    let hours = abs / 3_600_000_000;
+    let minutes = (abs % 3_600_000_000) / 60_000_000;
+    let seconds = (abs % 60_000_000) / 1_000_000;
+    // The engine's text format does not carry sub-second digits; the decoder
+    // preserves that shape so round-tripping stays stable.
+    format!("{months} mons {days} days {sign}{hours:02}:{minutes:02}:{seconds:02}")
 }
 
 pub(super) fn format_pg_timestamp_from_micros(micros: i64) -> String {
