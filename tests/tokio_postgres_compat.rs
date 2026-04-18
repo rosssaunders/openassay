@@ -18,6 +18,7 @@ use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 
+use chrono::TimeZone as _;
 use openassay::protocol::messages::{
     StartupAction, decode_frontend_message, decode_startup_action, encode_backend_message,
 };
@@ -410,4 +411,232 @@ async fn prepared_then_execute_does_not_emit_extra_row_description() {
     assert_eq!(rows.len(), 1);
     let v: i64 = rows[0].try_get(0).expect("try_get i64");
     assert_eq!(v, 1);
+}
+
+// ─── Phase 2 fidelity tests ─────────────────────────────────────────────────
+//
+// Declared SQL types must surface on the wire as the OID the driver expects —
+// not collapsed to int8 / float8 / text. These tests fail hard when
+// `cast_type_name_to_oid` or the binary encoder regress.
+
+#[tokio::test(flavor = "multi_thread")]
+async fn int4_cast_surfaces_as_oid_23() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let stmt = client
+        .prepare("SELECT 1::int4 AS a")
+        .await
+        .expect("prepare int4");
+    assert_eq!(
+        stmt.columns()[0].type_().oid(),
+        23,
+        "SELECT 1::int4 must report int4 OID (23), not int8 (20)"
+    );
+    let row = client.query_one(&stmt, &[]).await.expect("query");
+    let v: i32 = row.try_get(0).expect("int4 decodes as i32");
+    assert_eq!(v, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn int2_cast_surfaces_as_oid_21() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let stmt = client
+        .prepare("SELECT 7::int2 AS a")
+        .await
+        .expect("prepare int2");
+    assert_eq!(stmt.columns()[0].type_().oid(), 21);
+    let row = client.query_one(&stmt, &[]).await.expect("query");
+    let v: i16 = row.try_get(0).expect("int2 decodes as i16");
+    assert_eq!(v, 7);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn float4_cast_surfaces_as_oid_700() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let stmt = client
+        .prepare("SELECT 1.5::float4 AS a")
+        .await
+        .expect("prepare float4");
+    assert_eq!(stmt.columns()[0].type_().oid(), 700);
+    let row = client.query_one(&stmt, &[]).await.expect("query");
+    let v: f32 = row.try_get(0).expect("float4 decodes as f32");
+    assert!((v - 1.5).abs() < f32::EPSILON);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn varchar_cast_surfaces_as_oid_1043() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let stmt = client
+        .prepare("SELECT 'hello'::varchar(10) AS a")
+        .await
+        .expect("prepare varchar");
+    assert_eq!(
+        stmt.columns()[0].type_().oid(),
+        1043,
+        "varchar(N) must report varchar OID (1043), not text (25)"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn uuid_cast_surfaces_as_oid_2950_and_decodes() {
+    use std::str::FromStr as _;
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let stmt = client
+        .prepare("SELECT '6592b7c0-b531-4613-ace5-94246b7ce0c3'::uuid AS a")
+        .await
+        .expect("prepare uuid");
+    assert_eq!(stmt.columns()[0].type_().oid(), 2950);
+    let row = client.query_one(&stmt, &[]).await.expect("query");
+    let v: uuid::Uuid = row.try_get(0).expect("uuid decodes");
+    assert_eq!(
+        v,
+        uuid::Uuid::from_str("6592b7c0-b531-4613-ace5-94246b7ce0c3").unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn date_cast_surfaces_as_oid_1082_and_decodes() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let stmt = client
+        .prepare("SELECT '2024-01-15'::date AS a")
+        .await
+        .expect("prepare date");
+    assert_eq!(stmt.columns()[0].type_().oid(), 1082);
+    let row = client.query_one(&stmt, &[]).await.expect("query");
+    let v: chrono::NaiveDate = row.try_get(0).expect("date decodes");
+    assert_eq!(v, chrono::NaiveDate::from_ymd_opt(2024, 1, 15).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn timestamp_cast_surfaces_as_oid_1114_and_decodes() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let stmt = client
+        .prepare("SELECT '2024-01-15 12:34:56'::timestamp AS a")
+        .await
+        .expect("prepare timestamp");
+    assert_eq!(stmt.columns()[0].type_().oid(), 1114);
+    let row = client.query_one(&stmt, &[]).await.expect("query");
+    let v: chrono::NaiveDateTime = row.try_get(0).expect("timestamp decodes");
+    assert_eq!(
+        v,
+        chrono::NaiveDate::from_ymd_opt(2024, 1, 15)
+            .unwrap()
+            .and_hms_opt(12, 34, 56)
+            .unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn timestamptz_cast_surfaces_as_oid_1184_and_decodes() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let stmt = client
+        .prepare("SELECT '2024-01-15 12:34:56+00'::timestamptz AS a")
+        .await
+        .expect("prepare timestamptz");
+    assert_eq!(
+        stmt.columns()[0].type_().oid(),
+        1184,
+        "timestamptz must report OID 1184, not timestamp (1114)"
+    );
+    let row = client.query_one(&stmt, &[]).await.expect("query");
+    let v: chrono::DateTime<chrono::Utc> = row.try_get(0).expect("timestamptz decodes");
+    assert_eq!(
+        v,
+        chrono::Utc
+            .with_ymd_and_hms(2024, 1, 15, 12, 34, 56)
+            .single()
+            .unwrap()
+    );
+}
+
+/// DDL columns declared as `int4` / `varchar` / `timestamptz` must report
+/// the correct OID when the column is SELECTed back. Today this exercises
+/// the catalog column descriptor path: the DDL parser records TypeName,
+/// `type_signature_from_ast` lowers it to the coarse `TypeSignature`, and
+/// the RowDescription builder reads `type_signature_to_oid`. This test
+/// locks in Phase 2's DDL-column type fidelity.
+#[tokio::test(flavor = "multi_thread")]
+async fn ddl_declared_int4_column_surfaces_as_oid_23() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    // Use a unique table name to avoid collisions with parallel tests —
+    // the engine's catalog is process-global.
+    let table = format!(
+        "t_ddl_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {table} (id int4, label varchar(10), stamp timestamptz)"
+        ))
+        .await
+        .expect("CREATE TABLE");
+    client
+        .batch_execute(&format!(
+            "INSERT INTO {table} VALUES (7, 'hello', '2024-01-15 12:00:00+00')"
+        ))
+        .await
+        .expect("INSERT");
+
+    let stmt = client
+        .prepare(&format!("SELECT id, label, stamp FROM {table}"))
+        .await
+        .expect("prepare");
+    let oids: Vec<u32> = stmt.columns().iter().map(|c| c.type_().oid()).collect();
+    assert_eq!(
+        oids,
+        vec![23, 1043, 1184],
+        "DDL-declared int4/varchar/timestamptz must report OIDs 23/1043/1184"
+    );
+
+    client
+        .batch_execute(&format!("DROP TABLE {table}"))
+        .await
+        .ok();
+}
+
+/// A row with a NULL used to force the whole row into binary encoding
+/// (encoding.rs line 14 disjunct). That clobbered clients that asked for
+/// text format. Fixed in Phase 2.3.
+#[tokio::test(flavor = "multi_thread")]
+async fn null_column_does_not_force_binary_encoding_of_whole_row() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    // simple_query goes through the text-format path. If NULL forces
+    // binary, this would either error or return garbled values.
+    use tokio_postgres::SimpleQueryMessage;
+    let msgs = client
+        .simple_query("SELECT 1::int4 AS a, NULL::text AS b, 'keep'::text AS c")
+        .await
+        .expect("simple_query");
+    let row = msgs
+        .into_iter()
+        .find_map(|m| match m {
+            SimpleQueryMessage::Row(r) => Some(r),
+            _ => None,
+        })
+        .expect("one row");
+    assert_eq!(row.get(0), Some("1"));
+    assert_eq!(row.get(1), None);
+    assert_eq!(row.get(2), Some("keep"));
 }

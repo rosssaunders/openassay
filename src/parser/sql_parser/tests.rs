@@ -2323,7 +2323,9 @@ fn parses_cast_to_integer_types() {
 
 #[test]
 fn parses_cast_to_float_types() {
-    // float4 / real
+    // float4 / real — preserve distinct type name so the wire OID (700)
+    // reflects the declared type. Internal semantics treat float4 and float8
+    // similarly but RowDescription must not lie about which one was declared.
     let stmt = parse_statement("SELECT 1.5::float4").expect("parse should succeed");
     let Statement::Query(query) = stmt else {
         panic!("expected query statement");
@@ -2331,7 +2333,7 @@ fn parses_cast_to_float_types() {
     let select = as_select(&query);
     assert!(matches!(
         &select.targets[0].expr,
-        Expr::Cast { type_name, .. } if type_name == "float8"
+        Expr::Cast { type_name, .. } if type_name == "float4"
     ));
 
     let stmt = parse_statement("SELECT 1.5::real").expect("parse should succeed");
@@ -2341,10 +2343,11 @@ fn parses_cast_to_float_types() {
     let select = as_select(&query);
     assert!(matches!(
         &select.targets[0].expr,
-        Expr::Cast { type_name, .. } if type_name == "float8"
+        Expr::Cast { type_name, .. } if type_name == "float4"
     ));
 
-    // numeric / decimal
+    // numeric / decimal keep their name so the wire OID reflects numeric
+    // (1700) not float8 (701).
     let stmt = parse_statement("SELECT 1.5::numeric").expect("parse should succeed");
     let Statement::Query(query) = stmt else {
         panic!("expected query statement");
@@ -2352,7 +2355,7 @@ fn parses_cast_to_float_types() {
     let select = as_select(&query);
     assert!(matches!(
         &select.targets[0].expr,
-        Expr::Cast { type_name, .. } if type_name == "float8"
+        Expr::Cast { type_name, .. } if type_name == "numeric"
     ));
 
     let stmt = parse_statement("SELECT 1.5::decimal").expect("parse should succeed");
@@ -2362,7 +2365,7 @@ fn parses_cast_to_float_types() {
     let select = as_select(&query);
     assert!(matches!(
         &select.targets[0].expr,
-        Expr::Cast { type_name, .. } if type_name == "float8"
+        Expr::Cast { type_name, .. } if type_name == "numeric"
     ));
 }
 

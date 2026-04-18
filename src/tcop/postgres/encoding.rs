@@ -10,9 +10,17 @@ pub(super) fn encode_result_data_row_message(
             message: "row width does not match row description field count".to_string(),
         });
     }
-    let requires_binary = fields.iter().any(|field| field.format_code == 1)
-        || row.iter().any(|value| matches!(value, ScalarValue::Null));
-    if !requires_binary {
+    // Binary-format *encoding* is opt-in per column via Bind's
+    // result_format_codes. NULL must surface with length -1 regardless of
+    // the chosen format. `BackendMessage::DataRow` uses `Vec<String>` with
+    // no NULL slot, so whenever a row contains a NULL or any column is
+    // binary we use `DataRowBinary` (which accepts `Option<Vec<u8>>`) even
+    // for text fields — the bytes are still UTF-8 in that case. The on-wire
+    // format is identical either way; the message-variant choice is purely
+    // an internal representation detail of OpenAssay.
+    let needs_null_slot = row.iter().any(|value| matches!(value, ScalarValue::Null));
+    let needs_binary = fields.iter().any(|field| field.format_code == 1);
+    if !needs_binary && !needs_null_slot {
         return Ok(BackendMessage::DataRow {
             values: row.iter().map(ScalarValue::render).collect(),
         });
@@ -49,26 +57,11 @@ pub(super) fn encode_binary_scalar(
     type_oid: PgType,
     context: &str,
 ) -> Result<Vec<u8>, SessionError> {
+    // Per pg_type.oid. Kept as match literals (rather than named constants)
+    // for grep-ability and to match what clients put on the wire.
     match (type_oid, value) {
+        // ── booleans ────────────────────────────────────────────────
         (16, ScalarValue::Bool(v)) => Ok(vec![u8::from(*v)]),
-        (20, ScalarValue::Int(v)) => Ok(v.to_be_bytes().to_vec()),
-        (701, ScalarValue::Float(v)) => Ok(v.to_bits().to_be_bytes().to_vec()),
-        (25, ScalarValue::Text(v)) => Ok(v.as_bytes().to_vec()),
-        (25, other) => Ok(other.render().into_bytes()),
-        (20, ScalarValue::Text(v)) => v
-            .trim()
-            .parse::<i64>()
-            .map(|parsed| parsed.to_be_bytes().to_vec())
-            .map_err(|_| SessionError {
-                message: format!("{context} integer field is invalid"),
-            }),
-        (701, ScalarValue::Text(v)) => v
-            .trim()
-            .parse::<f64>()
-            .map(|parsed| parsed.to_bits().to_be_bytes().to_vec())
-            .map_err(|_| SessionError {
-                message: format!("{context} float field is invalid"),
-            }),
         (16, ScalarValue::Text(v)) => match v.trim().to_ascii_lowercase().as_str() {
             "true" | "t" | "1" => Ok(vec![1]),
             "false" | "f" | "0" => Ok(vec![0]),
@@ -76,19 +69,161 @@ pub(super) fn encode_binary_scalar(
                 message: format!("{context} boolean field is invalid"),
             }),
         },
+        // ── integer family: narrow from the i64 storage representation
+        // Widths are validated per-type so drivers that sent smaller values
+        // still decode correctly.
+        (21, ScalarValue::Int(v)) => {
+            let narrow = i16::try_from(*v).map_err(|_| SessionError {
+                message: format!("{context} int2 value {v} out of range"),
+            })?;
+            Ok(narrow.to_be_bytes().to_vec())
+        }
+        (23 | 26 | 24, ScalarValue::Int(v)) => {
+            // int4 / oid / regproc all ship as 4-byte big-endian.
+            let narrow = i32::try_from(*v).map_err(|_| SessionError {
+                message: format!("{context} int4 value {v} out of range"),
+            })?;
+            Ok(narrow.to_be_bytes().to_vec())
+        }
+        (20, ScalarValue::Int(v)) => Ok(v.to_be_bytes().to_vec()),
+        (20 | 21 | 23 | 26 | 24, ScalarValue::Text(v)) => {
+            // Text-stored integers (e.g. from literal rendering) — reparse
+            // and re-encode at the declared wire width.
+            let parsed: i64 = v.trim().parse().map_err(|_| SessionError {
+                message: format!("{context} integer field is invalid"),
+            })?;
+            match type_oid {
+                20 => Ok(parsed.to_be_bytes().to_vec()),
+                21 => Ok(i16::try_from(parsed)
+                    .map_err(|_| SessionError {
+                        message: format!("{context} int2 value {parsed} out of range"),
+                    })?
+                    .to_be_bytes()
+                    .to_vec()),
+                _ => Ok(i32::try_from(parsed)
+                    .map_err(|_| SessionError {
+                        message: format!("{context} int4 value {parsed} out of range"),
+                    })?
+                    .to_be_bytes()
+                    .to_vec()),
+            }
+        }
+        // ── float family ────────────────────────────────────────────
+        (700, ScalarValue::Float(v)) => {
+            // float4: narrow f64 -> f32. Note: f32::from(f64) doesn't exist;
+            // use the `as` conversion, which matches PG's internal narrowing.
+            #[allow(clippy::cast_possible_truncation)]
+            let narrow = *v as f32;
+            Ok(narrow.to_bits().to_be_bytes().to_vec())
+        }
+        (701, ScalarValue::Float(v)) => Ok(v.to_bits().to_be_bytes().to_vec()),
+        (700, ScalarValue::Text(v)) => {
+            let parsed: f64 = v.trim().parse().map_err(|_| SessionError {
+                message: format!("{context} float4 field is invalid"),
+            })?;
+            #[allow(clippy::cast_possible_truncation)]
+            let narrow = parsed as f32;
+            Ok(narrow.to_bits().to_be_bytes().to_vec())
+        }
+        (701, ScalarValue::Text(v)) => v
+            .trim()
+            .parse::<f64>()
+            .map(|parsed| parsed.to_bits().to_be_bytes().to_vec())
+            .map_err(|_| SessionError {
+                message: format!("{context} float8 field is invalid"),
+            }),
+        // ── text-like: the wire format is just raw UTF-8 ────────────
+        (25 | 1042 | 1043 | 19 | 114, ScalarValue::Text(v)) => Ok(v.as_bytes().to_vec()),
+        (25 | 1042 | 1043 | 19 | 114, other) => Ok(other.render().into_bytes()),
+        // ── bytea: literal bytes. ScalarValue::Text stores hex-escaped
+        // form ("\x010203") after CAST; we un-hex before shipping.
+        (17, ScalarValue::Text(v)) => decode_pg_bytea_text(v, context),
+        // ── uuid: 16 bytes, parsed from text form with or without dashes
+        (2950, ScalarValue::Text(v)) => decode_uuid_text(v, context),
+        // ── date: i32 days since 2000-01-01
         (1082, ScalarValue::Text(v)) => {
             let days = parse_pg_date_days(v)?;
             Ok(days.to_be_bytes().to_vec())
         }
-        (1114, ScalarValue::Text(v)) => {
+        // ── timestamp / timestamptz: i64 microseconds since 2000-01-01 00:00:00 UTC
+        (1114 | 1184, ScalarValue::Text(v)) => {
             let micros = parse_pg_timestamp_micros(v)?;
             Ok(micros.to_be_bytes().to_vec())
         }
+        // ── jsonb: 1-byte version prefix (always 1 per PG 9.4+) then JSON text
+        (3802, ScalarValue::Text(v)) => {
+            let mut out = Vec::with_capacity(v.len() + 1);
+            out.push(1);
+            out.extend_from_slice(v.as_bytes());
+            Ok(out)
+        }
+        // ── NULL: callers use length=-1 framing; payload is empty.
         (_, ScalarValue::Null) => Ok(Vec::new()),
         _ => Err(SessionError {
             message: format!("{context} binary type oid {type_oid} is not supported"),
         }),
     }
+}
+
+/// Decode the Postgres bytea text format into raw bytes.
+///
+/// Supports both the modern `\x`-hex form (`'\x01ab02'`) and the legacy
+/// octal-escape form (`'\\001\\002'`). Bytes with no escape pass through.
+fn decode_pg_bytea_text(text: &str, context: &str) -> Result<Vec<u8>, SessionError> {
+    if let Some(hex) = text
+        .strip_prefix("\\x")
+        .or_else(|| text.strip_prefix("\\X"))
+    {
+        let cleaned: String = hex.chars().filter(|ch| !ch.is_ascii_whitespace()).collect();
+        if !cleaned.len().is_multiple_of(2) {
+            return Err(SessionError {
+                message: format!("{context} bytea hex literal has odd length"),
+            });
+        }
+        let mut out = Vec::with_capacity(cleaned.len() / 2);
+        for chunk in cleaned.as_bytes().chunks(2) {
+            let byte = u8::from_str_radix(
+                std::str::from_utf8(chunk).map_err(|_| SessionError {
+                    message: format!("{context} bytea hex literal is invalid"),
+                })?,
+                16,
+            )
+            .map_err(|_| SessionError {
+                message: format!("{context} bytea hex literal is invalid"),
+            })?;
+            out.push(byte);
+        }
+        return Ok(out);
+    }
+    // Fallback: treat as already-raw bytes. Legacy-escape handling isn't
+    // implemented here; callers that need it should use the \x form.
+    Ok(text.as_bytes().to_vec())
+}
+
+/// Decode a UUID from its 36-char hyphenated text form (or 32-char no-dash
+/// form) into 16 raw bytes.
+fn decode_uuid_text(text: &str, context: &str) -> Result<Vec<u8>, SessionError> {
+    let trimmed = text.trim();
+    let hex: String = trimmed.chars().filter(|ch| *ch != '-').collect();
+    if hex.len() != 32 {
+        return Err(SessionError {
+            message: format!("{context} uuid text length is invalid"),
+        });
+    }
+    let mut out = Vec::with_capacity(16);
+    for chunk in hex.as_bytes().chunks(2) {
+        let byte = u8::from_str_radix(
+            std::str::from_utf8(chunk).map_err(|_| SessionError {
+                message: format!("{context} uuid is not valid utf8"),
+            })?,
+            16,
+        )
+        .map_err(|_| SessionError {
+            message: format!("{context} uuid hex is invalid"),
+        })?;
+        out.push(byte);
+    }
+    Ok(out)
 }
 
 pub(super) fn decode_binary_scalar(
@@ -105,6 +240,26 @@ pub(super) fn decode_binary_scalar(
             }
             Ok(ScalarValue::Bool(raw[0] != 0))
         }
+        21 => {
+            if raw.len() != 2 {
+                return Err(SessionError {
+                    message: format!("{context} int2 field length must be 2"),
+                });
+            }
+            Ok(ScalarValue::Int(i64::from(i16::from_be_bytes([
+                raw[0], raw[1],
+            ]))))
+        }
+        23 | 26 | 24 => {
+            if raw.len() != 4 {
+                return Err(SessionError {
+                    message: format!("{context} int4/oid field length must be 4"),
+                });
+            }
+            Ok(ScalarValue::Int(i64::from(i32::from_be_bytes([
+                raw[0], raw[1], raw[2], raw[3],
+            ]))))
+        }
         20 => {
             if raw.len() != 8 {
                 return Err(SessionError {
@@ -114,6 +269,15 @@ pub(super) fn decode_binary_scalar(
             Ok(ScalarValue::Int(i64::from_be_bytes([
                 raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
             ])))
+        }
+        700 => {
+            if raw.len() != 4 {
+                return Err(SessionError {
+                    message: format!("{context} float4 field length must be 4"),
+                });
+            }
+            let bits = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
+            Ok(ScalarValue::Float(f64::from(f32::from_bits(bits))))
         }
         701 => {
             if raw.len() != 8 {
@@ -126,11 +290,38 @@ pub(super) fn decode_binary_scalar(
             ]);
             Ok(ScalarValue::Float(f64::from_bits(bits)))
         }
-        25 => Ok(ScalarValue::Text(String::from_utf8(raw.to_vec()).map_err(
-            |_| SessionError {
-                message: format!("{context} text field is not valid utf8"),
-            },
-        )?)),
+        // text / varchar / bpchar / name / json — all raw UTF-8 on the wire
+        25 | 1042 | 1043 | 19 | 114 => Ok(ScalarValue::Text(
+            String::from_utf8(raw.to_vec()).map_err(|_| SessionError {
+                message: format!("{context} text-like field is not valid utf8"),
+            })?,
+        )),
+        // bytea: raw bytes → render as `\x…` hex text (matches ScalarValue
+        // convention elsewhere in the engine).
+        17 => {
+            let mut out = String::with_capacity(2 + raw.len() * 2);
+            out.push_str("\\x");
+            for b in raw {
+                out.push_str(&format!("{b:02x}"));
+            }
+            Ok(ScalarValue::Text(out))
+        }
+        // uuid: 16 bytes → canonical hyphenated text
+        2950 => {
+            if raw.len() != 16 {
+                return Err(SessionError {
+                    message: format!("{context} uuid field length must be 16"),
+                });
+            }
+            let mut out = String::with_capacity(36);
+            for (i, b) in raw.iter().enumerate() {
+                if matches!(i, 4 | 6 | 8 | 10) {
+                    out.push('-');
+                }
+                out.push_str(&format!("{b:02x}"));
+            }
+            Ok(ScalarValue::Text(out))
+        }
         1082 => {
             if raw.len() != 4 {
                 return Err(SessionError {
@@ -140,7 +331,7 @@ pub(super) fn decode_binary_scalar(
             let days = i32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
             Ok(ScalarValue::Text(format_pg_date_from_days(days)))
         }
-        1114 => {
+        1114 | 1184 => {
             if raw.len() != 8 {
                 return Err(SessionError {
                     message: format!("{context} timestamp field length must be 8"),
@@ -150,6 +341,24 @@ pub(super) fn decode_binary_scalar(
                 raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
             ]);
             Ok(ScalarValue::Text(format_pg_timestamp_from_micros(micros)))
+        }
+        // jsonb binary format: 1-byte version prefix (1), then UTF-8 JSON text
+        3802 => {
+            if raw.is_empty() {
+                return Err(SessionError {
+                    message: format!("{context} jsonb field is empty"),
+                });
+            }
+            if raw[0] != 1 {
+                return Err(SessionError {
+                    message: format!("{context} unsupported jsonb binary version {}", raw[0]),
+                });
+            }
+            Ok(ScalarValue::Text(
+                String::from_utf8(raw[1..].to_vec()).map_err(|_| SessionError {
+                    message: format!("{context} jsonb payload is not valid utf8"),
+                })?,
+            ))
         }
         other => Err(SessionError {
             message: format!("{context} binary type oid {other} is not supported"),

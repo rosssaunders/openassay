@@ -32,8 +32,8 @@ use crate::tcop::engine::{
     CteBinding, EngineError, ExpandedFromColumn, QueryResult, active_cte_context,
     current_cte_binding, derive_select_columns, expand_from_columns, lookup_user_function,
     lookup_virtual_relation, query_references_relation, relation_row_visible_for_command,
-    require_relation_privilege, type_signature_to_oid, validate_recursive_cte_terms,
-    with_cte_context_async, with_ext_read, with_storage_read,
+    require_relation_privilege, validate_recursive_cte_terms, with_cte_context_async,
+    with_ext_read, with_storage_read,
 };
 #[cfg(target_arch = "wasm32")]
 use crate::tcop::engine::{drain_wasm_ws_messages, sync_wasm_ws_state};

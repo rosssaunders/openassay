@@ -1458,10 +1458,14 @@ impl Parser {
             "int2" | "smallint" => "int2".to_string(),
             "int" | "integer" | "int4" => "int4".to_string(),
             "int8" | "bigint" => "int8".to_string(),
-            // Float types - normalize to float8
-            "float4" | "real" => "float8".to_string(),
+            // Float and numeric types: keep distinct spellings so
+            // downstream code can emit the right PG wire OID (700 for
+            // float4, 701 for float8, 1700 for numeric). Executor cast
+            // semantics treat the narrower forms as aliases of float8
+            // internally — see exec_expr.rs::cast_value_to_type_name.
+            "float4" | "real" => "float4".to_string(),
             "float" | "float8" => "float8".to_string(),
-            "numeric" | "decimal" => "float8".to_string(),
+            "numeric" | "decimal" => "numeric".to_string(),
             "double" => {
                 if matches!(self.current_kind(), TokenKind::Identifier(next) if next.eq_ignore_ascii_case("precision"))
                 {
@@ -1469,20 +1473,30 @@ impl Parser {
                 }
                 "float8".to_string()
             }
-            // String types
-            "text" | "varchar" | "char" => "text".to_string(),
+            // String types — preserve distinct spellings so the wire-level
+            // OID reflects varchar vs bpchar vs text. Executor treats them
+            // as text-equivalent internally.
+            "text" => "text".to_string(),
+            "varchar" => "varchar".to_string(),
+            "char" | "bpchar" => "bpchar".to_string(),
             "character" => {
                 if matches!(self.current_kind(), TokenKind::Identifier(next) if next.eq_ignore_ascii_case("varying"))
                 {
                     self.advance();
+                    "varchar".to_string()
+                } else {
+                    "bpchar".to_string()
                 }
-                "text".to_string()
             }
             // Date/time types
             "date" => "date".to_string(),
             "time" => "time".to_string(),
             "interval" => "interval".to_string(),
             "timestamp" | "timestamptz" => {
+                // Distinguish timestamp from timestamptz so we emit the
+                // right OID (1114 vs 1184). The keyword form `timestamp
+                // with time zone` resolves to timestamptz.
+                let mut is_tz = matches!(base.as_str(), "timestamptz");
                 if self.consume_keyword(Keyword::With) {
                     if matches!(self.current_kind(), TokenKind::Identifier(next) if next.eq_ignore_ascii_case("time"))
                     {
@@ -1492,6 +1506,7 @@ impl Parser {
                     {
                         self.advance();
                     }
+                    is_tz = true;
                 } else if matches!(self.current_kind(), TokenKind::Identifier(next) if next.eq_ignore_ascii_case("without"))
                 {
                     self.advance();
@@ -1503,8 +1518,13 @@ impl Parser {
                     {
                         self.advance();
                     }
+                    is_tz = false;
                 }
-                "timestamp".to_string()
+                if is_tz {
+                    "timestamptz".to_string()
+                } else {
+                    "timestamp".to_string()
+                }
             }
             // Binary and special types
             "bytea" => "bytea".to_string(),
