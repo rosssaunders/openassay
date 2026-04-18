@@ -97,7 +97,9 @@ fn simple_query_cache_clears_after_non_select_execution() {
 }
 
 #[test]
-fn extended_query_flow_requires_sync_for_ready() {
+fn extended_query_flow_without_describe_omits_row_description() {
+    // PG wire spec: Execute MUST NOT emit RowDescription. When the client skips
+    // Describe, it simply won't receive column metadata.
     let out = with_isolated_state(|| {
         let mut session = PostgresSession::new();
         session.run_sync(parse_bind_execute_sync_flow())
@@ -111,17 +113,74 @@ fn extended_query_flow_requires_sync_for_ready() {
     );
     assert!(matches!(out[1], BackendMessage::ParseComplete));
     assert!(matches!(out[2], BackendMessage::BindComplete));
-    assert!(matches!(out[3], BackendMessage::RowDescription { .. }));
-    assert!(matches!(out[4], BackendMessage::DataRow { .. }));
+    assert!(matches!(out[3], BackendMessage::DataRow { .. }));
     assert!(matches!(
-        out[5],
+        out[4],
         BackendMessage::CommandComplete { ref tag, .. } if tag == "SELECT"
     ));
     assert_eq!(
-        out[6],
+        out[5],
         BackendMessage::ReadyForQuery {
             status: ReadyForQueryStatus::Idle
         }
+    );
+    assert!(
+        !out.iter()
+            .any(|msg| matches!(msg, BackendMessage::RowDescription { .. })),
+        "Execute must not emit RowDescription when Describe was not issued"
+    );
+}
+
+#[test]
+fn extended_query_flow_with_describe_portal_emits_row_description_once() {
+    // Spec-correct path used by psql, tokio-postgres, and friends:
+    // Parse → Bind → Describe(portal) → Execute → Sync produces one
+    // RowDescription (from Describe) followed by DataRow+CommandComplete.
+    let out = with_isolated_state(|| {
+        let mut session = PostgresSession::new();
+        session.run_sync([
+            FrontendMessage::Parse {
+                statement_name: String::new(),
+                query: "SELECT 1".to_string(),
+                parameter_types: vec![],
+            },
+            FrontendMessage::Bind {
+                portal_name: String::new(),
+                statement_name: String::new(),
+                param_formats: vec![],
+                params: vec![],
+                result_formats: vec![],
+            },
+            FrontendMessage::DescribePortal {
+                portal_name: String::new(),
+            },
+            FrontendMessage::Execute {
+                portal_name: String::new(),
+                max_rows: 0,
+            },
+            FrontendMessage::Sync,
+        ])
+    });
+
+    let row_desc_count = out
+        .iter()
+        .filter(|msg| matches!(msg, BackendMessage::RowDescription { .. }))
+        .count();
+    assert_eq!(
+        row_desc_count, 1,
+        "exactly one RowDescription expected (from Describe, not Execute)"
+    );
+    let row_desc_idx = out
+        .iter()
+        .position(|msg| matches!(msg, BackendMessage::RowDescription { .. }))
+        .unwrap();
+    let data_row_idx = out
+        .iter()
+        .position(|msg| matches!(msg, BackendMessage::DataRow { .. }))
+        .unwrap();
+    assert!(
+        row_desc_idx < data_row_idx,
+        "RowDescription must precede DataRow"
     );
 }
 
@@ -219,6 +278,9 @@ fn describe_statement_uses_planned_type_metadata() {
 
 #[test]
 fn bind_supports_binary_result_format_codes() {
+    // Spec-correct flow: Describe(portal) comes between Bind and Execute so
+    // the RowDescription is emitted by Describe (not Execute) and carries the
+    // format codes from the Bind message.
     let out = with_isolated_state(|| {
         let mut session = PostgresSession::new();
         session.run_sync([
@@ -234,6 +296,9 @@ fn bind_supports_binary_result_format_codes() {
                 param_formats: vec![],
                 params: vec![],
                 result_formats: vec![1],
+            },
+            FrontendMessage::DescribePortal {
+                portal_name: "p1".to_string(),
             },
             FrontendMessage::Execute {
                 portal_name: "p1".to_string(),

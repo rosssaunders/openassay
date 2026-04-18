@@ -85,6 +85,8 @@ object_store = { workspace = true, features = ["aws", "azure", "gcp", "fs"] }
 criterion.workspace = true
 proptest.workspace = true
 tungstenite.workspace = true
+tokio-postgres.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [[bench]]
 name = "engine_bench"
