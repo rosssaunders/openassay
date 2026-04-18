@@ -1,3 +1,4 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;

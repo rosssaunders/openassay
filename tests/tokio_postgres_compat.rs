@@ -640,3 +640,25 @@ async fn null_column_does_not_force_binary_encoding_of_whole_row() {
     assert_eq!(row.get(1), None);
     assert_eq!(row.get(2), Some("keep"));
 }
+
+/// Phase 2 follow-up: a `time` cast must surface with OID 1083 and decode
+/// binary into chrono::NaiveTime via the tokio-postgres `with-chrono-0_4`
+/// path. Prior to this follow-up the OID was right but the binary format
+/// was unsupported, so the client's binary decode path would error.
+#[tokio::test(flavor = "multi_thread")]
+async fn time_cast_surfaces_as_oid_1083_and_decodes_binary() {
+    use chrono::NaiveTime;
+
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let row = client
+        .query_one("SELECT CAST('12:34:56' AS time) AS t", &[])
+        .await
+        .expect("query");
+    let col = &row.columns()[0];
+    assert_eq!(col.type_().oid(), 1083, "time OID must be 1083");
+
+    let decoded: NaiveTime = row.get(0);
+    assert_eq!(decoded, NaiveTime::from_hms_opt(12, 34, 56).unwrap());
+}

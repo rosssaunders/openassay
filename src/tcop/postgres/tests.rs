@@ -1209,3 +1209,83 @@ fn implicit_transaction_auto_rollback_prevents_cascade_failures() {
         )
     }));
 }
+
+#[test]
+fn time_binary_encode_roundtrips_through_decode() {
+    let encoded =
+        encode_binary_scalar(&ScalarValue::Text("12:34:56.789012".to_string()), 1083, "t")
+            .expect("time encodes");
+    assert_eq!(encoded.len(), 8);
+    let expected_micros: i64 = 12 * 3_600_000_000 + 34 * 60_000_000 + 56 * 1_000_000 + 789_012;
+    assert_eq!(encoded, expected_micros.to_be_bytes().to_vec());
+
+    let decoded = decode_binary_scalar(&encoded, 1083, "t").expect("time decodes");
+    assert_eq!(decoded, ScalarValue::Text("12:34:56.789012".to_string()));
+}
+
+#[test]
+fn time_binary_encode_zero_fraction_formats_without_decimal() {
+    let encoded =
+        encode_binary_scalar(&ScalarValue::Text("00:00:00".to_string()), 1083, "t").unwrap();
+    assert_eq!(encoded, 0i64.to_be_bytes().to_vec());
+    let decoded = decode_binary_scalar(&encoded, 1083, "t").unwrap();
+    assert_eq!(decoded, ScalarValue::Text("00:00:00".to_string()));
+}
+
+#[test]
+fn interval_binary_encode_lays_out_micros_days_months() {
+    // Engine text: "3 mons 14 days 02:30:00"
+    let encoded = encode_binary_scalar(
+        &ScalarValue::Text("3 mons 14 days 02:30:00".to_string()),
+        1186,
+        "i",
+    )
+    .expect("interval encodes");
+    assert_eq!(encoded.len(), 16);
+    let micros = i64::from_be_bytes(encoded[0..8].try_into().unwrap());
+    let days = i32::from_be_bytes(encoded[8..12].try_into().unwrap());
+    let months = i32::from_be_bytes(encoded[12..16].try_into().unwrap());
+    assert_eq!(micros, 2 * 3_600_000_000 + 30 * 60_000_000);
+    assert_eq!(days, 14);
+    assert_eq!(months, 3);
+}
+
+#[test]
+fn interval_binary_encode_roundtrips_negative_time() {
+    let encoded = encode_binary_scalar(
+        &ScalarValue::Text("0 mons 0 days -01:00:00".to_string()),
+        1186,
+        "i",
+    )
+    .unwrap();
+    let decoded = decode_binary_scalar(&encoded, 1186, "i").unwrap();
+    assert_eq!(
+        decoded,
+        ScalarValue::Text("0 mons 0 days -01:00:00".to_string())
+    );
+}
+
+#[test]
+fn interval_binary_encode_accepts_hours_over_24() {
+    // The engine renders intervals without a 24-hour cap, e.g. `36:45:00`,
+    // so the interval HMS parse path must not reject hours >= 24 — unlike
+    // `time` which is bounded to [00:00, 24:00).
+    let encoded = encode_binary_scalar(
+        &ScalarValue::Text("0 mons 0 days 36:45:00".to_string()),
+        1186,
+        "i",
+    )
+    .expect("36-hour interval encodes");
+    let micros = i64::from_be_bytes(encoded[0..8].try_into().unwrap());
+    assert_eq!(micros, 36 * 3_600_000_000 + 45 * 60_000_000);
+}
+
+#[test]
+fn interval_binary_encode_rejects_unknown_text_shape() {
+    let err = encode_binary_scalar(
+        &ScalarValue::Text("3 months, 14 days, 02:30:00".to_string()),
+        1186,
+        "i",
+    );
+    assert!(err.is_err());
+}
