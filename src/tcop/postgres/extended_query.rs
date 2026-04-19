@@ -275,15 +275,22 @@ fn decode_bind_parameter(
     param: Option<Vec<u8>>,
     format_code: i16,
     type_oid: PgType,
-) -> Result<Option<String>, SessionError> {
+) -> Result<Option<ScalarValue>, SessionError> {
+    // Phase 2.2: return a typed `ScalarValue` instead of the rendered text.
+    // Binary-format binds decode straight through `decode_binary_scalar`;
+    // text-format binds are parsed once here using the declared type OID so
+    // the executor sees the full typed value — no more render → reparse.
     let Some(raw) = param else {
         return Ok(None);
     };
 
     let decoded = match format_code {
-        0 => String::from_utf8(raw).map_err(|_| SessionError {
-            message: format!("bind parameter ${} contains invalid UTF-8 text", index + 1),
-        })?,
+        0 => {
+            let text = String::from_utf8(raw).map_err(|_| SessionError {
+                message: format!("bind parameter ${} contains invalid UTF-8 text", index + 1),
+            })?;
+            parse_text_bind_parameter(index, text, type_oid)?
+        }
         1 => decode_binary_bind_parameter(index, &raw, type_oid)?,
         other => {
             return Err(SessionError {
@@ -298,14 +305,81 @@ fn decode_binary_bind_parameter(
     index: usize,
     raw: &[u8],
     type_oid: PgType,
-) -> Result<String, SessionError> {
+) -> Result<ScalarValue, SessionError> {
     if type_oid == 0 {
-        return String::from_utf8(raw.to_vec()).map_err(|_| SessionError {
-            message: format!(
-                "bind parameter ${} has binary format but unknown type",
-                index + 1
-            ),
-        });
+        return String::from_utf8(raw.to_vec())
+            .map(ScalarValue::Text)
+            .map_err(|_| SessionError {
+                message: format!(
+                    "bind parameter ${} has binary format but unknown type",
+                    index + 1
+                ),
+            });
     }
-    Ok(decode_binary_scalar(raw, type_oid, "bind parameter")?.render())
+    decode_binary_scalar(raw, type_oid, "bind parameter")
+}
+
+/// Parse a text-format bind parameter into a typed `ScalarValue`. The
+/// declared parameter type OID drives which PG text form to expect; when
+/// the OID is 0 (unknown — client skipped declaring parameter types) the
+/// value falls back to the earlier bool/int/float/text heuristic so that
+/// untyped `$1` placeholders keep working.
+fn parse_text_bind_parameter(
+    index: usize,
+    text: String,
+    type_oid: PgType,
+) -> Result<ScalarValue, SessionError> {
+    let err = |ctx: &str| SessionError {
+        message: format!("bind parameter ${} {ctx}", index + 1),
+    };
+    let trimmed = text.trim();
+    match type_oid {
+        // Integer family. Text form is the decimal string.
+        20 | 21 | 23 | 24 | 26 => trimmed
+            .parse::<i64>()
+            .map(ScalarValue::Int)
+            .map_err(|_| err("integer text is invalid")),
+        // Float family.
+        700 | 701 => trimmed
+            .parse::<f64>()
+            .map(ScalarValue::Float)
+            .map_err(|_| err("float text is invalid")),
+        // Booleans accept t/f, true/false (any case), 1/0.
+        16 => match trimmed.to_ascii_lowercase().as_str() {
+            "t" | "true" | "1" => Ok(ScalarValue::Bool(true)),
+            "f" | "false" | "0" => Ok(ScalarValue::Bool(false)),
+            _ => Err(err("boolean text is invalid")),
+        },
+        // Numeric: keep precision via rust_decimal.
+        1700 => trimmed
+            .parse::<rust_decimal::Decimal>()
+            .map(ScalarValue::Numeric)
+            .map_err(|_| err("numeric text is invalid")),
+        // Text-like types: the wire form is already the text. Keep the raw
+        // string (not the trimmed form) so whitespace semantics survive.
+        25 | 1042 | 1043 | 19 | 114 | 17 | 2950 | 1082 | 1083 | 1114 | 1184 | 1186 | 1266
+        | 3802 => Ok(ScalarValue::Text(text)),
+        // Array types: the text form is `{a,b,c}`. Preserve as Text so the
+        // engine's array-literal path handles parsing — mirrors pre-2.2
+        // behaviour.
+        other if crate::types::element_oid_from_array_oid(other).is_some() => {
+            Ok(ScalarValue::Text(text))
+        }
+        // Unknown or pseudo types: fall back to the heuristic parse.
+        _ => {
+            if trimmed.eq_ignore_ascii_case("true") {
+                return Ok(ScalarValue::Bool(true));
+            }
+            if trimmed.eq_ignore_ascii_case("false") {
+                return Ok(ScalarValue::Bool(false));
+            }
+            if let Ok(v) = trimmed.parse::<i64>() {
+                return Ok(ScalarValue::Int(v));
+            }
+            if let Ok(v) = trimmed.parse::<f64>() {
+                return Ok(ScalarValue::Float(v));
+            }
+            Ok(ScalarValue::Text(text))
+        }
+    }
 }

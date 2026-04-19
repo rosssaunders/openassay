@@ -6,7 +6,7 @@ pub(super) async fn execute_set_operation(
     op: SetOperator,
     quantifier: SetQuantifier,
     right: &QueryExpr,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<QueryResult, EngineError> {
     let left_res = execute_query_expr_with_outer(left, params, outer_scope).await?;

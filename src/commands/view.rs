@@ -3,11 +3,12 @@ use crate::commands::create_table::relation_name_for_create;
 use crate::parser::ast::{
     AlterViewAction, AlterViewStatement, CreateViewStatement, DropBehavior, DropViewStatement,
 };
+use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{EngineError, QueryResult, with_storage_write};
 
 pub async fn execute_create_view(
     create: &CreateViewStatement,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<QueryResult, EngineError> {
     execute_create_view_internal(create, params).await
 }
@@ -22,7 +23,7 @@ pub async fn execute_drop_view(drop_view: &DropViewStatement) -> Result<QueryRes
 
 pub(crate) async fn execute_create_view_internal(
     create: &CreateViewStatement,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<QueryResult, EngineError> {
     let (schema_name, view_name) = relation_name_for_create(&create.name)?;
 

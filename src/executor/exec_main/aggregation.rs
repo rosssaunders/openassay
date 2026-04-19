@@ -22,7 +22,7 @@ pub(super) async fn eval_expr_maybe_compiled(
     expr: &Expr,
     compiled: Option<&CompiledExpr>,
     scope: &EvalScope,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<ScalarValue, EngineError> {
     if let Some(compiled) = compiled {
         let _span = profiling::span("compiled_expr_eval");
@@ -37,7 +37,7 @@ pub(super) async fn project_select_row_compiled(
     targets: &[crate::parser::ast::SelectItem],
     compiled_targets: &[Option<CompiledExpr>],
     scope: &EvalScope,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     wildcard_columns: Option<&[ExpandedFromColumn]>,
 ) -> Result<Vec<ScalarValue>, EngineError> {
     let mut row = Vec::new();
@@ -107,7 +107,7 @@ pub(super) async fn project_select_row_with_window(
     row_idx: usize,
     all_rows: &[EvalScope],
     window_definitions: &[crate::parser::ast::WindowDefinition],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     wildcard_columns: Option<&[ExpandedFromColumn]>,
 ) -> Result<Vec<ScalarValue>, EngineError> {
     let mut row = Vec::new();
@@ -497,7 +497,7 @@ pub(super) fn eval_group_expr<'a>(
     expr: &'a Expr,
     group_rows: &'a [EvalScope],
     representative: &'a EvalScope,
-    params: &'a [Option<String>],
+    params: &'a [Option<ScalarValue>],
     grouping: &'a GroupingContext,
 ) -> EngineFuture<'a, Result<ScalarValue, EngineError>> {
     Box::pin(async move {
@@ -837,7 +837,7 @@ pub(super) async fn build_aggregate_input_rows(
     order_by: &[OrderByExpr],
     filter: Option<&Expr>,
     group_rows: &[EvalScope],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Vec<AggregateInputRow>, EngineError> {
     let mut out = Vec::with_capacity(group_rows.len());
     for scope in group_rows {
@@ -1099,7 +1099,7 @@ pub async fn eval_aggregate_function(
     within_group: &[OrderByExpr],
     filter: Option<&Expr>,
     group_rows: &[EvalScope],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<ScalarValue, EngineError> {
     let is_ordered_set = matches!(fn_name, "percentile_cont" | "percentile_disc" | "mode");
     if !within_group.is_empty() && !is_ordered_set {

@@ -23,7 +23,7 @@ fn with_isolated_state<T>(f: impl FnOnce() -> T) -> T {
     })
 }
 
-fn run_statement(sql: &str, params: &[Option<String>]) -> QueryResult {
+fn run_statement(sql: &str, params: &[Option<ScalarValue>]) -> QueryResult {
     let statement = parse_statement(sql).expect("statement should parse");
     let planned = plan_statement(statement).expect("statement should plan");
     block_on(execute_planned_query(&planned, params)).expect("query should execute")
@@ -184,7 +184,8 @@ fn executes_simple_heap_projection_filter_limit_shape() {
 
 #[test]
 fn executes_parameterized_expression() {
-    let result = with_isolated_state(|| run_statement("SELECT $1 + 5", &[Some("7".to_string())]));
+    let result =
+        with_isolated_state(|| run_statement("SELECT $1 + 5", &[Some(ScalarValue::Int(7))]));
     assert_eq!(result.rows[0], vec![ScalarValue::Int(12)]);
 }
 

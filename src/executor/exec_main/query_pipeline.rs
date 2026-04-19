@@ -21,14 +21,14 @@ use std::collections::BTreeSet;
 
 pub async fn execute_query(
     query: &Query,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<QueryResult, EngineError> {
     execute_query_with_outer(query, params, None).await
 }
 
 pub fn execute_query_with_outer<'a>(
     query: &'a Query,
-    params: &'a [Option<String>],
+    params: &'a [Option<ScalarValue>],
     outer_scope: Option<&'a EvalScope>,
 ) -> EngineFuture<'a, Result<QueryResult, EngineError>> {
     Box::pin(async move {
@@ -146,7 +146,7 @@ pub(super) const MAX_RECURSIVE_CTE_ITERATIONS: usize = 2_048;
 
 pub(super) async fn evaluate_recursive_cte_binding(
     cte: &crate::parser::ast::CommonTableExpr,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
     inherited_ctes: &HashMap<String, CteBinding>,
 ) -> Result<CteBinding, EngineError> {
@@ -268,7 +268,7 @@ pub(super) async fn evaluate_recursive_cte_binding(
 
 pub(super) fn execute_query_expr_with_outer<'a>(
     expr: &'a QueryExpr,
-    params: &'a [Option<String>],
+    params: &'a [Option<ScalarValue>],
     outer_scope: Option<&'a EvalScope>,
 ) -> EngineFuture<'a, Result<QueryResult, EngineError>> {
     Box::pin(async move {
@@ -309,7 +309,7 @@ pub(super) fn execute_query_expr_with_outer<'a>(
 
 pub(super) async fn execute_values(
     rows: &[Vec<Expr>],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<QueryResult, EngineError> {
     // Execute VALUES query - return all rows with column names column1, column2, etc.
@@ -602,7 +602,7 @@ fn schema_batch_for_table(table: &crate::catalog::Table) -> ColumnBatch {
 async fn prepare_columnar_relation_scan(
     rel: &TableRef,
     relation_predicates: &[Expr],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Option<ColumnarRelationScanPlan>, EngineError> {
     let resolved_table = with_catalog_read(|catalog| {
         catalog
@@ -658,7 +658,7 @@ async fn prepare_columnar_relation_scan(
 
 async fn stage_limit_spec(
     query: Option<&Query>,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Option<StageLimitSpec>, EngineError> {
     let Some(query) = query else {
         return Ok(None);
@@ -1131,7 +1131,7 @@ fn columnar_group_key_indices(plan: &ColumnarAggPlan, base_column_count: usize) 
 async fn append_derived_group_key_columns(
     plan: &ColumnarAggPlan,
     batch: ColumnBatch,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<ColumnBatch, EngineError> {
     let mut batch = batch;
     for (group_idx, source) in plan.group_key_sources.iter().enumerate() {
@@ -1481,7 +1481,7 @@ fn classify_simple_like_scan_predicate(
 async fn try_execute_simple_columnar_select(
     select: &SelectStatement,
     query: Option<&Query>,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     rel: &TableRef,
     relation_predicates: &[Expr],
     columns: &[String],
@@ -2004,7 +2004,7 @@ async fn try_execute_simple_columnar_select(
 async fn try_execute_columnar_aggregation(
     select: &SelectStatement,
     query: Option<&Query>,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     rel: &TableRef,
     relation_predicates: &[Expr],
     columns: &[String],
@@ -2177,7 +2177,7 @@ async fn try_execute_columnar_aggregation(
 async fn plan_columnar_window_targets(
     select: &SelectStatement,
     batch: &ColumnBatch,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Option<Vec<ColumnarWindowTargetPlan>>, EngineError> {
     let mut targets = Vec::with_capacity(select.targets.len());
     for target in &select.targets {
@@ -2297,7 +2297,7 @@ async fn plan_columnar_window_targets(
 async fn try_execute_columnar_windows(
     select: &SelectStatement,
     query: Option<&Query>,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     rel: &TableRef,
     relation_predicates: &[Expr],
     columns: &[String],
@@ -2396,7 +2396,7 @@ async fn try_execute_columnar_windows(
 
 pub(super) async fn execute_select(
     select: &SelectStatement,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<QueryResult, EngineError> {
     execute_select_internal(select, None, params, outer_scope).await
@@ -2405,7 +2405,7 @@ pub(super) async fn execute_select(
 async fn execute_select_with_query(
     select: &SelectStatement,
     query: &Query,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<QueryResult, EngineError> {
     execute_select_internal(select, Some(query), params, outer_scope).await
@@ -2610,7 +2610,7 @@ async fn try_execute_simple_column_aggregates(
 async fn try_execute_simple_grouped_column_aggregates(
     select: &SelectStatement,
     query: Option<&Query>,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
     columns: &[String],
 ) -> Result<Option<QueryResult>, EngineError> {
@@ -2752,7 +2752,7 @@ async fn try_execute_simple_grouped_column_aggregates(
 async fn try_execute_simple_count_star(
     select: &SelectStatement,
     query: Option<&Query>,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
     columns: &[String],
 ) -> Result<Option<QueryResult>, EngineError> {
@@ -2893,7 +2893,7 @@ async fn try_execute_simple_count_star(
 async fn execute_select_internal(
     select: &SelectStatement,
     query: Option<&Query>,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<QueryResult, EngineError> {
     let _span = profiling::span("execute_select_internal");

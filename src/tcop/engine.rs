@@ -287,7 +287,7 @@ pub fn plan_statement(statement: Statement) -> Result<PlannedQuery, EngineError>
 
 pub fn execute_planned_query<'a>(
     plan: &'a PlannedQuery,
-    params: &'a [Option<String>],
+    params: &'a [Option<ScalarValue>],
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<QueryResult, EngineError>> + 'a>> {
     Box::pin(async move {
         let result = match &plan.plan {
@@ -1167,7 +1167,7 @@ pub(crate) async fn relation_row_visible_for_command(
     table: &crate::catalog::Table,
     row: &[ScalarValue],
     command: RlsCommand,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<bool, EngineError> {
     let role = security::current_role();
     let eval = security::rls_evaluation_for_role(&role, table.oid(), command);
@@ -1194,7 +1194,7 @@ async fn relation_row_passes_check_for_command(
     table: &crate::catalog::Table,
     row: &[ScalarValue],
     command: RlsCommand,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<bool, EngineError> {
     let role = security::current_role();
     let eval = security::rls_evaluation_for_role(&role, table.oid(), command);
@@ -1231,7 +1231,7 @@ enum IndexMutationAction {
 
 async fn execute_insert(
     insert: &InsertStatement,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<QueryResult, EngineError> {
     let table = with_catalog_read(|catalog| {
         catalog
@@ -1578,7 +1578,7 @@ async fn execute_insert(
 
 async fn execute_update(
     update: &UpdateStatement,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<QueryResult, EngineError> {
     let table = with_catalog_read(|catalog| {
         catalog
@@ -1798,7 +1798,7 @@ async fn execute_update(
 
 async fn execute_delete(
     delete: &DeleteStatement,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<QueryResult, EngineError> {
     let table = with_catalog_read(|catalog| {
         catalog
@@ -1939,7 +1939,7 @@ async fn execute_delete(
 
 async fn execute_merge(
     merge: &MergeStatement,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<QueryResult, EngineError> {
     let table = with_catalog_read(|catalog| {
         catalog
@@ -2609,7 +2609,7 @@ async fn eval_update_assignment_value(
     expr: &Expr,
     column: &Column,
     scope: &EvalScope,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<ScalarValue, EngineError> {
     let raw = if matches!(expr, Expr::Default) {
         if let Some(default_expr) = column.default() {

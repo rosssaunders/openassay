@@ -69,7 +69,7 @@ fn acquire_refresh_execution_guard(
 
 pub async fn execute_create_materialized_view(
     create: &CreateViewStatement,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<QueryResult, EngineError> {
     crate::commands::view::execute_create_view_internal(create, params).await
 }
@@ -88,7 +88,7 @@ pub async fn execute_drop_materialized_view(
 
 pub async fn execute_refresh_materialized_view(
     refresh: &RefreshMaterializedViewStatement,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<QueryResult, EngineError> {
     let relation = with_catalog_read(|catalog| {
         catalog
@@ -161,7 +161,7 @@ pub async fn execute_refresh_materialized_view(
 async fn evaluate_materialized_view_rows_live(
     relation: &crate::catalog::Table,
     with_data: bool,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Vec<Vec<ScalarValue>>, EngineError> {
     if !with_data {
         return Ok(Vec::new());
@@ -180,7 +180,7 @@ async fn evaluate_materialized_view_rows_live(
 async fn evaluate_materialized_view_rows_concurrently(
     relation: &crate::catalog::Table,
     with_data: bool,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Vec<Vec<ScalarValue>>, EngineError> {
     let baseline = crate::tcop::engine::snapshot_state();
     let evaluated = evaluate_materialized_view_rows_live(relation, with_data, params).await;

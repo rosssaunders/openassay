@@ -627,7 +627,7 @@ pub async fn scan_iceberg_table_with_predicate(
     path: &str,
     predicate: Option<&Expr>,
     qualifiers: &[String],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<IcebergScanPlan, EngineError> {
     let resolved = resolve_iceberg_table(path).await.map_err(to_engine_error)?;
     let partition_fields = resolved
@@ -672,7 +672,7 @@ pub fn extract_partition_predicates(
     predicate: &Expr,
     qualifiers: &[String],
     partition_fields: &[IcebergSchemaField],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Vec<IcebergPartitionPredicate>, EngineError> {
     let partition_lookup = partition_fields
         .iter()
@@ -1366,7 +1366,7 @@ fn extract_single_partition_predicate(
     expr: &Expr,
     qualifiers: &[String],
     partition_lookup: &HashMap<String, IcebergSchemaField>,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Option<IcebergPartitionPredicate>, EngineError> {
     match expr {
         Expr::Binary { left, op, right } => {
@@ -1441,7 +1441,7 @@ fn extract_partition_column_and_value(
     right: &Expr,
     qualifiers: &[String],
     partition_lookup: &HashMap<String, IcebergSchemaField>,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Option<(String, IcebergSchemaField, ScalarValue, bool)>, EngineError> {
     if let Some((column, field)) = extract_partition_column(left, qualifiers, partition_lookup) {
         let value = eval_constant_scalar(right, params)?;
@@ -1485,7 +1485,7 @@ fn extract_partition_column(
 
 fn eval_constant_scalar(
     expr: &Expr,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<ScalarValue, EngineError> {
     match expr {
         Expr::Null => Ok(ScalarValue::Null),
@@ -1515,7 +1515,7 @@ fn eval_constant_scalar(
         Expr::Parameter(index) => params
             .get(index.saturating_sub(1) as usize)
             .and_then(Option::as_ref)
-            .map(|value| ScalarValue::Text(value.clone()))
+            .cloned()
             .ok_or_else(|| EngineError {
                 message: format!("missing value for parameter ${index}"),
             }),

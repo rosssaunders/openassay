@@ -75,7 +75,10 @@ struct TopNKeyPart {
 }
 
 impl QueryRowCollector {
-    pub(super) async fn new(query: &Query, params: &[Option<String>]) -> Result<Self, EngineError> {
+    pub(super) async fn new(
+        query: &Query,
+        params: &[Option<ScalarValue>],
+    ) -> Result<Self, EngineError> {
         let offset = if let Some(expr) = &query.offset {
             parse_non_negative_int(
                 &eval_expr(expr, &EvalScope::default(), params).await?,
@@ -123,7 +126,7 @@ impl QueryRowCollector {
         &mut self,
         columns: &[String],
         row: Vec<ScalarValue>,
-        params: &[Option<String>],
+        params: &[Option<ScalarValue>],
     ) -> Result<bool, EngineError> {
         let _span = profiling::span("query_row_collector_push_row");
         match &mut self.strategy {
@@ -218,7 +221,7 @@ impl SimpleTopNCollector {
     pub(super) async fn new(
         query: &Query,
         columns: &[String],
-        params: &[Option<String>],
+        params: &[Option<ScalarValue>],
     ) -> Result<Option<Self>, EngineError> {
         if query.order_by.is_empty() {
             return Ok(None);
@@ -337,7 +340,7 @@ impl OffsetTopNCollector {
     pub(super) async fn new(
         query: &Query,
         columns: &[String],
-        params: &[Option<String>],
+        params: &[Option<ScalarValue>],
     ) -> Result<Option<Self>, EngineError> {
         let Some(base) = SimpleTopNCollector::new(query, columns, params).await? else {
             return Ok(None);
@@ -576,7 +579,7 @@ async fn resolve_order_keys(
     order_by: &[OrderByExpr],
     columns: &[String],
     row: &[ScalarValue],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Vec<ScalarValue>, EngineError> {
     let _span = profiling::span("resolve_order_keys");
     let scope = EvalScope::from_output_row(columns, row);
@@ -680,7 +683,7 @@ pub(super) fn augment_select_for_order_by(body: &QueryExpr, extras: &[Expr]) -> 
 pub(super) async fn apply_order_by(
     result: &mut QueryResult,
     query: &Query,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<(), EngineError> {
     if query.order_by.is_empty() || result.rows.is_empty() {
         return Ok(());
@@ -740,7 +743,7 @@ pub(super) async fn resolve_order_key(
     scope: &EvalScope,
     columns: &[String],
     row: &[ScalarValue],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<ScalarValue, EngineError> {
     if let Expr::Integer(pos) = expr
         && *pos > 0
@@ -785,7 +788,7 @@ pub(super) async fn resolve_order_key(
 pub(super) async fn apply_offset_limit(
     result: &mut QueryResult,
     query: &Query,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<(), EngineError> {
     let offset = if let Some(expr) = &query.offset {
         parse_non_negative_int(

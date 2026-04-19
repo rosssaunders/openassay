@@ -5,11 +5,12 @@ use crate::commands::{
     schema, sequence, trigger, typecmd, variable, view,
 };
 use crate::parser::ast::Statement;
+use crate::storage::tuple::ScalarValue;
 use crate::tcop::engine::{EngineError, QueryResult};
 
 pub async fn execute_utility_statement(
     statement: &Statement,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<QueryResult, EngineError> {
     match statement {
         Statement::CreateTable(create) => create_table::execute_create_table(create).await,
