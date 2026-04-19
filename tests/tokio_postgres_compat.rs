@@ -917,6 +917,83 @@ async fn listen_notify_delivers_notification_on_same_session() {
     let _ = conn_task.await;
 }
 
+/// Phase 7.1 probe: tokio-postgres `COPY FROM STDIN` flow. Reported by
+/// the original testkit audit as "unexpected message from server".
+/// Gated with `#[ignore]` because concurrent tokio_postgres_compat tests
+/// share the engine's process-global catalog and race on CREATE-table
+/// visibility (Phase 3.1 in the plan is the long-term fix — per-database
+/// catalog isolation). The protocol-level fix this test exercises is
+/// pinned deterministically by the lib-level test
+/// `copy_from_stdin_via_extended_protocol_does_not_lose_copy_state` in
+/// `src/tcop/postgres/tests.rs`. Run manually with
+/// `cargo test --test tokio_postgres_compat copy_from_stdin -- --ignored`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "catalog-global race under concurrent integration tests; see lib-level regression test"]
+async fn copy_from_stdin_text_delivers_rows() {
+    use bytes::Bytes;
+    use futures_util::SinkExt;
+
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let table = format!(
+        "c_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    client
+        .batch_execute(&format!("CREATE TABLE {table} (id int4, label text);"))
+        .await
+        .expect("setup");
+
+    // The engine's catalog is process-global; concurrent
+    // tokio_postgres_compat sessions occasionally race on the freshly-
+    // created table being visible to another session's planner. Retry the
+    // copy_in a few times on `relation does not exist` — orthogonal to
+    // the protocol-level behaviour this test pins. See
+    // TESTKIT_FULL_FIX_PLAN.md Phase 3.1 for the per-database catalog
+    // isolation that would make this retry unnecessary.
+    let sink = {
+        let mut last_err: Option<tokio_postgres::Error> = None;
+        let mut attempt = None;
+        for _ in 0..10 {
+            match client.copy_in(&format!("COPY {table} FROM STDIN")).await {
+                Ok(sink) => {
+                    attempt = Some(sink);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+        }
+        attempt.unwrap_or_else(|| panic!("copy_in: {:?}", last_err.unwrap()))
+    };
+    let mut pinned = std::pin::pin!(sink);
+    pinned
+        .send(Bytes::from_static(b"1\talpha\n2\tbeta\n3\tgamma\n"))
+        .await
+        .expect("send");
+    let rows = pinned.finish().await.expect("finish");
+    // Before this PR the test panicked here with `UnexpectedMessage`
+    // because Sync during COPY IN wrongly cleared the server's
+    // copy_in_state and emitted a spurious ReadyForQuery. Now the
+    // protocol-level handshake completes and we see the correct
+    // `rows` count.
+    assert_eq!(rows, 3, "COPY should report 3 rows inserted");
+    // Row-verification via a follow-up SELECT is deliberately omitted:
+    // concurrent tokio_postgres_compat tests share the engine's
+    // process-global catalog, and a SELECT count(*) can race with other
+    // tests' CREATE/INSERT activity producing transient mismatches. The
+    // correctness signal this test exists to guard — that tokio-postgres
+    // COPY FROM STDIN no longer panics with UnexpectedMessage — is the
+    // `finish()` result above. Full end-to-end row delivery is exercised
+    // by lib-level tests using `with_isolated_state`.
+}
+
 /// Phase 2.2: a NULL bind parameter surfaces as NULL in the result row.
 /// The typed-params refactor changed how NULL flows (Option<String> None →
 /// Option<ScalarValue> None); this pins that NULL passthrough works.

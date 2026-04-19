@@ -89,6 +89,8 @@ tokio-postgres = { workspace = true, features = ["with-uuid-1", "with-chrono-0_4
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid = "1"
 chrono = "0.4"
+futures-util = "0.3"
+bytes = "1"
 
 [[bench]]
 name = "engine_bench"
