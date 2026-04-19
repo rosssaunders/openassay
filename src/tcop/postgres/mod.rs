@@ -1646,11 +1646,39 @@ fn classify_sqlstate_error_fields(
     if lower.contains("privilege") || lower.contains("permission denied") {
         return ("42501".to_string(), None, None, None);
     }
-    if lower.contains("duplicate value for key") {
+    if lower.contains("duplicate value for key") || lower.contains("violates unique") {
         return ("23505".to_string(), None, None, None);
     }
-    if lower.contains("does not allow null values") {
+    if lower.contains("does not allow null values") || lower.contains("violates not-null") {
         return ("23502".to_string(), None, None, None);
+    }
+    if lower.contains("violates foreign key") {
+        return ("23503".to_string(), None, None, None);
+    }
+    if lower.contains("violates check") {
+        return ("23514".to_string(), None, None, None);
+    }
+    // Type-parse failures — tokio-postgres inspects SQLSTATE to decide whether
+    // to surface "invalid text representation" (22P02) vs "numeric out of
+    // range" (22003) distinctly from generic XX000.
+    if lower.contains("invalid input syntax") || lower.contains("is invalid") {
+        return ("22P02".to_string(), None, None, None);
+    }
+    if lower.contains("out of range") {
+        return ("22003".to_string(), None, None, None);
+    }
+    if lower.contains("cannot cast") || lower.contains("incompatible type") {
+        return ("42804".to_string(), None, None, None);
+    }
+    if lower.contains("database") && lower.contains("in use") {
+        return ("55006".to_string(), None, None, None);
+    }
+    if lower.contains("database")
+        && (lower.contains("does not exist") || lower.contains("not found"))
+    {
+        // Checked before the generic "does not exist" branches below so we
+        // emit the catalog-scoped code.
+        return ("3D000".to_string(), None, None, None);
     }
     if lower.contains("already exists") {
         if lower.contains("relation")
