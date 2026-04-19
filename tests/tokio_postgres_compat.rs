@@ -711,6 +711,29 @@ async fn text_array_decodes_as_vec_string() {
     assert_eq!(decoded, vec!["alpha".to_string(), "beta".to_string()]);
 }
 
+/// Phase 2 follow-up: integer binary operators preserve the wider operand
+/// width instead of blindly widening to int8. Before, every `int4 + int4`
+/// surfaced as int8 (OID 20), which caused sqlx to reject a Vec<i32>
+/// result column when running trivial arithmetic.
+#[tokio::test(flavor = "multi_thread")]
+async fn int_binary_op_result_preserves_max_width() {
+    let port = spawn_server();
+    let client = connect(port).await;
+    for (sql, expected) in [
+        ("SELECT 1::int4 + 2::int4", 23), // int4 + int4 → int4
+        ("SELECT 1::int2 + 2::int2", 21), // int2 + int2 → int2
+        ("SELECT 1::int2 + 2::int4", 23), // max-width mix
+        ("SELECT 1::int4 * 2::int8", 20), // int8 wins
+    ] {
+        let stmt = client.prepare(sql).await.expect("prepare");
+        assert_eq!(
+            stmt.columns()[0].type_().oid(),
+            expected,
+            "{sql} should surface with OID {expected}"
+        );
+    }
+}
+
 /// Phase 2 follow-up: `ARRAY[x::uuid]` must surface as uuid[] (OID 2951),
 /// not text[] (1009). Before the typer fix, the element CAST collapsed at
 /// the array constructor and the encoder was unreachable for uuid[].
