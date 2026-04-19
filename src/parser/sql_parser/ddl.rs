@@ -1975,7 +1975,7 @@ impl Parser {
                 };
                 return Ok(TypeName::Array(Box::new(inner_ty)));
             }
-            _other => TypeName::Text,
+            _other => TypeName::User(vec![base.clone()]),
         };
 
         // Parse vector(dim) modifier; ignore other type modifiers like varchar(255).

@@ -258,6 +258,11 @@ pub enum TypeName {
     Array(Box<Self>), // e.g. int4[], text[][]
     Vector(Option<usize>),
     Name, // PostgreSQL name type (63-byte identifier)
+    /// User-declared type referenced by name (enum/composite/range).
+    /// Resolved to a concrete SqlType at analysis time via ExtensionState
+    /// lookup. Unknown names fall back to SqlType::Text for backwards
+    /// compatibility with the parser's historical permissive behaviour.
+    User(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

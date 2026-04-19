@@ -2298,6 +2298,7 @@ fn type_name_to_decl_string(type_name: &TypeName) -> String {
         }
         TypeName::Array(inner) => format!("{}[]", type_name_to_decl_string(inner)),
         TypeName::Name => "name".to_string(),
+        TypeName::User(parts) => parts.join("."),
     }
 }
 
