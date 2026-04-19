@@ -17,7 +17,7 @@ use crate::parser::ast::{
     ConflictTarget, CreateFunctionStatement, DeleteStatement, Expr, ForeignKeyAction,
     FunctionParam, FunctionParamMode, FunctionReturnType, InsertSource, InsertStatement,
     MergeStatement, MergeWhenClause, OnConflictClause, Statement, TableConstraint, TriggerEvent,
-    TriggerTiming, UpdateStatement,
+    TriggerTiming, TypeName, UpdateStatement,
 };
 use crate::planner::{self, PlanNode};
 use crate::security::{self, RlsCommand, TablePrivilege};
@@ -851,13 +851,12 @@ pub(crate) fn sync_wasm_ws_state(conn_id: i64) {
     }
 }
 
-// TODO(#79): UserEnumType metadata is stored but never read back for type dispatch.
-// The proxy does not yet use this information to handle user-defined enum types in
-// query results. Implement a read path or remove the scaffolding when enum support
-// is prioritized.
+// User-defined enum type. `oid` is the pg_type.oid reflected in pg_catalog.pg_type
+// (typtype='e') and pg_catalog.pg_enum (enumtypid).
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) struct UserEnumType {
+    pub(crate) oid: Oid,
     pub(crate) name: Vec<String>,
     pub(crate) labels: Vec<String>,
 }
@@ -873,16 +872,16 @@ pub(crate) struct UserDomain {
     pub(crate) base_type: String,
 }
 
-// TODO(#169): UserCompositeType metadata is stored but never reflected in the
-// catalog. CREATE TYPE ... AS (col1 type, ...) is parsed and recorded here, but
-// pg_type / pg_class / pg_attribute reflection is the follow-up that makes the
-// type visible to introspection. The read path is also not yet wired into type
-// dispatch.
+// User-defined composite type. `oid` is the pg_type.oid; `class_oid` is the
+// pg_class.oid that backs the composite (typrelid in pg_type, attrelid in
+// pg_attribute). PG allocates them as separate OIDs.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) struct UserCompositeType {
+    pub(crate) oid: Oid,
+    pub(crate) class_oid: Oid,
     pub(crate) name: Vec<String>,
-    pub(crate) attributes: Vec<(String, String)>,
+    pub(crate) attributes: Vec<(String, TypeName)>,
 }
 
 #[derive(Debug, Clone, Default)]

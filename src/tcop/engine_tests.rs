@@ -5793,12 +5793,19 @@ fn creates_composite_type_stores_metadata() {
                 .map(|(n, _)| n.as_str())
                 .collect();
             assert_eq!(attr_names, vec!["street", "city", "zip"]);
-            let attr_types: Vec<&str> = composite
+            let attr_types: Vec<crate::parser::ast::TypeName> = composite
                 .attributes
                 .iter()
-                .map(|(_, t)| t.as_str())
+                .map(|(_, t)| t.clone())
                 .collect();
-            assert_eq!(attr_types, vec!["text", "text", "int4"]);
+            assert_eq!(
+                attr_types,
+                vec![
+                    crate::parser::ast::TypeName::Text,
+                    crate::parser::ast::TypeName::Text,
+                    crate::parser::ast::TypeName::Int4,
+                ]
+            );
         });
 
         let drop_result = run_statement("DROP TYPE address", &[]);
@@ -5869,6 +5876,77 @@ fn empty_composite_type_rejected_at_parse() {
     let err = parse_statement("CREATE TYPE empty AS ()")
         .expect_err("empty composite should fail to parse");
     let _ = err;
+}
+
+#[test]
+fn composite_type_reflects_in_pg_type_and_pg_attribute() {
+    with_isolated_state(|| {
+        run_statement("CREATE TYPE addr AS (street TEXT, zip INT)", &[]);
+
+        let result = run_statement(
+            "SELECT typname, typtype FROM pg_catalog.pg_type WHERE typname = 'addr'",
+            &[],
+        );
+        assert_eq!(result.rows.len(), 1, "expected 1 pg_type row for addr");
+        assert_eq!(result.rows[0][0], ScalarValue::Text("addr".to_string()));
+        assert_eq!(result.rows[0][1], ScalarValue::Text("c".to_string()));
+
+        let typrelid_row = run_statement(
+            "SELECT typrelid FROM pg_catalog.pg_type WHERE typname = 'addr'",
+            &[],
+        );
+        let ScalarValue::Int(typrelid) = typrelid_row.rows[0][0] else {
+            panic!("typrelid should be int");
+        };
+        assert!(typrelid > 0, "composite typrelid should be non-zero");
+
+        let attrs = run_statement(
+            &format!(
+                "SELECT attname, atttypid FROM pg_catalog.pg_attribute WHERE attrelid = {} ORDER BY attnum",
+                typrelid
+            ),
+            &[],
+        );
+        assert_eq!(attrs.rows.len(), 2);
+        assert_eq!(attrs.rows[0][0], ScalarValue::Text("street".to_string()));
+        assert_eq!(attrs.rows[0][1], ScalarValue::Int(25)); // text
+        assert_eq!(attrs.rows[1][0], ScalarValue::Text("zip".to_string()));
+        assert_eq!(attrs.rows[1][1], ScalarValue::Int(23)); // int4
+    });
+}
+
+#[test]
+fn enum_type_reflects_in_pg_type_and_pg_enum() {
+    with_isolated_state(|| {
+        run_statement("CREATE TYPE mood AS ENUM ('happy', 'sad')", &[]);
+
+        let result = run_statement(
+            "SELECT typname, typtype FROM pg_catalog.pg_type WHERE typname = 'mood'",
+            &[],
+        );
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], ScalarValue::Text("mood".to_string()));
+        assert_eq!(result.rows[0][1], ScalarValue::Text("e".to_string()));
+
+        let oid_row = run_statement(
+            "SELECT oid FROM pg_catalog.pg_type WHERE typname = 'mood'",
+            &[],
+        );
+        let ScalarValue::Int(oid) = oid_row.rows[0][0] else {
+            panic!("oid should be int");
+        };
+
+        let labels = run_statement(
+            &format!(
+                "SELECT enumlabel FROM pg_catalog.pg_enum WHERE enumtypid = {} ORDER BY enumsortorder",
+                oid
+            ),
+            &[],
+        );
+        assert_eq!(labels.rows.len(), 2);
+        assert_eq!(labels.rows[0][0], ScalarValue::Text("happy".to_string()));
+        assert_eq!(labels.rows[1][0], ScalarValue::Text("sad".to_string()));
+    });
 }
 
 #[test]

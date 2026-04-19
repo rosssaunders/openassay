@@ -1,3 +1,4 @@
+use crate::catalog::with_catalog_write;
 use crate::parser::ast::{
     CreateCastStatement, CreateDomainStatement, CreateTypeStatement, DropDomainStatement,
     DropTypeStatement,
@@ -16,15 +17,32 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
     let normalized_name: Vec<String> = create.name.clone();
 
     if !create.as_composite.is_empty() {
-        let attributes: Vec<(String, String)> = create
+        // Reject duplicates before allocating OIDs so failed CREATEs don't
+        // burn OID space.
+        with_ext_write(|ext| {
+            if name_exists(ext, &normalized_name) {
+                Err(EngineError {
+                    message: format!("type \"{}\" already exists", create.name.join(".")),
+                })
+            } else {
+                Ok(())
+            }
+        })?;
+
+        let (type_oid, class_oid) = with_catalog_write(|catalog| {
+            let type_oid = catalog
+                .next_oid()
+                .map_err(|e| EngineError { message: e.message })?;
+            let class_oid = catalog
+                .next_oid()
+                .map_err(|e| EngineError { message: e.message })?;
+            Ok::<_, EngineError>((type_oid, class_oid))
+        })?;
+
+        let attributes = create
             .as_composite
             .iter()
-            .map(|attr| {
-                (
-                    attr.name.clone(),
-                    format!("{:?}", attr.data_type).to_ascii_lowercase(),
-                )
-            })
+            .map(|attr| (attr.name.clone(), attr.data_type.clone()))
             .collect();
 
         with_ext_write(|ext| {
@@ -34,6 +52,8 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
                 });
             }
             ext.user_composite_types.push(UserCompositeType {
+                oid: type_oid,
+                class_oid,
                 name: normalized_name,
                 attributes,
             });
@@ -60,11 +80,28 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
 
     with_ext_write(|ext| {
         if name_exists(ext, &normalized_name) {
+            Err(EngineError {
+                message: format!("type \"{}\" already exists", create.name.join(".")),
+            })
+        } else {
+            Ok(())
+        }
+    })?;
+
+    let type_oid = with_catalog_write(|catalog| {
+        catalog
+            .next_oid()
+            .map_err(|e| EngineError { message: e.message })
+    })?;
+
+    with_ext_write(|ext| {
+        if name_exists(ext, &normalized_name) {
             return Err(EngineError {
                 message: format!("type \"{}\" already exists", create.name.join(".")),
             });
         }
         ext.user_types.push(UserEnumType {
+            oid: type_oid,
             name: normalized_name,
             labels: create.as_enum.clone(),
         });

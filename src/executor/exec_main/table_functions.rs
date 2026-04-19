@@ -1475,6 +1475,23 @@ pub(super) fn virtual_relation_rows(
                 }
                 out
             });
+            // Append a pg_class row (relkind='c') for each user-defined
+            // composite type. attrelid / typrelid references these.
+            let composite_classes = with_ext_read(|ext| {
+                ext.user_composite_types
+                    .iter()
+                    .map(|t| {
+                        (
+                            t.class_oid,
+                            t.name.last().cloned().unwrap_or_default(),
+                            PUBLIC_NAMESPACE_OID,
+                            "c".to_string(),
+                            false,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+            entries.extend(composite_classes);
             entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
             Ok(entries
                 .into_iter()
@@ -1513,6 +1530,28 @@ pub(super) fn virtual_relation_rows(
                 }
                 out
             });
+            // Append pg_attribute rows for each composite type's attributes,
+            // keyed by the composite's class_oid. atttypid comes from
+            // sql_type_from_ast(&type_name).oid().
+            let composite_attrs = with_ext_read(|ext| {
+                let mut out = Vec::new();
+                for composite in &ext.user_composite_types {
+                    for (ordinal, (name, type_name)) in composite.attributes.iter().enumerate() {
+                        let atttypid =
+                            crate::commands::create_table::sql_type_from_ast(type_name).oid();
+                        out.push((
+                            composite.class_oid,
+                            ordinal as u16,
+                            name.clone(),
+                            atttypid,
+                            true, // attnotnull: composite attrs are NOT NULL by default in PG
+                            false,
+                        ));
+                    }
+                }
+                out
+            });
+            entries.extend(composite_attrs);
             entries.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
             Ok(entries
                 .into_iter()
@@ -1534,7 +1573,7 @@ pub(super) fn virtual_relation_rows(
         ("pg_catalog", "pg_type") => {
             // Source of truth: src/catalog/builtin_types.rs. Column set and
             // order must match system_catalogs.rs pg_type column defs.
-            Ok(BUILTIN_TYPES
+            let mut rows: Vec<Vec<ScalarValue>> = BUILTIN_TYPES
                 .iter()
                 .map(|t| {
                     vec![
@@ -1569,7 +1608,85 @@ pub(super) fn virtual_relation_rows(
                         ScalarValue::Null,        // typdefault
                     ]
                 })
-                .collect())
+                .collect();
+
+            // Append user-defined enum types (typtype='e', typcategory='E').
+            // Append user-defined composite types (typtype='c', typcategory='C').
+            // typarray=0 is a partial — no auto-created `_foo` array companion.
+            let user_type_rows = with_ext_read(|ext| {
+                let mut out: Vec<Vec<ScalarValue>> = Vec::new();
+                for enum_ty in &ext.user_types {
+                    let name = enum_ty.name.last().cloned().unwrap_or_default();
+                    out.push(vec![
+                        ScalarValue::Int(enum_ty.oid as i64),
+                        ScalarValue::Text(name),
+                        ScalarValue::Int(PUBLIC_NAMESPACE_OID as i64),
+                        ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
+                        ScalarValue::Int(4),     // typlen: enum = 4
+                        ScalarValue::Bool(true), // typbyval
+                        ScalarValue::Text("e".to_string()),
+                        ScalarValue::Text("E".to_string()),
+                        ScalarValue::Bool(false),
+                        ScalarValue::Bool(true),
+                        ScalarValue::Text(",".to_string()),
+                        ScalarValue::Int(0), // typrelid: enums aren't class-backed
+                        ScalarValue::Int(0), // typelem
+                        ScalarValue::Int(0), // typarray: partial — no array companion
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Text("i".to_string()),
+                        ScalarValue::Text("p".to_string()),
+                        ScalarValue::Bool(false),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(-1),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Null,
+                    ]);
+                }
+                for comp in &ext.user_composite_types {
+                    let name = comp.name.last().cloned().unwrap_or_default();
+                    out.push(vec![
+                        ScalarValue::Int(comp.oid as i64),
+                        ScalarValue::Text(name),
+                        ScalarValue::Int(PUBLIC_NAMESPACE_OID as i64),
+                        ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
+                        ScalarValue::Int(-1),     // typlen: composite is varlen
+                        ScalarValue::Bool(false), // typbyval
+                        ScalarValue::Text("c".to_string()),
+                        ScalarValue::Text("C".to_string()),
+                        ScalarValue::Bool(false),
+                        ScalarValue::Bool(true),
+                        ScalarValue::Text(",".to_string()),
+                        ScalarValue::Int(comp.class_oid as i64), // typrelid
+                        ScalarValue::Int(0),                     // typelem
+                        ScalarValue::Int(0),                     // typarray: partial
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Text("d".to_string()),
+                        ScalarValue::Text("x".to_string()),
+                        ScalarValue::Bool(false),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(-1),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Null,
+                    ]);
+                }
+                out
+            });
+            rows.extend(user_type_rows);
+            Ok(rows)
         }
         ("pg_catalog", "pg_range") => Ok(BUILTIN_RANGES
             .iter()
@@ -1586,9 +1703,25 @@ pub(super) fn virtual_relation_rows(
             })
             .collect()),
         ("pg_catalog", "pg_enum") => {
-            // No user-defined enums surfaced yet. When CREATE TYPE ... AS ENUM
-            // lands (Phase 5), populate from catalog.
-            Ok(Vec::new())
+            // Each user-defined enum label gets one pg_enum row. enumsortorder
+            // is 1-based, matching PG's convention. Row-level oid column is a
+            // stable synthetic ordering key (enumtypid * 1000 + label_index);
+            // drivers don't rely on it being real-catalog OIDs.
+            Ok(with_ext_read(|ext| {
+                let mut rows = Vec::new();
+                for enum_ty in &ext.user_types {
+                    for (idx, label) in enum_ty.labels.iter().enumerate() {
+                        let synthetic_oid = (enum_ty.oid as i64) * 1000 + (idx as i64 + 1);
+                        rows.push(vec![
+                            ScalarValue::Int(synthetic_oid),
+                            ScalarValue::Int(enum_ty.oid as i64),
+                            ScalarValue::Int(idx as i64 + 1),
+                            ScalarValue::Text(label.clone()),
+                        ]);
+                    }
+                }
+                rows
+            }))
         }
         ("pg_catalog", "pg_description") => Ok(Vec::new()),
         ("pg_catalog", "pg_operator") => Ok(Vec::new()),
