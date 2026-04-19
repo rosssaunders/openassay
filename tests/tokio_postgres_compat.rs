@@ -662,3 +662,65 @@ async fn time_cast_surfaces_as_oid_1083_and_decodes_binary() {
     let decoded: NaiveTime = row.get(0);
     assert_eq!(decoded, NaiveTime::from_hms_opt(12, 34, 56).unwrap());
 }
+
+/// Phase 2 follow-up: int4[] must surface with OID 1007 and decode as
+/// `Vec<i32>` via tokio-postgres' binary path. tokio-postgres requests
+/// format 1 for Vec<i32> — if our PG array binary layout is wrong the
+/// decode errors instead of silently succeeding.
+#[tokio::test(flavor = "multi_thread")]
+async fn int4_array_decodes_as_vec_i32() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let row = client
+        .query_one("SELECT ARRAY[10, 20, 30]::int4[] AS xs", &[])
+        .await
+        .expect("query");
+    assert_eq!(row.columns()[0].type_().oid(), 1007);
+    let decoded: Vec<i32> = row.get(0);
+    assert_eq!(decoded, vec![10, 20, 30]);
+}
+
+/// Empty-array round-trip via the binary path.
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_int4_array_decodes_as_empty_vec() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let row = client
+        .query_one("SELECT ARRAY[]::int4[] AS xs", &[])
+        .await
+        .expect("query");
+    assert_eq!(row.columns()[0].type_().oid(), 1007);
+    let decoded: Vec<i32> = row.get(0);
+    assert!(decoded.is_empty());
+}
+
+/// text[] round-trips as `Vec<String>`.
+#[tokio::test(flavor = "multi_thread")]
+async fn text_array_decodes_as_vec_string() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let row = client
+        .query_one("SELECT ARRAY['alpha', 'beta']::text[] AS xs", &[])
+        .await
+        .expect("query");
+    assert_eq!(row.columns()[0].type_().oid(), 1009);
+    let decoded: Vec<String> = row.get(0);
+    assert_eq!(decoded, vec!["alpha".to_string(), "beta".to_string()]);
+}
+
+/// NULLs within an int4[] decode as `Option<i32>::None` at the element level.
+#[tokio::test(flavor = "multi_thread")]
+async fn int4_array_with_null_decodes() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let row = client
+        .query_one("SELECT ARRAY[1, NULL, 3]::int4[] AS xs", &[])
+        .await
+        .expect("query");
+    let decoded: Vec<Option<i32>> = row.get(0);
+    assert_eq!(decoded, vec![Some(1), None, Some(3)]);
+}

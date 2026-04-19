@@ -1281,6 +1281,97 @@ fn interval_binary_encode_accepts_hours_over_24() {
 }
 
 #[test]
+fn int4_array_binary_encode_layout() {
+    // Int4[] = [7, 8, 9] — header + 3 length-prefixed int4 payloads.
+    let values = vec![
+        ScalarValue::Int(7),
+        ScalarValue::Int(8),
+        ScalarValue::Int(9),
+    ];
+    let encoded =
+        encode_binary_scalar(&ScalarValue::Array(values), 1007, "a").expect("int4[] encodes");
+    assert_eq!(i32::from_be_bytes(encoded[0..4].try_into().unwrap()), 1); // ndim
+    assert_eq!(i32::from_be_bytes(encoded[4..8].try_into().unwrap()), 0); // dataoffset
+    assert_eq!(u32::from_be_bytes(encoded[8..12].try_into().unwrap()), 23); // int4 oid
+    assert_eq!(i32::from_be_bytes(encoded[12..16].try_into().unwrap()), 3); // dim size
+    assert_eq!(i32::from_be_bytes(encoded[16..20].try_into().unwrap()), 1); // lower_bound
+    // first element: len=4, value=7
+    assert_eq!(i32::from_be_bytes(encoded[20..24].try_into().unwrap()), 4);
+    assert_eq!(i32::from_be_bytes(encoded[24..28].try_into().unwrap()), 7);
+}
+
+#[test]
+fn int4_array_binary_roundtrips_with_nulls() {
+    let values = vec![ScalarValue::Int(1), ScalarValue::Null, ScalarValue::Int(3)];
+    let encoded = encode_binary_scalar(&ScalarValue::Array(values.clone()), 1007, "a").unwrap();
+    let decoded = decode_binary_scalar(&encoded, 1007, "a").unwrap();
+    match decoded {
+        ScalarValue::Array(got) => {
+            assert_eq!(got.len(), 3);
+            assert!(matches!(got[0], ScalarValue::Int(1)));
+            assert!(matches!(got[1], ScalarValue::Null));
+            assert!(matches!(got[2], ScalarValue::Int(3)));
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[test]
+fn text_array_binary_roundtrips() {
+    let values = vec![
+        ScalarValue::Text("hello".to_string()),
+        ScalarValue::Text("world".to_string()),
+    ];
+    let encoded = encode_binary_scalar(&ScalarValue::Array(values.clone()), 1009, "a").unwrap();
+    let decoded = decode_binary_scalar(&encoded, 1009, "a").unwrap();
+    assert_eq!(decoded, ScalarValue::Array(values));
+}
+
+#[test]
+fn empty_int4_array_binary_decodes() {
+    let encoded = encode_binary_scalar(&ScalarValue::Array(Vec::new()), 1007, "a").unwrap();
+    // Header alone = 20 bytes (ndim + dataoffset + oid + dim_size + lower_bound).
+    assert_eq!(encoded.len(), 20);
+    let decoded = decode_binary_scalar(&encoded, 1007, "a").unwrap();
+    assert_eq!(decoded, ScalarValue::Array(Vec::new()));
+}
+
+#[test]
+fn empty_array_with_ndim_zero_is_accepted_on_decode() {
+    // Some PG versions emit ndim=0 for empty arrays. Construct that shape
+    // by hand and make sure the decoder accepts it.
+    let mut raw = Vec::new();
+    raw.extend_from_slice(&0i32.to_be_bytes()); // ndim=0
+    raw.extend_from_slice(&0i32.to_be_bytes()); // dataoffset
+    raw.extend_from_slice(&23u32.to_be_bytes()); // int4 element oid
+    let decoded = decode_binary_scalar(&raw, 1007, "a").unwrap();
+    assert_eq!(decoded, ScalarValue::Array(Vec::new()));
+}
+
+#[test]
+fn multidim_array_binary_decode_is_rejected() {
+    let mut raw = Vec::new();
+    raw.extend_from_slice(&2i32.to_be_bytes()); // ndim=2 — not supported
+    raw.extend_from_slice(&0i32.to_be_bytes());
+    raw.extend_from_slice(&23u32.to_be_bytes());
+    let err = decode_binary_scalar(&raw, 1007, "a");
+    assert!(err.is_err());
+}
+
+#[test]
+fn array_element_oid_mismatch_is_rejected() {
+    // Header says int4 element; decoder was asked for int8[] → reject.
+    let mut raw = Vec::new();
+    raw.extend_from_slice(&1i32.to_be_bytes());
+    raw.extend_from_slice(&0i32.to_be_bytes());
+    raw.extend_from_slice(&23u32.to_be_bytes()); // int4 — but we'll decode as int8[]
+    raw.extend_from_slice(&0i32.to_be_bytes());
+    raw.extend_from_slice(&1i32.to_be_bytes());
+    let err = decode_binary_scalar(&raw, 1016, "a");
+    assert!(err.is_err());
+}
+
+#[test]
 fn interval_binary_encode_rejects_unknown_text_shape() {
     let err = encode_binary_scalar(
         &ScalarValue::Text("3 months, 14 days, 02:30:00".to_string()),
