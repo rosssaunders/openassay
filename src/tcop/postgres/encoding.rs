@@ -174,12 +174,63 @@ pub(super) fn encode_binary_scalar(
             out.extend_from_slice(v.as_bytes());
             Ok(out)
         }
+        // ── 1-D array: header then length-prefixed element payloads.
+        // Multi-dim arrays are intentionally rejected on decode; encoding is
+        // driven by `ScalarValue::Array(Vec<…>)` which is flat by construction.
+        (array_oid, ScalarValue::Array(values))
+            if crate::types::element_oid_from_array_oid(array_oid).is_some() =>
+        {
+            encode_pg_array_binary(array_oid, values, context)
+        }
         // ── NULL: callers use length=-1 framing; payload is empty.
         (_, ScalarValue::Null) => Ok(Vec::new()),
         _ => Err(SessionError {
             message: format!("{context} binary type oid {type_oid} is not supported"),
         }),
     }
+}
+
+/// Build the PG binary array wire payload for a flat (1-D) `ScalarValue::Array`.
+///
+/// Layout (see Postgres `array_send` in src/backend/utils/adt/arrayfuncs.c):
+/// ```text
+///   i32 ndim            number of dimensions (1 here)
+///   i32 dataoffset      0 — NULLs are inline as length=-1, no null bitmap
+///   i32 element_oid     OID of the element type
+///   per-dim:
+///     i32 size            len(values)
+///     i32 lower_bound     1 (PG default)
+///   per-element:
+///     i32 length          -1 for NULL, otherwise byte count
+///     bytes[]             encoded element (recursive encode_binary_scalar)
+/// ```
+fn encode_pg_array_binary(
+    array_oid: PgType,
+    values: &[ScalarValue],
+    context: &str,
+) -> Result<Vec<u8>, SessionError> {
+    let element_oid =
+        crate::types::element_oid_from_array_oid(array_oid).ok_or_else(|| SessionError {
+            message: format!("{context} binary array oid {array_oid} is not supported"),
+        })?;
+    let mut out = Vec::with_capacity(20 + values.len() * 8);
+    out.extend_from_slice(&1i32.to_be_bytes()); // ndim
+    out.extend_from_slice(&0i32.to_be_bytes()); // dataoffset
+    out.extend_from_slice(&element_oid.to_be_bytes());
+    // For empty arrays PG sometimes emits ndim=0 with no dim headers. We
+    // always emit ndim=1 + a zero-length dim; tokio-postgres accepts both.
+    out.extend_from_slice(&(values.len() as i32).to_be_bytes()); // dim size
+    out.extend_from_slice(&1i32.to_be_bytes()); // lower bound
+    for value in values {
+        if matches!(value, ScalarValue::Null) {
+            out.extend_from_slice(&(-1i32).to_be_bytes());
+            continue;
+        }
+        let bytes = encode_binary_scalar(value, element_oid, context)?;
+        out.extend_from_slice(&(bytes.len() as i32).to_be_bytes());
+        out.extend_from_slice(&bytes);
+    }
+    Ok(out)
 }
 
 /// Decode the Postgres bytea text format into raw bytes.
@@ -403,10 +454,99 @@ pub(super) fn decode_binary_scalar(
                 })?,
             ))
         }
+        other if crate::types::element_oid_from_array_oid(other).is_some() => {
+            decode_pg_array_binary(raw, other, context)
+        }
         other => Err(SessionError {
             message: format!("{context} binary type oid {other} is not supported"),
         }),
     }
+}
+
+/// Decode the PG binary array wire format into `ScalarValue::Array`. Only
+/// 1-D arrays are supported — `ndim > 1` is rejected rather than flattened
+/// so callers don't silently lose structure.
+fn decode_pg_array_binary(
+    raw: &[u8],
+    array_oid: PgType,
+    context: &str,
+) -> Result<ScalarValue, SessionError> {
+    if raw.len() < 12 {
+        return Err(SessionError {
+            message: format!("{context} array header truncated"),
+        });
+    }
+    let ndim = i32::from_be_bytes(raw[0..4].try_into().unwrap());
+    // PG sometimes emits ndim=0 for empty arrays; accept that as an empty 1-D.
+    if !(0..=1).contains(&ndim) {
+        return Err(SessionError {
+            message: format!("{context} multi-dim arrays (ndim={ndim}) are not supported yet"),
+        });
+    }
+    // dataoffset at [4..8] — we don't implement null bitmaps; PG normally
+    // writes 0 here. Non-zero means a null bitmap is present, which we skip
+    // because NULLs are always encoded inline as length=-1 on the send side.
+    // Reading a null bitmap here would be incorrect for flat 1-D decoding;
+    // surface an error so we don't silently mis-read.
+    let dataoffset = i32::from_be_bytes(raw[4..8].try_into().unwrap());
+    if dataoffset != 0 {
+        return Err(SessionError {
+            message: format!("{context} array null bitmap is not supported"),
+        });
+    }
+    let element_oid = u32::from_be_bytes(raw[8..12].try_into().unwrap());
+    let expected_element =
+        crate::types::element_oid_from_array_oid(array_oid).ok_or_else(|| SessionError {
+            message: format!("{context} array oid {array_oid} is not supported"),
+        })?;
+    if element_oid != expected_element {
+        return Err(SessionError {
+            message: format!(
+                "{context} array element oid mismatch: header={element_oid}, expected={expected_element}"
+            ),
+        });
+    }
+    if ndim == 0 {
+        return Ok(ScalarValue::Array(Vec::new()));
+    }
+    if raw.len() < 20 {
+        return Err(SessionError {
+            message: format!("{context} array dim header truncated"),
+        });
+    }
+    let dim_size = i32::from_be_bytes(raw[12..16].try_into().unwrap());
+    // lower_bound at [16..20] — we don't propagate it because ScalarValue::Array
+    // is always 1-based in the engine. Ignore.
+    let mut cursor = 20;
+    let mut values = Vec::with_capacity(dim_size.max(0) as usize);
+    for _ in 0..dim_size {
+        if cursor + 4 > raw.len() {
+            return Err(SessionError {
+                message: format!("{context} array element length truncated"),
+            });
+        }
+        let len = i32::from_be_bytes(raw[cursor..cursor + 4].try_into().unwrap());
+        cursor += 4;
+        if len == -1 {
+            values.push(ScalarValue::Null);
+            continue;
+        }
+        if len < 0 {
+            return Err(SessionError {
+                message: format!("{context} array element has negative length {len}"),
+            });
+        }
+        let end = cursor + len as usize;
+        if end > raw.len() {
+            return Err(SessionError {
+                message: format!("{context} array element payload truncated"),
+            });
+        }
+        let elem = decode_binary_scalar(&raw[cursor..end], element_oid, context)?;
+        values.push(elem);
+        cursor = end;
+    }
+    Ok(ScalarValue::Array(values))
 }
 
 pub(super) fn parse_pg_date_days(text: &str) -> Result<i32, SessionError> {

@@ -358,6 +358,42 @@ fn array_oid_for_element(element: &SqlType) -> Oid {
     }
 }
 
+/// Reverse of `array_oid_for_element`: array OID → element OID.
+///
+/// Used by the pgwire binary encoder/decoder to dispatch element-wise. Covers
+/// every entry in `array_oid_for_element`; unknown inputs return `None` so
+/// callers can surface a clear error.
+pub fn element_oid_from_array_oid(array_oid: Oid) -> Option<Oid> {
+    let elem = match array_oid {
+        1000 => 16,   // bool[]
+        1001 => 17,   // bytea[]
+        1002 => 18,   // "char"[]
+        1003 => 19,   // name[]
+        1005 => 21,   // int2[]
+        1007 => 23,   // int4[]
+        1008 => 24,   // regproc[]
+        1009 => 25,   // text[]
+        1014 => 1042, // bpchar[]
+        1015 => 1043, // varchar[]
+        1016 => 20,   // int8[]
+        1021 => 700,  // float4[]
+        1022 => 701,  // float8[]
+        1028 => 26,   // oid[]
+        199 => 114,   // json[]
+        1115 => 1114, // timestamp[]
+        1182 => 1082, // date[]
+        1183 => 1083, // time[]
+        1185 => 1184, // timestamptz[]
+        1187 => 1186, // interval[]
+        1231 => 1700, // numeric[]
+        1270 => 1266, // timetz[]
+        2951 => 2950, // uuid[]
+        3807 => 3802, // jsonb[]
+        _ => return None,
+    };
+    Some(elem)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
