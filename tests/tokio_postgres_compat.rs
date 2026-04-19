@@ -741,6 +741,41 @@ async fn aborted_transaction_rejects_until_rollback() {
     // why we intentionally don't DROP here.
 }
 
+/// Phase 5.1: PG date/time keyword literals — CURRENT_TIMESTAMP,
+/// CURRENT_DATE, CURRENT_TIME, LOCALTIMESTAMP, LOCALTIME parse as
+/// special keyword calls (not regular functions) and evaluate. Before
+/// this the parser treated them as plain identifiers and raised
+/// `unknown column`.
+#[tokio::test(flavor = "multi_thread")]
+async fn date_time_keyword_literals_parse_and_evaluate() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    // CAST each to text so we can assert a non-empty shape without
+    // depending on whatever OID the engine currently advertises for each
+    // (timestamptz/date/time/etc.) — the point of this test is that the
+    // KEYWORDS parse and evaluate, not the wire types of the results.
+    let row = client
+        .query_one(
+            "SELECT \
+             CAST(CURRENT_TIMESTAMP AS text), \
+             CAST(CURRENT_DATE AS text), \
+             CAST(CURRENT_TIME AS text), \
+             CAST(LOCALTIMESTAMP AS text), \
+             CAST(LOCALTIME AS text)",
+            &[],
+        )
+        .await
+        .expect("query");
+    for i in 0..5 {
+        let value: String = row.get(i);
+        assert!(
+            !value.is_empty(),
+            "column {i} must surface a non-empty text value, got {value:?}"
+        );
+    }
+}
+
 /// Phase 2.2: a NULL bind parameter surfaces as NULL in the result row.
 /// The typed-params refactor changed how NULL flows (Option<String> None →
 /// Option<ScalarValue> None); this pins that NULL passthrough works.
