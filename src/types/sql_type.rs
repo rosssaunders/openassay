@@ -1,6 +1,6 @@
 //! The `SqlType` enum. Canonical declared type of a column or expression.
 
-use crate::catalog::oid::Oid;
+use crate::oid::Oid;
 
 /// Declared SQL type. Carries enough information to emit a spec-correct
 /// `RowDescription` and to binary-encode values on the wire without guessing.
