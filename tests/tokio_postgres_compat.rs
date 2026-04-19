@@ -798,6 +798,49 @@ async fn date_time_keyword_literals_parse_and_evaluate() {
     }
 }
 
+/// Phase 5.7: uuid_generate_v1/v1mc/v4/v5 from uuid-ossp. Each returns
+/// a well-formed UUID. v5 is deterministic — verify it produces the
+/// documented RFC 4122 digest for a known (namespace, name) pair so
+/// we'd catch a silent regression in the generator.
+#[tokio::test(flavor = "multi_thread")]
+async fn uuid_generate_functions_produce_valid_uuids() {
+    use uuid::Uuid;
+
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let row = client
+        .query_one(
+            "SELECT uuid_generate_v4()::uuid, uuid_generate_v1()::uuid, \
+             uuid_generate_v1mc()::uuid, \
+             uuid_generate_v5('6ba7b810-9dad-11d1-80b4-00c04fd430c8', 'www.example.com')::uuid",
+            &[],
+        )
+        .await
+        .expect("query");
+
+    let v4: Uuid = row.get(0);
+    let v1: Uuid = row.get(1);
+    let v1mc: Uuid = row.get(2);
+    let v5: Uuid = row.get(3);
+
+    // Version nybble is the 13th hex digit of the canonical form. v1mc
+    // is also version 1 (the "mc" refers to the multicast node-id bit,
+    // not the version).
+    let version = |u: &Uuid| u.as_hyphenated().to_string().chars().nth(14).unwrap();
+    assert_eq!(version(&v4), '4');
+    assert_eq!(version(&v1), '1');
+    assert_eq!(version(&v1mc), '1');
+    assert_eq!(version(&v5), '5');
+
+    // RFC 4122 fixed result for the DNS namespace + "www.example.com".
+    assert_eq!(
+        v5.to_string(),
+        "2ed6657d-e927-568b-95e1-2665a8aea6a2",
+        "uuid_generate_v5 must produce the RFC 4122 reference digest"
+    );
+}
+
 /// Phase 2.2: a NULL bind parameter surfaces as NULL in the result row.
 /// The typed-params refactor changed how NULL flows (Option<String> None →
 /// Option<ScalarValue> None); this pins that NULL passthrough works.
