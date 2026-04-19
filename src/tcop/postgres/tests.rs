@@ -1475,3 +1475,70 @@ fn interval_binary_encode_rejects_unknown_text_shape() {
     );
     assert!(err.is_err());
 }
+
+// Phase 4.1: SQLSTATE classifier covers the codes library tests match on
+// via `tokio_postgres::error::SqlState`. Lib-level tests (deterministic —
+// the integration path shares process-global catalog state with other
+// tests and races.)
+#[test]
+fn sqlstate_classifies_unique_violation() {
+    let msg = "duplicate value violates unique index \"x_pkey\"";
+    let (code, _, _, _) = classify_sqlstate_error_fields(msg);
+    assert_eq!(code, "23505");
+}
+
+#[test]
+fn sqlstate_classifies_foreign_key_violation() {
+    let msg = "insert or update on relation \"child\" violates foreign key constraint";
+    let (code, _, _, _) = classify_sqlstate_error_fields(msg);
+    assert_eq!(code, "23503");
+}
+
+#[test]
+fn sqlstate_classifies_check_violation() {
+    let msg = "row for relation \"t\" violates CHECK constraint on column \"price\"";
+    let (code, _, _, _) = classify_sqlstate_error_fields(msg);
+    assert_eq!(code, "23514");
+}
+
+#[test]
+fn sqlstate_classifies_not_null_violation() {
+    let msg = "null value in column \"x\" of relation \"t\" violates not-null constraint";
+    let (code, _, _, _) = classify_sqlstate_error_fields(msg);
+    assert_eq!(code, "23502");
+}
+
+#[test]
+fn sqlstate_classifies_invalid_text_representation() {
+    let msg = "invalid input syntax for type int4: \"abc\"";
+    let (code, _, _, _) = classify_sqlstate_error_fields(msg);
+    assert_eq!(code, "22P02");
+}
+
+#[test]
+fn sqlstate_classifies_out_of_range() {
+    let msg = "int2 value 40000 out of range";
+    let (code, _, _, _) = classify_sqlstate_error_fields(msg);
+    assert_eq!(code, "22003");
+}
+
+#[test]
+fn sqlstate_classifies_datatype_mismatch() {
+    let msg = "cannot cast text to uuid";
+    let (code, _, _, _) = classify_sqlstate_error_fields(msg);
+    assert_eq!(code, "42804");
+}
+
+#[test]
+fn sqlstate_classifies_invalid_catalog_name() {
+    let msg = "database \"nonexistent\" does not exist";
+    let (code, _, _, _) = classify_sqlstate_error_fields(msg);
+    assert_eq!(code, "3D000");
+}
+
+#[test]
+fn sqlstate_falls_back_to_xx000_when_unmatched() {
+    let msg = "an unrecognised error message shape";
+    let (code, _, _, _) = classify_sqlstate_error_fields(msg);
+    assert_eq!(code, "XX000");
+}

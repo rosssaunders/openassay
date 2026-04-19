@@ -584,18 +584,17 @@ async fn ddl_declared_int4_column_surfaces_as_oid_23() {
             .unwrap()
             .as_nanos()
     );
+    // Bundle CREATE + INSERT into a single batch_execute so they share
+    // session state — the engine's global catalog commit can race with
+    // concurrent tokio_postgres_compat tests otherwise, surfacing as
+    // "relation does not exist" on the INSERT.
     client
         .batch_execute(&format!(
-            "CREATE TABLE {table} (id int4, label varchar(10), stamp timestamptz)"
+            "CREATE TABLE {table} (id int4, label varchar(10), stamp timestamptz); \
+             INSERT INTO {table} VALUES (7, 'hello', '2024-01-15 12:00:00+00');"
         ))
         .await
-        .expect("CREATE TABLE");
-    client
-        .batch_execute(&format!(
-            "INSERT INTO {table} VALUES (7, 'hello', '2024-01-15 12:00:00+00')"
-        ))
-        .await
-        .expect("INSERT");
+        .expect("setup");
 
     let stmt = client
         .prepare(&format!("SELECT id, label, stamp FROM {table}"))
@@ -608,10 +607,10 @@ async fn ddl_declared_int4_column_surfaces_as_oid_23() {
         "DDL-declared int4/varchar/timestamptz must report OIDs 23/1043/1184"
     );
 
-    client
-        .batch_execute(&format!("DROP TABLE {table}"))
-        .await
-        .ok();
+    // NB: no DROP TABLE. Concurrent tokio_postgres_compat tests share the
+    // engine's process-global catalog; a DROP here races with other tests'
+    // catalog lookups. Table names embed a nanosecond timestamp to keep
+    // parallel runs non-overlapping.
 }
 
 /// A row with a NULL used to force the whole row into binary encoding
@@ -684,6 +683,62 @@ async fn uuid_bind_parameter_round_trips_via_binary() {
     assert_eq!(row.columns()[0].type_().oid(), 2950);
     let got: Uuid = row.get(0);
     assert_eq!(got, u);
+}
+
+/// Phase 4.2: after an error mid-transaction, subsequent statements must
+/// fail with SQLSTATE 25P02 (in_failed_sql_transaction) until ROLLBACK.
+/// ROLLBACK TO SAVEPOINT returns the block to non-aborted state.
+#[tokio::test(flavor = "multi_thread")]
+async fn aborted_transaction_rejects_until_rollback() {
+    use tokio_postgres::error::SqlState;
+
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let table = format!(
+        "ab_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    client
+        .batch_execute(&format!("CREATE TABLE {table} (id int4 PRIMARY KEY);"))
+        .await
+        .expect("setup");
+
+    client.batch_execute("BEGIN;").await.expect("begin");
+    // Deliberately trigger an error mid-TX.
+    client
+        .batch_execute(&format!(
+            "INSERT INTO {table} VALUES (1); \
+             INSERT INTO {table} VALUES (1);"
+        ))
+        .await
+        .expect_err("second insert must violate unique");
+
+    // Subsequent statements are rejected with 25P02 until ROLLBACK.
+    let in_failed = client
+        .batch_execute(&format!("SELECT * FROM {table};"))
+        .await
+        .expect_err("aborted tx must reject");
+    assert_eq!(
+        in_failed.code(),
+        Some(&SqlState::IN_FAILED_SQL_TRANSACTION),
+        "aborted-tx rejection must be 25P02, got {:?}",
+        in_failed.code()
+    );
+
+    client.batch_execute("ROLLBACK;").await.expect("rollback");
+
+    // After ROLLBACK the connection is usable again.
+    client
+        .batch_execute(&format!("SELECT * FROM {table};"))
+        .await
+        .expect("select after rollback");
+
+    // See note in `constraint_violations_carry_spec_sqlstate_codes` about
+    // why we intentionally don't DROP here.
 }
 
 /// Phase 2.2: a NULL bind parameter surfaces as NULL in the result row.
