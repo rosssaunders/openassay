@@ -290,7 +290,12 @@ pub(crate) fn type_signature_from_ast(ty: TypeName) -> TypeSignature {
         TypeName::Date => TypeSignature::Date,
         TypeName::Timestamp | TypeName::TimestampTz => TypeSignature::Timestamp,
         TypeName::Vector(dim) => TypeSignature::Vector(dim),
-        TypeName::Array(_) | TypeName::Name => TypeSignature::Text,
+        // User-declared types (enum/composite/range) are persisted as Text
+        // today — enums store the label, ranges store the bounds literal, and
+        // composite value construction isn't yet wired. This preserves
+        // round-trip storage while the wire type comes from SqlType::Enum/
+        // Composite/Range via sql_type_from_ast.
+        TypeName::Array(_) | TypeName::Name | TypeName::User(_) => TypeSignature::Text,
     }
 }
 
@@ -330,6 +335,51 @@ pub(crate) fn sql_type_from_ast(ty: &TypeName) -> crate::types::SqlType {
         TN::Vector(dim) => SqlType::Vector(dim.unwrap_or(0)),
         TN::Array(inner) => SqlType::Array(Box::new(sql_type_from_ast(inner))),
         TN::Name => SqlType::Name,
+        TN::User(parts) => resolve_user_type(parts).unwrap_or(SqlType::Text),
+    }
+}
+
+/// Look up a user-declared type by name in ExtensionState. Returns `None` if
+/// the name isn't registered — callers (like `sql_type_from_ast`) fall back to
+/// SqlType::Text, which preserves the parser's historical permissive behaviour
+/// for unknown type names.
+fn resolve_user_type(parts: &[String]) -> Option<crate::types::SqlType> {
+    use crate::types::SqlType;
+    crate::tcop::engine::with_ext_read(|ext| {
+        if let Some(enum_ty) = ext.user_types.iter().find(|t| names_match(&t.name, parts)) {
+            return Some(SqlType::Enum(enum_ty.oid));
+        }
+        if let Some(comp) = ext
+            .user_composite_types
+            .iter()
+            .find(|t| names_match(&t.name, parts))
+        {
+            return Some(SqlType::Composite(comp.oid));
+        }
+        if let Some(range) = ext
+            .user_range_types
+            .iter()
+            .find(|t| names_match(&t.name, parts))
+        {
+            return Some(SqlType::Range(range.oid));
+        }
+        None
+    })
+}
+
+fn names_match(stored: &[String], requested: &[String]) -> bool {
+    if stored.len() == requested.len() {
+        stored
+            .iter()
+            .zip(requested.iter())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+    } else if requested.len() == 1 {
+        // Unqualified `mood` matches stored `public.mood` by last segment.
+        stored
+            .last()
+            .is_some_and(|s| s.eq_ignore_ascii_case(&requested[0]))
+    } else {
+        false
     }
 }
 

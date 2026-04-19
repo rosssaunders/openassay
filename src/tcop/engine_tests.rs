@@ -6003,6 +6003,80 @@ fn composite_type_has_array_companion() {
 }
 
 #[test]
+fn user_enum_type_usable_as_column_type() {
+    with_isolated_state(|| {
+        run_statement("CREATE TYPE mood AS ENUM ('happy', 'sad')", &[]);
+        run_statement("CREATE TABLE feelings (who TEXT, m mood)", &[]);
+        run_statement("INSERT INTO feelings VALUES ('alice', 'happy')", &[]);
+        run_statement("INSERT INTO feelings VALUES ('bob', 'sad')", &[]);
+
+        let result = run_statement("SELECT who, m FROM feelings ORDER BY who", &[]);
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0][0], ScalarValue::Text("alice".to_string()));
+        assert_eq!(result.rows[0][1], ScalarValue::Text("happy".to_string()));
+        assert_eq!(result.rows[1][0], ScalarValue::Text("bob".to_string()));
+        assert_eq!(result.rows[1][1], ScalarValue::Text("sad".to_string()));
+    });
+}
+
+#[test]
+fn user_enum_column_reports_enum_oid_in_pg_attribute() {
+    with_isolated_state(|| {
+        run_statement("CREATE TYPE color AS ENUM ('red', 'blue')", &[]);
+        run_statement("CREATE TABLE paint (c color)", &[]);
+
+        let oid_row = run_statement(
+            "SELECT oid FROM pg_catalog.pg_type WHERE typname = 'color'",
+            &[],
+        );
+        let ScalarValue::Int(color_oid) = oid_row.rows[0][0] else {
+            panic!("oid should be int");
+        };
+
+        let attrs = run_statement(
+            "SELECT atttypid FROM pg_catalog.pg_attribute \
+             WHERE attname = 'c' AND attrelid = \
+               (SELECT oid FROM pg_catalog.pg_class WHERE relname = 'paint')",
+            &[],
+        );
+        assert_eq!(attrs.rows.len(), 1);
+        assert_eq!(attrs.rows[0][0], ScalarValue::Int(color_oid));
+    });
+}
+
+#[test]
+fn user_range_type_usable_as_column_type() {
+    with_isolated_state(|| {
+        run_statement("CREATE TYPE pct AS RANGE (subtype = int4)", &[]);
+        run_statement("CREATE TABLE thresh (name TEXT, r pct)", &[]);
+        run_statement("INSERT INTO thresh VALUES ('low', '[0,50)')", &[]);
+
+        let result = run_statement("SELECT name, r FROM thresh", &[]);
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0][0], ScalarValue::Text("low".to_string()));
+        assert_eq!(result.rows[0][1], ScalarValue::Text("[0,50)".to_string()));
+    });
+}
+
+#[test]
+fn unknown_type_name_still_falls_back_to_text() {
+    // Backwards-compat: the parser used to silently route unknown type names
+    // to TypeName::Text. Now it routes to TypeName::User, but
+    // sql_type_from_ast falls back to Text when the name isn't registered in
+    // ExtensionState. So user code that happened to rely on the fallback
+    // (e.g. using `citext` without CREATE EXTENSION) still works.
+    with_isolated_state(|| {
+        run_statement("CREATE TABLE loose (x unregistered_type)", &[]);
+        run_statement("INSERT INTO loose VALUES ('anything goes')", &[]);
+        let result = run_statement("SELECT x FROM loose", &[]);
+        assert_eq!(
+            result.rows[0][0],
+            ScalarValue::Text("anything goes".to_string())
+        );
+    });
+}
+
+#[test]
 fn range_type_has_array_companion() {
     with_isolated_state(|| {
         run_statement("CREATE TYPE pct AS RANGE (subtype = int4)", &[]);
