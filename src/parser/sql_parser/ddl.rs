@@ -384,6 +384,36 @@ impl Parser {
                     name,
                     as_enum: enum_values,
                     as_composite: Vec::new(),
+                    as_range_subtype: None,
+                }));
+            }
+
+            // Range type: CREATE TYPE name AS RANGE (subtype = T)
+            if self.consume_keyword(Keyword::Range) {
+                self.expect_token(
+                    |k| matches!(k, TokenKind::LParen),
+                    "expected '(' after CREATE TYPE ... AS RANGE",
+                )?;
+                let param = self.parse_identifier()?;
+                if !param.eq_ignore_ascii_case("subtype") {
+                    return Err(self.error_at_current(
+                        "only 'subtype' parameter is supported in CREATE TYPE AS RANGE",
+                    ));
+                }
+                self.expect_token(
+                    |k| matches!(k, TokenKind::Equal),
+                    "expected '=' after 'subtype'",
+                )?;
+                let subtype = self.parse_type_name()?;
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after range subtype",
+                )?;
+                return Ok(Statement::CreateType(CreateTypeStatement {
+                    name,
+                    as_enum: Vec::new(),
+                    as_composite: Vec::new(),
+                    as_range_subtype: Some(subtype),
                 }));
             }
 
@@ -409,10 +439,13 @@ impl Parser {
                     name,
                     as_enum: Vec::new(),
                     as_composite: attributes,
+                    as_range_subtype: None,
                 }));
             }
 
-            return Err(self.error_at_current("expected ENUM or '(' after CREATE TYPE ... AS"));
+            return Err(
+                self.error_at_current("expected ENUM, RANGE, or '(' after CREATE TYPE ... AS")
+            );
         }
         if self.consume_keyword(Keyword::Domain) {
             if temporary || unlogged {

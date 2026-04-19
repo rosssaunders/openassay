@@ -884,6 +884,16 @@ pub(crate) struct UserCompositeType {
     pub(crate) attributes: Vec<(String, TypeName)>,
 }
 
+// User-defined range type. `oid` is pg_type.oid (typtype='r'); `subtype_oid`
+// is the underlying element type OID surfaced as pg_range.rngsubtype.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct UserRangeType {
+    pub(crate) oid: Oid,
+    pub(crate) subtype_oid: Oid,
+    pub(crate) name: Vec<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ExtensionState {
     pub(crate) extensions: Vec<ExtensionRecord>,
@@ -892,6 +902,7 @@ pub(crate) struct ExtensionState {
     pub(crate) user_types: Vec<UserEnumType>,
     pub(crate) user_domains: Vec<UserDomain>,
     pub(crate) user_composite_types: Vec<UserCompositeType>,
+    pub(crate) user_range_types: Vec<UserRangeType>,
     pub(crate) ws_connections: HashMap<i64, WsConnection>,
     pub(crate) ws_next_id: i64,
 }

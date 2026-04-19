@@ -1683,25 +1683,79 @@ pub(super) fn virtual_relation_rows(
                         ScalarValue::Null,
                     ]);
                 }
+                for range in &ext.user_range_types {
+                    let name = range.name.last().cloned().unwrap_or_default();
+                    out.push(vec![
+                        ScalarValue::Int(range.oid as i64),
+                        ScalarValue::Text(name),
+                        ScalarValue::Int(PUBLIC_NAMESPACE_OID as i64),
+                        ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
+                        ScalarValue::Int(-1),     // typlen
+                        ScalarValue::Bool(false), // typbyval
+                        ScalarValue::Text("r".to_string()),
+                        ScalarValue::Text("R".to_string()),
+                        ScalarValue::Bool(false),
+                        ScalarValue::Bool(true),
+                        ScalarValue::Text(",".to_string()),
+                        ScalarValue::Int(0), // typrelid
+                        ScalarValue::Int(0), // typelem
+                        ScalarValue::Int(0), // typarray: partial
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Text("i".to_string()),
+                        ScalarValue::Text("x".to_string()),
+                        ScalarValue::Bool(false),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(-1),
+                        ScalarValue::Int(0),
+                        ScalarValue::Int(0),
+                        ScalarValue::Null,
+                    ]);
+                }
                 out
             });
             rows.extend(user_type_rows);
             Ok(rows)
         }
-        ("pg_catalog", "pg_range") => Ok(BUILTIN_RANGES
-            .iter()
-            .map(|r| {
-                vec![
-                    ScalarValue::Int(r.rngtypid as i64),
-                    ScalarValue::Int(r.rngsubtype as i64),
-                    ScalarValue::Int(r.rngmultitypid as i64),
-                    ScalarValue::Int(0), // rngcollation
-                    ScalarValue::Int(0), // rngsubopc
-                    ScalarValue::Int(0), // rngcanonical regproc
-                    ScalarValue::Int(0), // rngsubdiff regproc
-                ]
-            })
-            .collect()),
+        ("pg_catalog", "pg_range") => {
+            let mut rows: Vec<Vec<ScalarValue>> = BUILTIN_RANGES
+                .iter()
+                .map(|r| {
+                    vec![
+                        ScalarValue::Int(r.rngtypid as i64),
+                        ScalarValue::Int(r.rngsubtype as i64),
+                        ScalarValue::Int(r.rngmultitypid as i64),
+                        ScalarValue::Int(0), // rngcollation
+                        ScalarValue::Int(0), // rngsubopc
+                        ScalarValue::Int(0), // rngcanonical regproc
+                        ScalarValue::Int(0), // rngsubdiff regproc
+                    ]
+                })
+                .collect();
+            let user_rows = with_ext_read(|ext| {
+                ext.user_range_types
+                    .iter()
+                    .map(|r| {
+                        vec![
+                            ScalarValue::Int(r.oid as i64),
+                            ScalarValue::Int(r.subtype_oid as i64),
+                            ScalarValue::Int(0), // rngmultitypid: partial, no multirange
+                            ScalarValue::Int(0),
+                            ScalarValue::Int(0),
+                            ScalarValue::Int(0),
+                            ScalarValue::Int(0),
+                        ]
+                    })
+                    .collect::<Vec<_>>()
+            });
+            rows.extend(user_rows);
+            Ok(rows)
+        }
         ("pg_catalog", "pg_enum") => {
             // Each user-defined enum label gets one pg_enum row. enumsortorder
             // is 1-based, matching PG's convention. Row-level oid column is a

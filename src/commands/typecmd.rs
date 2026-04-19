@@ -5,12 +5,13 @@ use crate::parser::ast::{
 };
 use crate::tcop::engine::{
     EngineError, ExtensionState, QueryResult, UserCompositeType, UserDomain, UserEnumType,
-    with_ext_write,
+    UserRangeType, with_ext_write,
 };
 
 fn name_exists(ext: &ExtensionState, name: &[String]) -> bool {
     ext.user_types.iter().any(|t| t.name == name)
         || ext.user_composite_types.iter().any(|t| t.name == name)
+        || ext.user_range_types.iter().any(|t| t.name == name)
 }
 
 pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryResult, EngineError> {
@@ -68,8 +69,50 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
         });
     }
 
+    if let Some(subtype) = &create.as_range_subtype {
+        with_ext_write(|ext| {
+            if name_exists(ext, &normalized_name) {
+                Err(EngineError {
+                    message: format!("type \"{}\" already exists", create.name.join(".")),
+                })
+            } else {
+                Ok(())
+            }
+        })?;
+
+        let subtype_oid = crate::commands::create_table::sql_type_from_ast(subtype).oid();
+
+        let type_oid = with_catalog_write(|catalog| {
+            catalog
+                .next_oid()
+                .map_err(|e| EngineError { message: e.message })
+        })?;
+
+        with_ext_write(|ext| {
+            if name_exists(ext, &normalized_name) {
+                return Err(EngineError {
+                    message: format!("type \"{}\" already exists", create.name.join(".")),
+                });
+            }
+            ext.user_range_types.push(UserRangeType {
+                oid: type_oid,
+                subtype_oid,
+                name: normalized_name,
+            });
+            Ok(())
+        })?;
+
+        return Ok(QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            command_tag: "CREATE TYPE".to_string(),
+            rows_affected: 0,
+        });
+    }
+
     if create.as_enum.is_empty() {
-        // Non-enum, non-composite CREATE TYPE is accepted but not stored (shell type)
+        // Non-enum, non-composite, non-range CREATE TYPE is accepted but not
+        // stored (shell type).
         return Ok(QueryResult {
             columns: Vec::new(),
             rows: Vec::new(),
@@ -134,6 +177,7 @@ pub async fn execute_drop_type(drop: &DropTypeStatement) -> Result<QueryResult, 
         ext.user_types.retain(|t| t.name != normalized_name);
         ext.user_composite_types
             .retain(|t| t.name != normalized_name);
+        ext.user_range_types.retain(|t| t.name != normalized_name);
     });
 
     Ok(QueryResult {

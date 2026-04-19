@@ -409,6 +409,8 @@ pub struct CreateTypeStatement {
     pub name: Vec<String>,
     pub as_enum: Vec<String>,
     pub as_composite: Vec<CompositeAttribute>,
+    /// `CREATE TYPE name AS RANGE (subtype = T)` — the subtype's TypeName.
+    pub as_range_subtype: Option<TypeName>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

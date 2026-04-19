@@ -5879,6 +5879,71 @@ fn empty_composite_type_rejected_at_parse() {
 }
 
 #[test]
+fn int4range_contains_element_via_text_literal() {
+    let r = run_statement("SELECT '[1,10)'::int4range @> 5", &[]);
+    assert_eq!(r.rows[0][0], ScalarValue::Bool(true));
+    let r = run_statement("SELECT '[1,10)'::int4range @> 10", &[]);
+    assert_eq!(r.rows[0][0], ScalarValue::Bool(false));
+    let r = run_statement("SELECT '[1,10)'::int4range @> 0", &[]);
+    assert_eq!(r.rows[0][0], ScalarValue::Bool(false));
+    let r = run_statement("SELECT '[1,10]'::int4range @> 10", &[]);
+    assert_eq!(r.rows[0][0], ScalarValue::Bool(true));
+}
+
+#[test]
+fn numrange_contains_element_with_decimal_bounds() {
+    let r = run_statement("SELECT '[1.5,2.5]'::numrange @> 2", &[]);
+    assert_eq!(r.rows[0][0], ScalarValue::Bool(true));
+    let r = run_statement("SELECT '[1.5,2.5)'::numrange @> 2.5", &[]);
+    assert_eq!(r.rows[0][0], ScalarValue::Bool(false));
+}
+
+#[test]
+fn create_type_as_range_parses_and_reflects() {
+    with_isolated_state(|| {
+        let create = run_statement("CREATE TYPE pct AS RANGE (subtype = int4)", &[]);
+        assert_eq!(create.command_tag, "CREATE TYPE");
+
+        let typ = run_statement(
+            "SELECT typname, typtype FROM pg_catalog.pg_type WHERE typname = 'pct'",
+            &[],
+        );
+        assert_eq!(typ.rows.len(), 1);
+        assert_eq!(typ.rows[0][0], ScalarValue::Text("pct".to_string()));
+        assert_eq!(typ.rows[0][1], ScalarValue::Text("r".to_string()));
+
+        let oid_row = run_statement(
+            "SELECT oid FROM pg_catalog.pg_type WHERE typname = 'pct'",
+            &[],
+        );
+        let ScalarValue::Int(oid) = oid_row.rows[0][0] else {
+            panic!("oid should be int");
+        };
+
+        let rng = run_statement(
+            &format!(
+                "SELECT rngsubtype FROM pg_catalog.pg_range WHERE rngtypid = {}",
+                oid
+            ),
+            &[],
+        );
+        assert_eq!(rng.rows.len(), 1);
+        assert_eq!(rng.rows[0][0], ScalarValue::Int(23)); // int4 OID
+    });
+}
+
+#[test]
+fn range_contains_element_does_not_break_json_contains() {
+    // Regression guard: the range dispatch only fires when the right operand
+    // is non-Text / non-Array, so existing JSON `@>` with text-text operands
+    // still routes to the JSON path.
+    let r = run_statement(r#"SELECT '{"a": 1, "b": 2}'::jsonb @> '{"a": 1}'"#, &[]);
+    assert_eq!(r.rows[0][0], ScalarValue::Bool(true));
+    let r = run_statement(r#"SELECT '{"a": 1}'::jsonb @> '{"b": 1}'"#, &[]);
+    assert_eq!(r.rows[0][0], ScalarValue::Bool(false));
+}
+
+#[test]
 fn composite_type_reflects_in_pg_type_and_pg_attribute() {
     with_isolated_state(|| {
         run_statement("CREATE TYPE addr AS (street TEXT, zip INT)", &[]);
