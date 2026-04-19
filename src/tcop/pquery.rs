@@ -314,8 +314,8 @@ fn infer_function_return_type(
         | "jsonb_exists_all" => PG_BOOL_OID,
         "connect" if name.len() == 2 && name[0].eq_ignore_ascii_case("ws") => PG_INT8_OID,
         "send" | "close" if name.len() == 2 && name[0].eq_ignore_ascii_case("ws") => PG_BOOL_OID,
-        "uuid_generate_v1" | "uuid_generate_v4" | "uuid_generate_v5" | "uuid_nil"
-        | "gen_random_uuid" => PG_TEXT_OID,
+        "uuid_generate_v1" | "uuid_generate_v1mc" | "uuid_generate_v4" | "uuid_generate_v5"
+        | "uuid_nil" | "gen_random_uuid" => PG_TEXT_OID,
         "digest" | "hmac" | "gen_random_bytes" | "crypt" | "gen_salt" => PG_TEXT_OID,
         "l2_distance" | "cosine_distance" | "inner_product" | "l1_distance" | "vector_norm" => {
             PG_FLOAT8_OID

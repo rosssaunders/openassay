@@ -1191,6 +1191,61 @@ pub(crate) async fn eval_scalar_function(
         "pi" if args.is_empty() => Ok(ScalarValue::Float(std::f64::consts::PI)),
         "random" if args.is_empty() => Ok(ScalarValue::Float(rand_f64())),
         "gen_random_uuid" if args.is_empty() => Ok(ScalarValue::Text(gen_random_uuid())),
+        // Phase 5.7: uuid-ossp generators. Same canonical hyphenated hex
+        // output shape as gen_random_uuid so any client decoding as UUID
+        // accepts the value regardless of which generator produced it.
+        "uuid_generate_v4" if args.is_empty() => {
+            Ok(ScalarValue::Text(uuid::Uuid::new_v4().to_string()))
+        }
+        "uuid_generate_v1" | "uuid_generate_v1mc" if args.is_empty() => {
+            // v1 requires a node_id (6-byte MAC-style identifier) and a
+            // ClockSequence. The 14-bit ClockSequence traditionally seeds
+            // from the process clock; we randomise it so concurrent calls
+            // don't collide. `v1mc` is the same generator but with the
+            // multicast bit of the node_id set — we always set that bit
+            // regardless (neither form exposes a real MAC, just random
+            // bytes, so they behave identically here).
+            use uuid::{Uuid, timestamp::Timestamp};
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let secs = now.as_secs();
+            let nanos = now.subsec_nanos();
+            // Random clock_seq, derived from a quick splitmix of nanos.
+            let mix = (nanos as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut node_id = [0u8; 6];
+            let rng = nanos.wrapping_mul(2654435761);
+            node_id[0] = ((rng >> 24) as u8) | 0x01; // multicast bit
+            node_id[1] = (rng >> 16) as u8;
+            node_id[2] = (rng >> 8) as u8;
+            node_id[3] = rng as u8;
+            node_id[4] = (mix >> 8) as u8;
+            node_id[5] = mix as u8;
+            let ts = Timestamp::from_unix(uuid::NoContext, secs, nanos);
+            Ok(ScalarValue::Text(Uuid::new_v1(ts, &node_id).to_string()))
+        }
+        "uuid_generate_v5" if args.len() == 2 => {
+            if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
+                return Ok(ScalarValue::Null);
+            }
+            let namespace_text = match &args[0] {
+                ScalarValue::Text(s) => s.clone(),
+                other => other.render(),
+            };
+            let name_text = match &args[1] {
+                ScalarValue::Text(s) => s.clone(),
+                other => other.render(),
+            };
+            let namespace =
+                uuid::Uuid::parse_str(namespace_text.trim()).map_err(|_| EngineError {
+                    message: format!(
+                        "uuid_generate_v5: namespace `{namespace_text}` is not a valid UUID"
+                    ),
+                })?;
+            Ok(ScalarValue::Text(
+                uuid::Uuid::new_v5(&namespace, name_text.as_bytes()).to_string(),
+            ))
+        }
         "mod" if args.len() == 2 => {
             if args.iter().any(|a| matches!(a, ScalarValue::Null)) {
                 return Ok(ScalarValue::Null);
