@@ -82,7 +82,7 @@ impl CompiledExpr {
     pub(crate) fn evaluate(
         &self,
         scope: &EvalScope,
-        params: &[Option<String>],
+        params: &[Option<ScalarValue>],
     ) -> Result<ScalarValue, EngineError> {
         let mut ip = 0usize;
         let mut stack = Vec::with_capacity(self.instructions.len().max(1));

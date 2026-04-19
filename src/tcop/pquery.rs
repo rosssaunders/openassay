@@ -2063,7 +2063,7 @@ pub(crate) async fn project_returning_row(
     returning: &[crate::parser::ast::SelectItem],
     table: &crate::catalog::Table,
     row: &[ScalarValue],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Vec<ScalarValue>, EngineError> {
     let scope = scope_for_table_row(table, row);
     project_returning_row_from_scope(returning, row, &scope, params).await
@@ -2074,7 +2074,7 @@ pub(crate) async fn project_returning_row_with_qualifiers(
     table: &crate::catalog::Table,
     row: &[ScalarValue],
     qualifiers: &[String],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Vec<ScalarValue>, EngineError> {
     let scope = scope_for_table_row_with_qualifiers(table, row, qualifiers);
     project_returning_row_from_scope(returning, row, &scope, params).await
@@ -2084,7 +2084,7 @@ async fn project_returning_row_from_scope(
     returning: &[crate::parser::ast::SelectItem],
     row: &[ScalarValue],
     scope: &EvalScope,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Vec<ScalarValue>, EngineError> {
     let mut out = Vec::new();
     for target in returning {

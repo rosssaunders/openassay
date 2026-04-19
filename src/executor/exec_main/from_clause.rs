@@ -18,7 +18,7 @@ pub struct TableEval {
 
 pub async fn evaluate_from_clause(
     from: &[TableExpression],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<Vec<EvalScope>, EngineError> {
     let mut current = vec![EvalScope::default()];
@@ -191,7 +191,7 @@ pub(super) async fn relation_index_offsets_for_predicates(
     table: &crate::catalog::Table,
     qualifiers: &[String],
     relation_predicates: &[Expr],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<Option<Vec<usize>>, EngineError> {
     let mut index_descriptors =
@@ -266,7 +266,7 @@ pub(super) async fn extract_relation_equality_constraint(
     predicate: &Expr,
     qualifiers: &[String],
     table_columns: &HashSet<String>,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<Option<(String, ScalarValue)>, EngineError> {
     let Expr::Binary {
@@ -353,7 +353,7 @@ pub(super) async fn extract_relation_scan_predicate(
     qualifiers: &[String],
     table_columns: &HashSet<String>,
     column_indexes: &HashMap<String, usize>,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Option<ScanPredicate>, EngineError> {
     if let Expr::Like {
         expr,
@@ -508,7 +508,7 @@ pub(super) fn remaining_predicate_from_applied(
 /// be pushed down (e.g., those with subqueries).
 pub(super) async fn evaluate_from_clause_with_pushdown(
     from: &[TableExpression],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
     conjuncts: &[Expr],
 ) -> Result<(Vec<EvalScope>, Option<Expr>), EngineError> {
@@ -735,7 +735,9 @@ mod tests {
             &["hits".to_string()],
             &table_columns,
             &column_indexes,
-            &[Some("7".to_string())],
+            // Phase 2.2: typed binds. Real bind path parses "7" with declared
+            // int type-OID into Int(7) before reaching predicate extraction.
+            &[Some(ScalarValue::Int(7))],
         ))
         .expect("predicate extraction should succeed");
 
@@ -787,7 +789,7 @@ mod tests {
 
 pub fn evaluate_table_expression<'a>(
     table: &'a TableExpression,
-    params: &'a [Option<String>],
+    params: &'a [Option<ScalarValue>],
     outer_scope: Option<&'a EvalScope>,
 ) -> EngineFuture<'a, Result<TableEval, EngineError>> {
     Box::pin(async move {
@@ -858,7 +860,7 @@ pub(super) fn is_lateral_table_expression(table: &TableExpression) -> bool {
 pub(super) async fn evaluate_lateral_join(
     join: &JoinExpr,
     left: &TableEval,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<TableEval, EngineError> {
     if matches!(join.kind, JoinType::Right | JoinType::Full) {
@@ -979,7 +981,7 @@ pub(super) async fn evaluate_join(
     natural: bool,
     left: &TableEval,
     right: &TableEval,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<TableEval, EngineError> {
     let using_columns = if natural {
         left.columns
@@ -1108,7 +1110,7 @@ pub(super) async fn join_condition_matches(
     using_columns: &[String],
     left_row: &EvalScope,
     right_row: &EvalScope,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<bool, EngineError> {
     if let Some(JoinCondition::On(expr)) = condition {
         let scope = combine_scopes(left_row, right_row, &HashSet::new());

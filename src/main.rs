@@ -71,7 +71,11 @@ async fn main() {
                             std::process::exit(1);
                         }
                     };
-                    let result = match execute_planned_query(&plan, &params).await {
+                    let typed_params: Vec<Option<openassay::storage::tuple::ScalarValue>> = params
+                        .iter()
+                        .map(|p| p.as_deref().map(cli_param_to_scalar))
+                        .collect();
+                    let result = match execute_planned_query(&plan, &typed_params).await {
                         Ok(result) => result,
                         Err(err) => {
                             eprintln!("execution error: {err}");
@@ -102,6 +106,27 @@ async fn main() {
             std::process::exit(2);
         }
     }
+}
+
+/// CLI `--param` values arrive as raw strings with no declared type. Apply
+/// the same bool/int/float/text heuristic that `parse_param` historically
+/// used so typed-bind-params (Phase 2.2) preserves CLI behaviour.
+fn cli_param_to_scalar(raw: &str) -> openassay::storage::tuple::ScalarValue {
+    use openassay::storage::tuple::ScalarValue;
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("true") {
+        return ScalarValue::Bool(true);
+    }
+    if trimmed.eq_ignore_ascii_case("false") {
+        return ScalarValue::Bool(false);
+    }
+    if let Ok(v) = trimmed.parse::<i64>() {
+        return ScalarValue::Int(v);
+    }
+    if let Ok(v) = trimmed.parse::<f64>() {
+        return ScalarValue::Float(v);
+    }
+    ScalarValue::Text(raw.to_string())
 }
 
 fn parse_exec_invocation(raw_args: Vec<String>) -> Result<(Vec<Option<String>>, String), String> {

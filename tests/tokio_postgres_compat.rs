@@ -663,6 +663,65 @@ async fn time_cast_surfaces_as_oid_1083_and_decodes_binary() {
     assert_eq!(decoded, NaiveTime::from_hms_opt(12, 34, 56).unwrap());
 }
 
+/// Phase 2.2: UUID bound as a parameter survives a round-trip without
+/// precision loss. Before typed bind params, the binary-decoded UUID was
+/// rendered to text ("11111111-…") and handed to the executor as a string;
+/// any code path that compared it against the original binary value could
+/// have mismatched on canonical formatting. Typed binds make the ScalarValue
+/// flow through unchanged.
+#[tokio::test(flavor = "multi_thread")]
+async fn uuid_bind_parameter_round_trips_via_binary() {
+    use uuid::Uuid;
+
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let u = Uuid::parse_str("deadbeef-dead-beef-dead-beefdeadbeef").unwrap();
+    let row = client
+        .query_one("SELECT $1::uuid AS v", &[&u])
+        .await
+        .expect("query");
+    assert_eq!(row.columns()[0].type_().oid(), 2950);
+    let got: Uuid = row.get(0);
+    assert_eq!(got, u);
+}
+
+/// Phase 2.2: a NULL bind parameter surfaces as NULL in the result row.
+/// The typed-params refactor changed how NULL flows (Option<String> None →
+/// Option<ScalarValue> None); this pins that NULL passthrough works.
+#[tokio::test(flavor = "multi_thread")]
+async fn null_bind_parameter_surfaces_as_null() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let null_i32: Option<i32> = None;
+    let row = client
+        .query_one("SELECT $1::int4 AS v", &[&null_i32])
+        .await
+        .expect("query");
+    let got: Option<i32> = row.get(0);
+    assert_eq!(got, None);
+}
+
+/// Phase 2.2: an int4 bind param stays typed as int on the way through
+/// the executor, exercising the typed-params path. This guards against
+/// regressing back to render → reparse for integers. `SELECT $1::int4`
+/// keeps the result at int4 (OID 23); after typed binds the integer value
+/// never transits through its text form in the engine.
+#[tokio::test(flavor = "multi_thread")]
+async fn int4_bind_parameter_survives_typed_path() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let row = client
+        .query_one("SELECT $1::int4 AS v", &[&42_i32])
+        .await
+        .expect("query");
+    assert_eq!(row.columns()[0].type_().oid(), 23);
+    let got: i32 = row.get(0);
+    assert_eq!(got, 42);
+}
+
 /// Phase 2 follow-up: int4[] must surface with OID 1007 and decode as
 /// `Vec<i32>` via tokio-postgres' binary path. tokio-postgres requests
 /// format 1 for Vec<i32> — if our PG array binary layout is wrong the
@@ -711,7 +770,6 @@ async fn text_array_decodes_as_vec_string() {
     assert_eq!(decoded, vec!["alpha".to_string(), "beta".to_string()]);
 }
 
-/// Phase 2 follow-up: integer binary operators preserve the wider operand
 /// width instead of blindly widening to int8. Before, every `int4 + int4`
 /// surfaced as int8 (OID 20), which caused sqlx to reject a Vec<i32>
 /// result column when running trivial arithmetic.

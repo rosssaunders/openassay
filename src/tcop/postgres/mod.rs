@@ -229,7 +229,7 @@ pub(super) struct PreparedStatement {
 #[derive(Debug, Clone)]
 pub(super) struct Portal {
     operation: PlannedOperation,
-    params: Vec<Option<String>>,
+    params: Vec<Option<ScalarValue>>,
     result_format_codes: Vec<i16>,
     result_cache: Option<QueryResult>,
     cursor: usize,
@@ -1049,7 +1049,7 @@ impl PostgresSession {
     async fn execute_operation(
         &mut self,
         operation: &PlannedOperation,
-        params: &[Option<String>],
+        params: &[Option<ScalarValue>],
     ) -> Result<ExecutionOutcome, SessionError> {
         if !self.cacheable_simple_query_operation(operation) {
             self.simple_query_cache.clear();
@@ -1250,7 +1250,7 @@ impl PostgresSession {
     async fn execute_query_in_transaction_scope(
         &mut self,
         plan: &PlannedQuery,
-        params: &[Option<String>],
+        params: &[Option<ScalarValue>],
     ) -> Result<QueryResult, SessionError> {
         let baseline = snapshot_state();
         let working = self

@@ -47,7 +47,7 @@ impl HashJoinExecutor {
         right: &ColumnBatch,
         left_rows: &[EvalScope],
         right_rows: &[EvalScope],
-        params: &[Option<String>],
+        params: &[Option<ScalarValue>],
     ) -> Result<HashJoinResult, EngineError> {
         let mut build_map: HashMap<u64, Vec<usize>> = HashMap::new();
         for right_row_idx in 0..right.row_count {
@@ -140,7 +140,7 @@ impl HashJoinExecutor {
         candidates: &[usize],
         left_rows: &[EvalScope],
         right_rows: &[EvalScope],
-        params: &[Option<String>],
+        params: &[Option<ScalarValue>],
     ) -> Result<Vec<usize>, EngineError> {
         let mut matches = Vec::new();
         for right_row_idx in candidates.iter().copied() {

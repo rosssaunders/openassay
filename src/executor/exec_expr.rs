@@ -201,7 +201,7 @@ impl EvalScope {
 pub(crate) fn eval_expr<'a>(
     expr: &'a Expr,
     scope: &'a EvalScope,
-    params: &'a [Option<String>],
+    params: &'a [Option<ScalarValue>],
 ) -> EngineFuture<'a, Result<ScalarValue, EngineError>> {
     Box::pin(async move {
         match expr {
@@ -532,7 +532,7 @@ pub(crate) fn eval_expr_with_window<'a>(
     row_idx: usize,
     all_rows: &'a [EvalScope],
     window_definitions: &'a [WindowDefinition],
-    params: &'a [Option<String>],
+    params: &'a [Option<ScalarValue>],
 ) -> EngineFuture<'a, Result<ScalarValue, EngineError>> {
     Box::pin(async move {
         match expr {
@@ -1230,7 +1230,7 @@ async fn eval_window_function(
     window_definitions: &[WindowDefinition],
     row_idx: usize,
     all_rows: &[EvalScope],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<ScalarValue, EngineError> {
     // Resolve any named window reference
     let resolved_window = resolve_window_spec(window, window_definitions)?;
@@ -1511,7 +1511,7 @@ async fn window_partition_rows(
     window: &WindowSpec,
     row_idx: usize,
     all_rows: &[EvalScope],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Vec<usize>, EngineError> {
     if window.partition_by.is_empty() {
         return Ok((0..all_rows.len()).collect());
@@ -1539,7 +1539,7 @@ async fn window_order_keys(
     window: &WindowSpec,
     partition: &mut [usize],
     all_rows: &[EvalScope],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Vec<Vec<ScalarValue>>, EngineError> {
     if window.order_by.is_empty() {
         return Ok(Vec::new());
@@ -1565,7 +1565,7 @@ async fn window_frame_rows(
     order_keys: &[Vec<ScalarValue>],
     current_pos: usize,
     all_rows: &[EvalScope],
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Vec<usize>, EngineError> {
     let Some(frame) = window.frame.as_ref() else {
         // PostgreSQL default frame:
@@ -1844,7 +1844,7 @@ async fn groups_frame_boundary(
     current_group: usize,
     total_groups: usize,
     current_row: &EvalScope,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<usize, EngineError> {
     match bound {
         WindowFrameBound::UnboundedPreceding => Ok(0),
@@ -1878,7 +1878,7 @@ async fn frame_row_position(
     current_pos: usize,
     partition_len: usize,
     current_scope: &EvalScope,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<usize, EngineError> {
     let max_pos = partition_len.saturating_sub(1);
     Ok(match bound {
@@ -1899,7 +1899,7 @@ async fn frame_row_position(
 async fn frame_bound_offset_usize(
     expr: &Expr,
     current_scope: &EvalScope,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<usize, EngineError> {
     let value = eval_expr(expr, current_scope, params).await?;
     parse_non_negative_int(&value, "window frame offset")
@@ -1908,7 +1908,7 @@ async fn frame_bound_offset_usize(
 async fn frame_bound_offset_f64(
     expr: &Expr,
     current_scope: &EvalScope,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<f64, EngineError> {
     let value = eval_expr(expr, current_scope, params).await?;
     let parsed = parse_f64_scalar(&value, "window frame offset must be numeric").unwrap_or(0.0);
@@ -1925,7 +1925,7 @@ async fn range_bound_threshold(
     current: f64,
     is_start: bool,
     current_scope: &EvalScope,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<Option<f64>, EngineError> {
     match bound {
         WindowFrameBound::UnboundedPreceding if is_start => Ok(None),
@@ -1953,7 +1953,7 @@ async fn window_first_order_numeric_key(
     row_idx: usize,
     all_rows: &[EvalScope],
     window: &WindowSpec,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<f64, EngineError> {
     if let Some(value) = order_keys.get(pos).and_then(|keys| keys.first()) {
         return Ok(
@@ -2393,8 +2393,11 @@ fn like_match_recursive(
 
 pub(crate) fn parse_param(
     index: i32,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<ScalarValue, EngineError> {
+    // Phase 2.2: params arrive pre-typed. Text-format binds were already
+    // parsed into a typed ScalarValue at Bind time (see
+    // `decode_bind_parameter`), so this is now a simple lookup/clone.
     if index <= 0 {
         return Err(EngineError {
             message: format!("invalid parameter reference ${index}"),
@@ -2404,25 +2407,7 @@ pub(crate) fn parse_param(
     let value = params.get(idx).ok_or_else(|| EngineError {
         message: format!("missing value for parameter ${index}"),
     })?;
-
-    let Some(raw) = value else {
-        return Ok(ScalarValue::Null);
-    };
-
-    let trimmed = raw.trim();
-    if trimmed.eq_ignore_ascii_case("true") {
-        return Ok(ScalarValue::Bool(true));
-    }
-    if trimmed.eq_ignore_ascii_case("false") {
-        return Ok(ScalarValue::Bool(false));
-    }
-    if let Ok(v) = trimmed.parse::<i64>() {
-        return Ok(ScalarValue::Int(v));
-    }
-    if let Ok(v) = trimmed.parse::<f64>() {
-        return Ok(ScalarValue::Float(v));
-    }
-    Ok(ScalarValue::Text(raw.clone()))
+    Ok(value.clone().unwrap_or(ScalarValue::Null))
 }
 
 pub(crate) fn eval_unary(op: UnaryOp, value: ScalarValue) -> Result<ScalarValue, EngineError> {
@@ -3059,7 +3044,7 @@ async fn eval_function(
     filter: Option<&Expr>,
     over: Option<&crate::parser::ast::WindowSpec>,
     scope: &EvalScope,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<ScalarValue, EngineError> {
     let fn_name = name
         .last()

@@ -10,7 +10,7 @@ use crate::executor::profiling;
 
 pub(super) async fn evaluate_table_function(
     function: &TableFunctionRef,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
 ) -> Result<TableEval, EngineError> {
     let mut scope = EvalScope::default();
@@ -79,7 +79,7 @@ pub(super) async fn evaluate_table_function(
 #[cfg(target_arch = "wasm32")]
 pub(super) async fn evaluate_table_function_with_predicate(
     _function: &TableFunctionRef,
-    _params: &[Option<String>],
+    _params: &[Option<ScalarValue>],
     _outer_scope: Option<&EvalScope>,
     _predicate: Option<&Expr>,
 ) -> Result<Option<TableEval>, EngineError> {
@@ -89,7 +89,7 @@ pub(super) async fn evaluate_table_function_with_predicate(
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) async fn evaluate_table_function_with_predicate(
     function: &TableFunctionRef,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
     predicate: Option<&Expr>,
 ) -> Result<Option<TableEval>, EngineError> {
@@ -1065,7 +1065,7 @@ pub(super) fn eval_pg_get_keywords() -> Result<(Vec<String>, Vec<Vec<ScalarValue
 
 pub(super) async fn evaluate_relation(
     rel: &TableRef,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
     projected_columns: Option<Vec<usize>>,
 ) -> Result<TableEval, EngineError> {
@@ -1076,7 +1076,7 @@ pub(super) async fn evaluate_relation(
 
 pub(super) async fn evaluate_relation_with_predicates(
     rel: &TableRef,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
     relation_predicates: &[Expr],
     projected_columns: Option<Vec<usize>>,
@@ -1094,7 +1094,7 @@ pub(super) async fn evaluate_relation_with_predicates(
 
 pub(super) async fn evaluate_relation_with_predicates_columnar(
     rel: &TableRef,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
     relation_predicates: &[Expr],
 ) -> Result<(TableEval, Vec<usize>), EngineError> {
@@ -1111,7 +1111,7 @@ pub(super) async fn evaluate_relation_with_predicates_columnar(
 
 async fn evaluate_relation_with_predicates_impl(
     rel: &TableRef,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
     outer_scope: Option<&EvalScope>,
     relation_predicates: &[Expr],
     projected_columns: Option<Vec<usize>>,

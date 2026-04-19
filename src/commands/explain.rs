@@ -6,7 +6,7 @@ use crate::tcop::engine::{
 
 pub async fn execute_explain(
     explain: &ExplainStatement,
-    params: &[Option<String>],
+    params: &[Option<ScalarValue>],
 ) -> Result<QueryResult, EngineError> {
     let mut plan_lines = Vec::new();
     let planned = planner::plan(&explain.statement);
