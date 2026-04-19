@@ -5773,6 +5773,105 @@ fn creates_and_drops_type() {
 }
 
 #[test]
+fn creates_composite_type_stores_metadata() {
+    with_isolated_state(|| {
+        let result = run_statement(
+            "CREATE TYPE address AS (street TEXT, city TEXT, zip INT)",
+            &[],
+        );
+        assert_eq!(result.command_tag, "CREATE TYPE");
+
+        with_ext_read(|ext| {
+            let composite = ext
+                .user_composite_types
+                .iter()
+                .find(|t| t.name == vec!["address".to_string()])
+                .expect("composite type should be recorded");
+            let attr_names: Vec<&str> = composite
+                .attributes
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect();
+            assert_eq!(attr_names, vec!["street", "city", "zip"]);
+            let attr_types: Vec<&str> = composite
+                .attributes
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect();
+            assert_eq!(attr_types, vec!["text", "text", "int4"]);
+        });
+
+        let drop_result = run_statement("DROP TYPE address", &[]);
+        assert_eq!(drop_result.command_tag, "DROP TYPE");
+        with_ext_read(|ext| {
+            assert!(
+                ext.user_composite_types
+                    .iter()
+                    .all(|t| t.name != vec!["address".to_string()])
+            );
+        });
+    });
+}
+
+#[test]
+fn duplicate_composite_type_rejected() {
+    with_isolated_state(|| {
+        run_statement("CREATE TYPE point AS (x INT, y INT)", &[]);
+        let statement =
+            parse_statement("CREATE TYPE point AS (x INT, y INT)").expect("statement should parse");
+        let planned = plan_statement(statement).expect("statement should plan");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("duplicate composite type should error");
+        assert!(
+            err.message.contains("already exists"),
+            "expected already-exists error, got: {}",
+            err.message
+        );
+    });
+}
+
+#[test]
+fn composite_type_collides_with_enum_type() {
+    with_isolated_state(|| {
+        run_statement("CREATE TYPE side AS ENUM ('left', 'right')", &[]);
+        let statement =
+            parse_statement("CREATE TYPE side AS (x INT)").expect("statement should parse");
+        let planned = plan_statement(statement).expect("statement should plan");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("composite should collide with enum of same name");
+        assert!(
+            err.message.contains("already exists"),
+            "expected already-exists error, got: {}",
+            err.message
+        );
+    });
+}
+
+#[test]
+fn enum_type_collides_with_composite_type() {
+    with_isolated_state(|| {
+        run_statement("CREATE TYPE shape AS (x INT, y INT)", &[]);
+        let statement = parse_statement("CREATE TYPE shape AS ENUM ('a', 'b')")
+            .expect("statement should parse");
+        let planned = plan_statement(statement).expect("statement should plan");
+        let err = block_on(execute_planned_query(&planned, &[]))
+            .expect_err("enum should collide with composite of same name");
+        assert!(
+            err.message.contains("already exists"),
+            "expected already-exists error, got: {}",
+            err.message
+        );
+    });
+}
+
+#[test]
+fn empty_composite_type_rejected_at_parse() {
+    let err = parse_statement("CREATE TYPE empty AS ()")
+        .expect_err("empty composite should fail to parse");
+    let _ = err;
+}
+
+#[test]
 fn creates_domain() {
     let results = run_batch(&["CREATE DOMAIN posint AS INT"]);
     assert_eq!(results[0].command_tag, "CREATE DOMAIN");

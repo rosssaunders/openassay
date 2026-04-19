@@ -873,6 +873,18 @@ pub(crate) struct UserDomain {
     pub(crate) base_type: String,
 }
 
+// TODO(#169): UserCompositeType metadata is stored but never reflected in the
+// catalog. CREATE TYPE ... AS (col1 type, ...) is parsed and recorded here, but
+// pg_type / pg_class / pg_attribute reflection is the follow-up that makes the
+// type visible to introspection. The read path is also not yet wired into type
+// dispatch.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) struct UserCompositeType {
+    pub(crate) name: Vec<String>,
+    pub(crate) attributes: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ExtensionState {
     pub(crate) extensions: Vec<ExtensionRecord>,
@@ -880,6 +892,7 @@ pub(crate) struct ExtensionState {
     pub(crate) triggers: Vec<UserTrigger>,
     pub(crate) user_types: Vec<UserEnumType>,
     pub(crate) user_domains: Vec<UserDomain>,
+    pub(crate) user_composite_types: Vec<UserCompositeType>,
     pub(crate) ws_connections: HashMap<i64, WsConnection>,
     pub(crate) ws_next_id: i64,
 }

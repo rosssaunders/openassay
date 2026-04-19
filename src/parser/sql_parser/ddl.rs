@@ -339,26 +339,15 @@ impl Parser {
             }
             let name = self.parse_qualified_name()?;
             self.expect_keyword(Keyword::As, "expected AS after CREATE TYPE name")?;
-            self.expect_keyword(Keyword::Enum, "expected ENUM after CREATE TYPE ... AS")?;
-            self.expect_token(
-                |k| matches!(k, TokenKind::LParen),
-                "expected '(' after CREATE TYPE ... AS ENUM",
-            )?;
 
-            // Parse first enum value
-            let first_value = match self.current_kind() {
-                TokenKind::String(value) => {
-                    let out = value.clone();
-                    self.advance();
-                    out
-                }
-                _ => return Err(self.error_at_current("expected string literal for enum value")),
-            };
-            let mut enum_values = vec![first_value];
+            if self.consume_keyword(Keyword::Enum) {
+                self.expect_token(
+                    |k| matches!(k, TokenKind::LParen),
+                    "expected '(' after CREATE TYPE ... AS ENUM",
+                )?;
 
-            // Parse remaining enum values
-            while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
-                let value = match self.current_kind() {
+                // Parse first enum value
+                let first_value = match self.current_kind() {
                     TokenKind::String(value) => {
                         let out = value.clone();
                         self.advance();
@@ -368,17 +357,62 @@ impl Parser {
                         return Err(self.error_at_current("expected string literal for enum value"));
                     }
                 };
-                enum_values.push(value);
+                let mut enum_values = vec![first_value];
+
+                // Parse remaining enum values
+                while self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                    let value = match self.current_kind() {
+                        TokenKind::String(value) => {
+                            let out = value.clone();
+                            self.advance();
+                            out
+                        }
+                        _ => {
+                            return Err(
+                                self.error_at_current("expected string literal for enum value")
+                            );
+                        }
+                    };
+                    enum_values.push(value);
+                }
+
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after enum values",
+                )?;
+                return Ok(Statement::CreateType(CreateTypeStatement {
+                    name,
+                    as_enum: enum_values,
+                    as_composite: Vec::new(),
+                }));
             }
 
-            self.expect_token(
-                |k| matches!(k, TokenKind::RParen),
-                "expected ')' after enum values",
-            )?;
-            return Ok(Statement::CreateType(CreateTypeStatement {
-                name,
-                as_enum: enum_values,
-            }));
+            // Composite type: CREATE TYPE name AS (attr1 type1, attr2 type2, ...)
+            if self.consume_if(|k| matches!(k, TokenKind::LParen)) {
+                let mut attributes = Vec::new();
+                loop {
+                    let attr_name = self.parse_identifier()?;
+                    let data_type = self.parse_type_name()?;
+                    attributes.push(CompositeAttribute {
+                        name: attr_name,
+                        data_type,
+                    });
+                    if !self.consume_if(|k| matches!(k, TokenKind::Comma)) {
+                        break;
+                    }
+                }
+                self.expect_token(
+                    |k| matches!(k, TokenKind::RParen),
+                    "expected ')' after composite attributes",
+                )?;
+                return Ok(Statement::CreateType(CreateTypeStatement {
+                    name,
+                    as_enum: Vec::new(),
+                    as_composite: attributes,
+                }));
+            }
+
+            return Err(self.error_at_current("expected ENUM or '(' after CREATE TYPE ... AS"));
         }
         if self.consume_keyword(Keyword::Domain) {
             if temporary || unlogged {

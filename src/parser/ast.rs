@@ -404,10 +404,17 @@ pub struct CreateSchemaStatement {
     pub if_not_exists: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CreateTypeStatement {
     pub name: Vec<String>,
     pub as_enum: Vec<String>,
+    pub as_composite: Vec<CompositeAttribute>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompositeAttribute {
+    pub name: String,
+    pub data_type: TypeName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
