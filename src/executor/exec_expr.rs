@@ -2558,12 +2558,24 @@ pub(crate) fn eval_binary(
             }
         }
         JsonContains | ArrayContains => {
-            // @> operator: array contains if both arrays, else JSON contains
+            // @> operator: array contains if both arrays; else try range
+            // contains (only when right is non-Text non-Array, to avoid the
+            // `'[1,2]'::jsonb @> '1'` ambiguity — range-vs-range is deferred);
+            // else JSON contains.
             if matches!(
                 (&left, &right),
                 (ScalarValue::Array(_), ScalarValue::Array(_))
             ) {
                 eval_array_contains(left, right)
+            } else if let (ScalarValue::Text(range_text), element) = (&left, &right)
+                && !matches!(
+                    element,
+                    ScalarValue::Text(_) | ScalarValue::Array(_) | ScalarValue::Null
+                )
+                && let Some(result) =
+                    crate::utils::adt::range::try_range_contains_element(range_text, element)?
+            {
+                Ok(ScalarValue::Bool(result))
             } else {
                 eval_json_contains_operator(left, right)
             }
