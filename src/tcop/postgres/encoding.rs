@@ -167,6 +167,18 @@ pub(super) fn encode_binary_scalar(
             out.extend_from_slice(&months.to_be_bytes());
             Ok(out)
         }
+        // ── numeric (OID 1700): NBASE-10000 with sign/weight/dscale header.
+        // See src/backend/utils/adt/numeric.c `numeric_send`.
+        (1700, ScalarValue::Numeric(d)) => Ok(encode_pg_numeric_binary(d)),
+        (1700, ScalarValue::Int(v)) => {
+            Ok(encode_pg_numeric_binary(&rust_decimal::Decimal::from(*v)))
+        }
+        (1700, ScalarValue::Text(v)) => {
+            let parsed: rust_decimal::Decimal = v.trim().parse().map_err(|_| SessionError {
+                message: format!("{context} numeric field is invalid"),
+            })?;
+            Ok(encode_pg_numeric_binary(&parsed))
+        }
         // ── jsonb: 1-byte version prefix (always 1 per PG 9.4+) then JSON text
         (3802, ScalarValue::Text(v)) => {
             let mut out = Vec::with_capacity(v.len() + 1);
@@ -454,6 +466,7 @@ pub(super) fn decode_binary_scalar(
                 })?,
             ))
         }
+        1700 => decode_pg_numeric_binary(raw, context).map(ScalarValue::Numeric),
         other if crate::types::element_oid_from_array_oid(other).is_some() => {
             decode_pg_array_binary(raw, other, context)
         }
@@ -461,6 +474,179 @@ pub(super) fn decode_binary_scalar(
             message: format!("{context} binary type oid {other} is not supported"),
         }),
     }
+}
+
+/// Encode a `rust_decimal::Decimal` in PG numeric wire format.
+///
+/// Layout (PG `numeric_send`):
+/// ```text
+///   i16 ndigits         NBASE-10000 digits in `digits`
+///   i16 weight          place-value of digits[0] is 10000^weight
+///   i16 sign            0x0000 pos, 0x4000 neg (0xC000 NaN — unreachable here)
+///   i16 dscale          display scale, digits after the decimal point
+///   i16 digits[ndigits] each in [0, 9999], MSB-first
+/// ```
+/// Leading and trailing zero base-10000 digits are trimmed (PG convention).
+fn encode_pg_numeric_binary(d: &rust_decimal::Decimal) -> Vec<u8> {
+    let sign_flag: i16 = if d.is_sign_negative() { 0x4000 } else { 0x0000 };
+    let scale = d.scale();
+    let dscale = scale as i16;
+
+    if d.is_zero() {
+        let mut out = Vec::with_capacity(8);
+        out.extend_from_slice(&0i16.to_be_bytes()); // ndigits
+        out.extend_from_slice(&0i16.to_be_bytes()); // weight
+        out.extend_from_slice(&sign_flag.to_be_bytes());
+        out.extend_from_slice(&dscale.to_be_bytes());
+        return out;
+    }
+
+    // Absolute integer representation of d × 10^scale.
+    let mantissa = d.mantissa().unsigned_abs();
+    // Pad scale up to a multiple of 4 so fractional base-10000 digits align
+    // on the decimal point. Multiply the magnitude by 10^(pad) so every
+    // base-10000 digit we extract corresponds to exactly 4 decimal digits.
+    let pad = (4 - (scale % 4)) % 4;
+    let padded = mantissa * 10u128.pow(pad);
+    let scale_groups = ((scale + pad) / 4) as i32; // fractional base-10000 groups
+
+    // Extract base-10000 digits, least-significant first.
+    let mut digits_lsb = Vec::<u16>::new();
+    let mut rem = padded;
+    while rem > 0 {
+        digits_lsb.push((rem % 10_000) as u16);
+        rem /= 10_000;
+    }
+    let total = digits_lsb.len() as i32;
+    // Weight for the most-significant digit: (integer-digit-count) - 1.
+    // integer-digit-count = total - scale_groups. May be <= 0 for <1 values.
+    let mut weight = (total - scale_groups) - 1;
+
+    // Walk digits MSB-first so we can trim leading zeros (shrinking weight)
+    // and trailing zeros (shrinking ndigits).
+    let mut msb: Vec<u16> = digits_lsb.into_iter().rev().collect();
+    while msb.first().copied() == Some(0) {
+        msb.remove(0);
+        weight -= 1;
+    }
+    while msb.last().copied() == Some(0) {
+        msb.pop();
+    }
+
+    let ndigits = msb.len() as i16;
+    let mut out = Vec::with_capacity(8 + 2 * msb.len());
+    out.extend_from_slice(&ndigits.to_be_bytes());
+    out.extend_from_slice(&(weight as i16).to_be_bytes());
+    out.extend_from_slice(&sign_flag.to_be_bytes());
+    out.extend_from_slice(&dscale.to_be_bytes());
+    for digit in msb {
+        out.extend_from_slice(&digit.to_be_bytes());
+    }
+    out
+}
+
+/// Decode PG numeric binary wire format into a `rust_decimal::Decimal`.
+///
+/// Rejects NaN (0xC000) and ±Infinity (0xD000/0xF000) since rust_decimal
+/// cannot represent them. Callers should surface the error rather than
+/// silently zeroing the value.
+fn decode_pg_numeric_binary(
+    raw: &[u8],
+    context: &str,
+) -> Result<rust_decimal::Decimal, SessionError> {
+    if raw.len() < 8 {
+        return Err(SessionError {
+            message: format!("{context} numeric header truncated"),
+        });
+    }
+    let ndigits = i16::from_be_bytes(raw[0..2].try_into().unwrap());
+    let weight = i16::from_be_bytes(raw[2..4].try_into().unwrap());
+    let sign = u16::from_be_bytes(raw[4..6].try_into().unwrap());
+    let dscale = i16::from_be_bytes(raw[6..8].try_into().unwrap());
+    if ndigits < 0 {
+        return Err(SessionError {
+            message: format!("{context} numeric ndigits is negative"),
+        });
+    }
+    if sign != 0x0000 && sign != 0x4000 {
+        return Err(SessionError {
+            message: format!("{context} numeric NaN/Infinity is not supported"),
+        });
+    }
+    if dscale < 0 {
+        return Err(SessionError {
+            message: format!("{context} numeric dscale is negative"),
+        });
+    }
+    let needed = 8 + 2 * ndigits as usize;
+    if raw.len() < needed {
+        return Err(SessionError {
+            message: format!("{context} numeric digits truncated"),
+        });
+    }
+    if ndigits == 0 {
+        let mut d = rust_decimal::Decimal::ZERO;
+        d.set_scale(dscale as u32).ok();
+        return Ok(d);
+    }
+    // Reconstruct the value as an i128 accumulator scaled to dscale. For each
+    // base-10000 digit at position i (0-indexed from the left), its
+    // place-value exponent is (weight - i). We multiply the accumulator by
+    // 10^4 each step (shifting left by one base-10000 group). The final
+    // integer accumulator represents mantissa * 10^(dscale) — ready for
+    // rust_decimal's mantissa/scale constructor.
+    //
+    // Pad trailing groups with zeros up to weight = -1 so the LSB aligns
+    // with 10000^-1 before we account for dscale.
+    let mut acc: i128 = 0;
+    for i in 0..ndigits as usize {
+        let offset = 8 + 2 * i;
+        let digit = u16::from_be_bytes(raw[offset..offset + 2].try_into().unwrap()) as i128;
+        if digit >= 10_000 {
+            return Err(SessionError {
+                message: format!("{context} numeric digit {digit} is out of range"),
+            });
+        }
+        acc = acc
+            .checked_mul(10_000)
+            .and_then(|x| x.checked_add(digit))
+            .ok_or_else(|| SessionError {
+                message: format!("{context} numeric value overflows i128"),
+            })?;
+    }
+    // After the loop, `acc` represents the supplied digits as an integer of
+    // `ndigits` base-10000 groups. Its value is acc × 10000^(weight - ndigits + 1).
+    // We want mantissa × 10^(-dscale). Convert by shifting exponents around 10.
+    // exponent_adjust_base10 = 4 * (weight + 1 - ndigits) + dscale
+    //   - positive → multiply acc by 10^k
+    //   - negative → divide acc by 10^|k| (should be exact given dscale chosen by sender)
+    let exponent_adjust: i32 = 4 * (weight as i32 + 1 - ndigits as i32) + dscale as i32;
+    if exponent_adjust > 0 {
+        let factor = 10i128
+            .checked_pow(exponent_adjust as u32)
+            .ok_or_else(|| SessionError {
+                message: format!("{context} numeric exponent overflow"),
+            })?;
+        acc = acc.checked_mul(factor).ok_or_else(|| SessionError {
+            message: format!("{context} numeric value overflows i128"),
+        })?;
+    } else if exponent_adjust < 0 {
+        let divisor = 10i128
+            .checked_pow((-exponent_adjust) as u32)
+            .ok_or_else(|| SessionError {
+                message: format!("{context} numeric exponent overflow"),
+            })?;
+        // Sender guarantees dscale captures the full precision; if not, PG
+        // rounds half-to-even. rust_decimal can't represent digits below
+        // dscale here anyway — drop them by integer division.
+        acc /= divisor;
+    }
+    let signed = if sign == 0x4000 { -acc } else { acc };
+    rust_decimal::Decimal::try_from_i128_with_scale(signed, dscale as u32).map_err(|_| {
+        SessionError {
+            message: format!("{context} numeric value out of rust_decimal range"),
+        }
+    })
 }
 
 /// Decode the PG binary array wire format into `ScalarValue::Array`. Only
