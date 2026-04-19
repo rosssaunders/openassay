@@ -1610,112 +1610,68 @@ pub(super) fn virtual_relation_rows(
                 })
                 .collect();
 
-            // Append user-defined enum types (typtype='e', typcategory='E').
-            // Append user-defined composite types (typtype='c', typcategory='C').
-            // typarray=0 is a partial — no auto-created `_foo` array companion.
+            // Append user-defined enum/composite/range types and their `_foo`
+            // array companions. Each user type now owns two pg_type rows: the
+            // main entry (typtype='e'/'c'/'r') and an array companion
+            // (typtype='b', typcategory='A', typelem=main_oid). Drivers
+            // resolve `my_type[]` through the companion row.
             let user_type_rows = with_ext_read(|ext| {
                 let mut out: Vec<Vec<ScalarValue>> = Vec::new();
                 for enum_ty in &ext.user_types {
                     let name = enum_ty.name.last().cloned().unwrap_or_default();
-                    out.push(vec![
-                        ScalarValue::Int(enum_ty.oid as i64),
-                        ScalarValue::Text(name),
-                        ScalarValue::Int(PUBLIC_NAMESPACE_OID as i64),
-                        ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
-                        ScalarValue::Int(4),     // typlen: enum = 4
-                        ScalarValue::Bool(true), // typbyval
-                        ScalarValue::Text("e".to_string()),
-                        ScalarValue::Text("E".to_string()),
-                        ScalarValue::Bool(false),
-                        ScalarValue::Bool(true),
-                        ScalarValue::Text(",".to_string()),
-                        ScalarValue::Int(0), // typrelid: enums aren't class-backed
-                        ScalarValue::Int(0), // typelem
-                        ScalarValue::Int(0), // typarray: partial — no array companion
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Text("i".to_string()),
-                        ScalarValue::Text("p".to_string()),
-                        ScalarValue::Bool(false),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(-1),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Null,
-                    ]);
+                    out.push(user_type_row(
+                        enum_ty.oid,
+                        &name,
+                        'e',
+                        'E',
+                        4,
+                        true,
+                        0,
+                        0,
+                        enum_ty.array_oid,
+                        'i',
+                        'p',
+                    ));
+                    out.push(array_companion_row(
+                        enum_ty.array_oid,
+                        &name,
+                        enum_ty.oid,
+                        'i',
+                    ));
                 }
                 for comp in &ext.user_composite_types {
                     let name = comp.name.last().cloned().unwrap_or_default();
-                    out.push(vec![
-                        ScalarValue::Int(comp.oid as i64),
-                        ScalarValue::Text(name),
-                        ScalarValue::Int(PUBLIC_NAMESPACE_OID as i64),
-                        ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
-                        ScalarValue::Int(-1),     // typlen: composite is varlen
-                        ScalarValue::Bool(false), // typbyval
-                        ScalarValue::Text("c".to_string()),
-                        ScalarValue::Text("C".to_string()),
-                        ScalarValue::Bool(false),
-                        ScalarValue::Bool(true),
-                        ScalarValue::Text(",".to_string()),
-                        ScalarValue::Int(comp.class_oid as i64), // typrelid
-                        ScalarValue::Int(0),                     // typelem
-                        ScalarValue::Int(0),                     // typarray: partial
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Text("d".to_string()),
-                        ScalarValue::Text("x".to_string()),
-                        ScalarValue::Bool(false),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(-1),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Null,
-                    ]);
+                    out.push(user_type_row(
+                        comp.oid,
+                        &name,
+                        'c',
+                        'C',
+                        -1,
+                        false,
+                        comp.class_oid,
+                        0,
+                        comp.array_oid,
+                        'd',
+                        'x',
+                    ));
+                    out.push(array_companion_row(comp.array_oid, &name, comp.oid, 'd'));
                 }
                 for range in &ext.user_range_types {
                     let name = range.name.last().cloned().unwrap_or_default();
-                    out.push(vec![
-                        ScalarValue::Int(range.oid as i64),
-                        ScalarValue::Text(name),
-                        ScalarValue::Int(PUBLIC_NAMESPACE_OID as i64),
-                        ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
-                        ScalarValue::Int(-1),     // typlen
-                        ScalarValue::Bool(false), // typbyval
-                        ScalarValue::Text("r".to_string()),
-                        ScalarValue::Text("R".to_string()),
-                        ScalarValue::Bool(false),
-                        ScalarValue::Bool(true),
-                        ScalarValue::Text(",".to_string()),
-                        ScalarValue::Int(0), // typrelid
-                        ScalarValue::Int(0), // typelem
-                        ScalarValue::Int(0), // typarray: partial
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Text("i".to_string()),
-                        ScalarValue::Text("x".to_string()),
-                        ScalarValue::Bool(false),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(-1),
-                        ScalarValue::Int(0),
-                        ScalarValue::Int(0),
-                        ScalarValue::Null,
-                    ]);
+                    out.push(user_type_row(
+                        range.oid,
+                        &name,
+                        'r',
+                        'R',
+                        -1,
+                        false,
+                        0,
+                        0,
+                        range.array_oid,
+                        'i',
+                        'x',
+                    ));
+                    out.push(array_companion_row(range.array_oid, &name, range.oid, 'i'));
                 }
                 out
             });
@@ -2475,6 +2431,77 @@ pub(super) fn virtual_relation_rows(
             message: format!("relation \"{schema}.{relation}\" does not exist"),
         }),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn user_type_row(
+    oid: crate::catalog::oid::Oid,
+    name: &str,
+    typtype: char,
+    typcategory: char,
+    typlen: i16,
+    typbyval: bool,
+    typrelid: crate::catalog::oid::Oid,
+    typelem: crate::catalog::oid::Oid,
+    typarray: crate::catalog::oid::Oid,
+    typalign: char,
+    typstorage: char,
+) -> Vec<ScalarValue> {
+    vec![
+        ScalarValue::Int(oid as i64),
+        ScalarValue::Text(name.to_string()),
+        ScalarValue::Int(PUBLIC_NAMESPACE_OID as i64),
+        ScalarValue::Int(BOOTSTRAP_SUPERUSER_OID as i64),
+        ScalarValue::Int(typlen as i64),
+        ScalarValue::Bool(typbyval),
+        ScalarValue::Text(typtype.to_string()),
+        ScalarValue::Text(typcategory.to_string()),
+        ScalarValue::Bool(false),
+        ScalarValue::Bool(true),
+        ScalarValue::Text(",".to_string()),
+        ScalarValue::Int(typrelid as i64),
+        ScalarValue::Int(typelem as i64),
+        ScalarValue::Int(typarray as i64),
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Text(typalign.to_string()),
+        ScalarValue::Text(typstorage.to_string()),
+        ScalarValue::Bool(false),
+        ScalarValue::Int(0),
+        ScalarValue::Int(-1),
+        ScalarValue::Int(0),
+        ScalarValue::Int(0),
+        ScalarValue::Null,
+    ]
+}
+
+fn array_companion_row(
+    array_oid: crate::catalog::oid::Oid,
+    base_name: &str,
+    element_oid: crate::catalog::oid::Oid,
+    typalign: char,
+) -> Vec<ScalarValue> {
+    // PG convention: array companion typname is `_<base>`. typtype='b'
+    // (arrays are base type even when the element is enum/composite/range);
+    // typcategory='A'; typelem points at the user type's oid.
+    user_type_row(
+        array_oid,
+        &format!("_{base_name}"),
+        'b',
+        'A',
+        -1,
+        false,
+        0,
+        element_oid,
+        0,
+        typalign,
+        'x',
+    )
 }
 
 pub(super) fn pg_relkind_for_table(kind: TableKind) -> &'static str {

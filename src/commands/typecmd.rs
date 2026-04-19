@@ -20,25 +20,9 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
     if !create.as_composite.is_empty() {
         // Reject duplicates before allocating OIDs so failed CREATEs don't
         // burn OID space.
-        with_ext_write(|ext| {
-            if name_exists(ext, &normalized_name) {
-                Err(EngineError {
-                    message: format!("type \"{}\" already exists", create.name.join(".")),
-                })
-            } else {
-                Ok(())
-            }
-        })?;
+        ensure_unique(&normalized_name, &create.name)?;
 
-        let (type_oid, class_oid) = with_catalog_write(|catalog| {
-            let type_oid = catalog
-                .next_oid()
-                .map_err(|e| EngineError { message: e.message })?;
-            let class_oid = catalog
-                .next_oid()
-                .map_err(|e| EngineError { message: e.message })?;
-            Ok::<_, EngineError>((type_oid, class_oid))
-        })?;
+        let [type_oid, class_oid, array_oid] = alloc_oids::<3>()?;
 
         let attributes = create
             .as_composite
@@ -55,6 +39,7 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
             ext.user_composite_types.push(UserCompositeType {
                 oid: type_oid,
                 class_oid,
+                array_oid,
                 name: normalized_name,
                 attributes,
             });
@@ -70,23 +55,11 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
     }
 
     if let Some(subtype) = &create.as_range_subtype {
-        with_ext_write(|ext| {
-            if name_exists(ext, &normalized_name) {
-                Err(EngineError {
-                    message: format!("type \"{}\" already exists", create.name.join(".")),
-                })
-            } else {
-                Ok(())
-            }
-        })?;
+        ensure_unique(&normalized_name, &create.name)?;
 
         let subtype_oid = crate::commands::create_table::sql_type_from_ast(subtype).oid();
 
-        let type_oid = with_catalog_write(|catalog| {
-            catalog
-                .next_oid()
-                .map_err(|e| EngineError { message: e.message })
-        })?;
+        let [type_oid, array_oid] = alloc_oids::<2>()?;
 
         with_ext_write(|ext| {
             if name_exists(ext, &normalized_name) {
@@ -96,6 +69,7 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
             }
             ext.user_range_types.push(UserRangeType {
                 oid: type_oid,
+                array_oid,
                 subtype_oid,
                 name: normalized_name,
             });
@@ -121,21 +95,9 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
         });
     }
 
-    with_ext_write(|ext| {
-        if name_exists(ext, &normalized_name) {
-            Err(EngineError {
-                message: format!("type \"{}\" already exists", create.name.join(".")),
-            })
-        } else {
-            Ok(())
-        }
-    })?;
+    ensure_unique(&normalized_name, &create.name)?;
 
-    let type_oid = with_catalog_write(|catalog| {
-        catalog
-            .next_oid()
-            .map_err(|e| EngineError { message: e.message })
-    })?;
+    let [type_oid, array_oid] = alloc_oids::<2>()?;
 
     with_ext_write(|ext| {
         if name_exists(ext, &normalized_name) {
@@ -145,6 +107,7 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
         }
         ext.user_types.push(UserEnumType {
             oid: type_oid,
+            array_oid,
             name: normalized_name,
             labels: create.as_enum.clone(),
         });
@@ -156,6 +119,30 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
         rows: Vec::new(),
         command_tag: "CREATE TYPE".to_string(),
         rows_affected: 0,
+    })
+}
+
+fn ensure_unique(normalized: &[String], qualified: &[String]) -> Result<(), EngineError> {
+    with_ext_write(|ext| {
+        if name_exists(ext, normalized) {
+            Err(EngineError {
+                message: format!("type \"{}\" already exists", qualified.join(".")),
+            })
+        } else {
+            Ok(())
+        }
+    })
+}
+
+fn alloc_oids<const N: usize>() -> Result<[crate::catalog::oid::Oid; N], EngineError> {
+    with_catalog_write(|catalog| {
+        let mut out = [0; N];
+        for slot in &mut out {
+            *slot = catalog
+                .next_oid()
+                .map_err(|e| EngineError { message: e.message })?;
+        }
+        Ok(out)
     })
 }
 

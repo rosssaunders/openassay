@@ -5944,6 +5944,92 @@ fn range_contains_element_does_not_break_json_contains() {
 }
 
 #[test]
+fn enum_type_has_array_companion() {
+    with_isolated_state(|| {
+        run_statement("CREATE TYPE mood AS ENUM ('happy', 'sad')", &[]);
+
+        // Main + companion rows both exist.
+        let main = run_statement(
+            "SELECT oid, typtype, typcategory, typarray FROM pg_catalog.pg_type WHERE typname = 'mood'",
+            &[],
+        );
+        assert_eq!(main.rows.len(), 1);
+        let main_oid = main.rows[0][0].clone();
+        assert_eq!(main.rows[0][1], ScalarValue::Text("e".to_string()));
+        assert_eq!(main.rows[0][2], ScalarValue::Text("E".to_string()));
+        let ScalarValue::Int(main_typarray) = main.rows[0][3] else {
+            panic!("typarray should be int");
+        };
+        assert!(main_typarray > 0, "main.typarray should point at companion");
+
+        let companion = run_statement(
+            "SELECT oid, typtype, typcategory, typelem, typarray FROM pg_catalog.pg_type WHERE typname = '_mood'",
+            &[],
+        );
+        assert_eq!(companion.rows.len(), 1);
+        assert_eq!(companion.rows[0][0], ScalarValue::Int(main_typarray));
+        assert_eq!(companion.rows[0][1], ScalarValue::Text("b".to_string()));
+        assert_eq!(companion.rows[0][2], ScalarValue::Text("A".to_string()));
+        assert_eq!(companion.rows[0][3], main_oid);
+        assert_eq!(companion.rows[0][4], ScalarValue::Int(0));
+    });
+}
+
+#[test]
+fn composite_type_has_array_companion() {
+    with_isolated_state(|| {
+        run_statement("CREATE TYPE addr AS (street TEXT, zip INT)", &[]);
+
+        let main = run_statement(
+            "SELECT oid, typtype, typarray FROM pg_catalog.pg_type WHERE typname = 'addr'",
+            &[],
+        );
+        let main_oid = main.rows[0][0].clone();
+        let ScalarValue::Int(main_typarray) = main.rows[0][2] else {
+            panic!("typarray should be int");
+        };
+        assert!(main_typarray > 0);
+
+        let companion = run_statement(
+            "SELECT oid, typtype, typcategory, typelem FROM pg_catalog.pg_type WHERE typname = '_addr'",
+            &[],
+        );
+        assert_eq!(companion.rows.len(), 1);
+        assert_eq!(companion.rows[0][0], ScalarValue::Int(main_typarray));
+        assert_eq!(companion.rows[0][1], ScalarValue::Text("b".to_string()));
+        assert_eq!(companion.rows[0][2], ScalarValue::Text("A".to_string()));
+        assert_eq!(companion.rows[0][3], main_oid);
+    });
+}
+
+#[test]
+fn range_type_has_array_companion() {
+    with_isolated_state(|| {
+        run_statement("CREATE TYPE pct AS RANGE (subtype = int4)", &[]);
+
+        let main = run_statement(
+            "SELECT oid, typarray FROM pg_catalog.pg_type WHERE typname = 'pct'",
+            &[],
+        );
+        let main_oid = main.rows[0][0].clone();
+        let ScalarValue::Int(main_typarray) = main.rows[0][1] else {
+            panic!("typarray should be int");
+        };
+        assert!(main_typarray > 0);
+
+        let companion = run_statement(
+            "SELECT oid, typtype, typcategory, typelem FROM pg_catalog.pg_type WHERE typname = '_pct'",
+            &[],
+        );
+        assert_eq!(companion.rows.len(), 1);
+        assert_eq!(companion.rows[0][0], ScalarValue::Int(main_typarray));
+        assert_eq!(companion.rows[0][1], ScalarValue::Text("b".to_string()));
+        assert_eq!(companion.rows[0][2], ScalarValue::Text("A".to_string()));
+        assert_eq!(companion.rows[0][3], main_oid);
+    });
+}
+
+#[test]
 fn composite_type_reflects_in_pg_type_and_pg_attribute() {
     with_isolated_state(|| {
         run_statement("CREATE TYPE addr AS (street TEXT, zip INT)", &[]);
