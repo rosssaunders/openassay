@@ -711,6 +711,35 @@ async fn text_array_decodes_as_vec_string() {
     assert_eq!(decoded, vec!["alpha".to_string(), "beta".to_string()]);
 }
 
+/// Phase 2 follow-up: `ARRAY[x::uuid]` must surface as uuid[] (OID 2951),
+/// not text[] (1009). Before the typer fix, the element CAST collapsed at
+/// the array constructor and the encoder was unreachable for uuid[].
+#[tokio::test(flavor = "multi_thread")]
+async fn uuid_array_surfaces_as_oid_2951_and_decodes() {
+    use uuid::Uuid;
+
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let row = client
+        .query_one(
+            "SELECT ARRAY['11111111-1111-1111-1111-111111111111'::uuid, \
+             '22222222-2222-2222-2222-222222222222'::uuid] AS xs",
+            &[],
+        )
+        .await
+        .expect("query");
+    assert_eq!(row.columns()[0].type_().oid(), 2951);
+    let decoded: Vec<Uuid> = row.get(0);
+    assert_eq!(
+        decoded,
+        vec![
+            Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap(),
+        ]
+    );
+}
+
 /// NULLs within an int4[] decode as `Option<i32>::None` at the element level.
 #[tokio::test(flavor = "multi_thread")]
 async fn int4_array_with_null_decodes() {
