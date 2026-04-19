@@ -841,6 +841,82 @@ async fn uuid_generate_functions_produce_valid_uuids() {
     );
 }
 
+/// Phase 7.2: LISTEN and NOTIFY work via the pgwire simple-query path.
+/// Locks in the notification delivery loop — after `NOTIFY ch, 'payload'`
+/// on the same connection, the client reads back a NotificationResponse
+/// on the next `recv` from the tokio-postgres connection stream.
+#[tokio::test(flavor = "multi_thread")]
+async fn listen_notify_delivers_notification_on_same_session() {
+    use std::future::poll_fn;
+    use std::task::Poll;
+    use tokio_postgres::AsyncMessage;
+
+    let port = spawn_server();
+    // We need access to the raw connection stream to read NotificationResponse
+    // (tokio-postgres exposes them via `Connection::poll_message`, not the
+    // `Client` API). Build the client manually so we keep the connection.
+    let (client, mut conn) = tokio_postgres::Config::new()
+        .host("127.0.0.1")
+        .port(port)
+        .user("postgres")
+        .dbname("postgres")
+        .connect(tokio_postgres::NoTls)
+        .await
+        .expect("connect");
+
+    // Channel for async messages pulled off the connection.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AsyncMessage>();
+
+    let conn_task = tokio::spawn(async move {
+        poll_fn(|cx| {
+            loop {
+                match conn.poll_message(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Some(Ok(msg))) => {
+                        let _ = tx.send(msg);
+                    }
+                    Poll::Ready(Some(Err(_))) => return Poll::Ready(()),
+                    Poll::Ready(None) => return Poll::Ready(()),
+                }
+            }
+        })
+        .await;
+    });
+
+    client
+        .batch_execute("LISTEN tokio_phase_7_2;")
+        .await
+        .expect("LISTEN");
+
+    client
+        .batch_execute("NOTIFY tokio_phase_7_2, 'hello';")
+        .await
+        .expect("NOTIFY");
+
+    // The engine delivers the notification by piggy-backing a
+    // NotificationResponse on the subsequent message flush. Pull off
+    // async messages for up to 1s; assert we get a Notification.
+    let mut got = None;
+    for _ in 0..20 {
+        match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+            Ok(Some(AsyncMessage::Notification(n))) => {
+                got = Some(n);
+                break;
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) => break,
+            Err(_) => {}
+        }
+    }
+
+    let notification = got.expect("expected NotificationResponse within 1s");
+    assert_eq!(notification.channel(), "tokio_phase_7_2");
+    assert_eq!(notification.payload(), "hello");
+
+    drop(client);
+    let _ = conn_task.await;
+}
+
 /// Phase 2.2: a NULL bind parameter surfaces as NULL in the result row.
 /// The typed-params refactor changed how NULL flows (Option<String> None →
 /// Option<ScalarValue> None); this pins that NULL passthrough works.
