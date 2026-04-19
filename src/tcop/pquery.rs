@@ -484,10 +484,23 @@ fn infer_expr_type(
                 ResolvedExprType::scalar(PG_TEXT_OID)
             }
         }
-        Expr::ArrayConstructor(exprs) => ResolvedExprType::new(
-            PG_TEXT_OID,
-            &array_type(common_array_element_subscript_type(exprs, scope, ctes)),
-        ),
+        Expr::ArrayConstructor(exprs) => {
+            // Derive the array's wire OID from the element OID so `ARRAY[x::uuid]`
+            // surfaces as uuid[] (2951) rather than text[] (1009). When the
+            // element type can't be resolved (empty array, mixed types), fall
+            // back to text[] — matches pre-Phase-2 behaviour.
+            let element_oid = infer_common_type_oid(exprs, scope, ctes);
+            let array_oid = crate::types::array_oid_from_element_oid(element_oid);
+            let array_oid = if array_oid == 0 {
+                PG_TEXT_OID
+            } else {
+                array_oid
+            };
+            ResolvedExprType::new(
+                array_oid,
+                &array_type(common_array_element_subscript_type(exprs, scope, ctes)),
+            )
+        }
         Expr::ArraySubquery(_) => {
             ResolvedExprType::new(PG_TEXT_OID, &array_type(SubscriptValueType::Other))
         }

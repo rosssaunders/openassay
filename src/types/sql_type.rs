@@ -358,6 +358,42 @@ fn array_oid_for_element(element: &SqlType) -> Oid {
     }
 }
 
+/// Forward mapping from an element OID to its canonical array OID.
+///
+/// Returns 0 for element OIDs that have no standard array form. Useful in
+/// type inference when the element OID is known but the element's `SqlType`
+/// is not (e.g. a scalar expression whose result OID was computed through
+/// `infer_common_type_oid`).
+pub fn array_oid_from_element_oid(element_oid: Oid) -> Oid {
+    match element_oid {
+        16 => 1000,   // bool
+        17 => 1001,   // bytea
+        18 => 1002,   // "char"
+        19 => 1003,   // name
+        20 => 1016,   // int8
+        21 => 1005,   // int2
+        23 => 1007,   // int4
+        24 => 1008,   // regproc
+        25 => 1009,   // text
+        26 => 1028,   // oid
+        114 => 199,   // json
+        700 => 1021,  // float4
+        701 => 1022,  // float8
+        1042 => 1014, // bpchar
+        1043 => 1015, // varchar
+        1082 => 1182, // date
+        1083 => 1183, // time
+        1114 => 1115, // timestamp
+        1184 => 1185, // timestamptz
+        1186 => 1187, // interval
+        1266 => 1270, // timetz
+        1700 => 1231, // numeric
+        2950 => 2951, // uuid
+        3802 => 3807, // jsonb
+        _ => 0,
+    }
+}
+
 /// Reverse of `array_oid_for_element`: array OID → element OID.
 ///
 /// Used by the pgwire binary encoder/decoder to dispatch element-wise. Covers

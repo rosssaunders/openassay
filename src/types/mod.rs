@@ -35,4 +35,6 @@
 
 pub mod sql_type;
 
-pub use sql_type::{SqlType, element_oid_from_array_oid, parse_sql_type_name};
+pub use sql_type::{
+    SqlType, array_oid_from_element_oid, element_oid_from_array_oid, parse_sql_type_name,
+};
