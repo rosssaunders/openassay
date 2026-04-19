@@ -1372,6 +1372,101 @@ fn array_element_oid_mismatch_is_rejected() {
 }
 
 #[test]
+fn numeric_binary_encode_zero() {
+    use rust_decimal::Decimal;
+    let bytes = encode_binary_scalar(&ScalarValue::Numeric(Decimal::ZERO), 1700, "n").unwrap();
+    assert_eq!(bytes, vec![0, 0, 0, 0, 0, 0, 0, 0]); // ndigits=0 weight=0 sign=0 dscale=0
+}
+
+#[test]
+fn numeric_binary_encode_one() {
+    use rust_decimal::Decimal;
+    let bytes = encode_binary_scalar(&ScalarValue::Numeric(Decimal::ONE), 1700, "n").unwrap();
+    // ndigits=1 weight=0 sign=0 dscale=0, then digit 1
+    assert_eq!(bytes, vec![0, 1, 0, 0, 0, 0, 0, 0, 0, 1]);
+}
+
+#[test]
+fn numeric_binary_encode_ten_thousand_trims_trailing_zero_digit() {
+    use rust_decimal::Decimal;
+    let bytes =
+        encode_binary_scalar(&ScalarValue::Numeric(Decimal::from(10_000i64)), 1700, "n").unwrap();
+    // Expect ndigits=1 weight=1 sign=0 dscale=0, then digit 1 (trailing 0 digit trimmed)
+    assert_eq!(bytes, vec![0, 1, 0, 1, 0, 0, 0, 0, 0, 1]);
+}
+
+#[test]
+fn numeric_binary_encode_small_fraction_leading_zero_trim() {
+    use rust_decimal::Decimal;
+    let d = Decimal::new(1, 4); // 0.0001
+    let bytes = encode_binary_scalar(&ScalarValue::Numeric(d), 1700, "n").unwrap();
+    // ndigits=1 weight=-1 sign=0 dscale=4, then digit 1
+    // weight=-1 on the wire is 0xFFFF.
+    assert_eq!(bytes, vec![0, 1, 0xFF, 0xFF, 0, 0, 0, 4, 0, 1]);
+}
+
+#[test]
+fn numeric_binary_encode_negative_with_fraction() {
+    use rust_decimal::Decimal;
+    let d: Decimal = "-12345.678".parse().unwrap();
+    let bytes = encode_binary_scalar(&ScalarValue::Numeric(d), 1700, "n").unwrap();
+    // ndigits=3 weight=1 sign=0x4000 dscale=3, digits [1, 2345, 6780]
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&3i16.to_be_bytes());
+    expected.extend_from_slice(&1i16.to_be_bytes());
+    expected.extend_from_slice(&0x4000u16.to_be_bytes());
+    expected.extend_from_slice(&3i16.to_be_bytes());
+    expected.extend_from_slice(&1u16.to_be_bytes());
+    expected.extend_from_slice(&2345u16.to_be_bytes());
+    expected.extend_from_slice(&6780u16.to_be_bytes());
+    assert_eq!(bytes, expected);
+}
+
+#[test]
+fn numeric_binary_roundtrips_advisor_cases() {
+    use rust_decimal::Decimal;
+    for case in [
+        Decimal::ZERO,
+        Decimal::ONE,
+        Decimal::from(10_000i64),
+        Decimal::new(1, 4), // 0.0001
+        "-12345.678".parse().unwrap(),
+        "3.14159265358979".parse().unwrap(),
+        "-0.5".parse().unwrap(),
+    ] {
+        let encoded = encode_binary_scalar(&ScalarValue::Numeric(case), 1700, "n").unwrap();
+        let decoded = decode_binary_scalar(&encoded, 1700, "n").unwrap();
+        match decoded {
+            ScalarValue::Numeric(got) => assert_eq!(got, case, "round-trip of {case} failed"),
+            other => panic!("expected Numeric, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn numeric_binary_decode_rejects_nan() {
+    let raw = vec![0, 0, 0, 0, 0xC0, 0x00, 0, 0]; // sign=0xC000
+    let err = decode_binary_scalar(&raw, 1700, "n");
+    assert!(err.is_err());
+}
+
+#[test]
+fn numeric_binary_decode_rejects_truncated_header() {
+    let raw = vec![0, 1, 0, 0];
+    let err = decode_binary_scalar(&raw, 1700, "n");
+    assert!(err.is_err());
+}
+
+#[test]
+fn numeric_binary_encode_from_text_and_int_forms() {
+    let bytes_text = encode_binary_scalar(&ScalarValue::Text("42".to_string()), 1700, "n").unwrap();
+    let bytes_int = encode_binary_scalar(&ScalarValue::Int(42), 1700, "n").unwrap();
+    assert_eq!(bytes_text, bytes_int);
+    // Sanity: ndigits=1 weight=0 sign=0 dscale=0, digit 42.
+    assert_eq!(bytes_int, vec![0, 1, 0, 0, 0, 0, 0, 0, 0, 42]);
+}
+
+#[test]
 fn interval_binary_encode_rejects_unknown_text_shape() {
     let err = encode_binary_scalar(
         &ScalarValue::Text("3 months, 14 days, 02:30:00".to_string()),
