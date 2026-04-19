@@ -1542,3 +1542,98 @@ fn sqlstate_falls_back_to_xx000_when_unmatched() {
     let (code, _, _, _) = classify_sqlstate_error_fields(msg);
     assert_eq!(code, "XX000");
 }
+
+/// Phase 7.1 regression: extended-protocol COPY FROM STDIN must not be
+/// disrupted by a `Sync` between the `Execute` that started COPY IN and
+/// the first `CopyData`. tokio-postgres emits that Sync as a pipeline
+/// flush marker. Before the fix, the server cleared `copy_in_state` on
+/// Sync and also emitted a spurious `ReadyForQuery`, which caused the
+/// client to reject the next `CopyData` with UnexpectedMessage.
+#[test]
+fn copy_from_stdin_via_extended_protocol_does_not_lose_copy_state() {
+    let out = with_isolated_state(|| {
+        let mut session = PostgresSession::new();
+        session.run_sync([
+            FrontendMessage::Query {
+                sql: "CREATE TABLE copy_ep (id int4, label text)".to_string(),
+            },
+            FrontendMessage::Parse {
+                statement_name: "s".to_string(),
+                query: "COPY copy_ep FROM STDIN".to_string(),
+                parameter_types: Vec::new(),
+            },
+            FrontendMessage::Bind {
+                portal_name: String::new(),
+                statement_name: "s".to_string(),
+                param_formats: Vec::new(),
+                params: Vec::new(),
+                result_formats: Vec::new(),
+            },
+            FrontendMessage::Execute {
+                portal_name: String::new(),
+                max_rows: 0,
+            },
+            // The Sync-during-COPY IN that exposed the bug.
+            FrontendMessage::Sync,
+            FrontendMessage::CopyData {
+                data: b"1\talpha\n2\tbeta\n".to_vec(),
+            },
+            FrontendMessage::CopyDone,
+            FrontendMessage::Sync,
+        ])
+    });
+
+    // CopyInResponse must be delivered, CommandComplete after CopyDone
+    // must report 2 rows, and no ErrorResponse should appear.
+    let has_copy_in = out
+        .iter()
+        .any(|m| matches!(m, BackendMessage::CopyInResponse { .. }));
+    assert!(
+        has_copy_in,
+        "CopyInResponse missing — Execute path regression"
+    );
+
+    let copy_complete = out.iter().any(|m| {
+        matches!(
+            m,
+            BackendMessage::CommandComplete { tag, rows, .. } if tag == "COPY" && *rows == 2
+        )
+    });
+    assert!(
+        copy_complete,
+        "CommandComplete 'COPY 2' missing — exec_copy_done path regression"
+    );
+
+    let errors: Vec<_> = out
+        .iter()
+        .filter_map(|m| match m {
+            BackendMessage::ErrorResponse { message, .. } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "unexpected ErrorResponse during COPY flow: {errors:?}"
+    );
+
+    // Exactly one RFQ must follow the client's final Sync (not two —
+    // that was the spurious-RFQ regression). Count them by looking at
+    // where they appear: one must come AFTER the CommandComplete for COPY.
+    let copy_cc_idx = out
+        .iter()
+        .position(|m| {
+            matches!(
+                m,
+                BackendMessage::CommandComplete { tag, .. } if tag == "COPY"
+            )
+        })
+        .expect("COPY CommandComplete must exist");
+    let rfq_after_copy = out[copy_cc_idx..]
+        .iter()
+        .filter(|m| matches!(m, BackendMessage::ReadyForQuery { .. }))
+        .count();
+    assert_eq!(
+        rfq_after_copy, 1,
+        "exactly one ReadyForQuery after CopyDone expected (from client's Sync); got {rfq_after_copy}"
+    );
+}

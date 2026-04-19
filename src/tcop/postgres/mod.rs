@@ -364,6 +364,11 @@ pub(super) struct CopyInState {
     header: bool,
     column_type_oids: Vec<PgType>,
     payload: Vec<u8>,
+    /// Whether the COPY was initiated via simple-query protocol. Simple
+    /// queries bundle `CommandComplete + ReadyForQuery` in the
+    /// per-statement response; extended-query callers expect RFQ only on
+    /// the subsequent `Sync` — not on CopyDone itself.
+    started_via_simple_query: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -608,13 +613,17 @@ impl PostgresSession {
                     | FrontendMessage::CopyDone
                     | FrontendMessage::CopyFail { .. }
                     | FrontendMessage::Flush
+                    | FrontendMessage::Sync
                     | FrontendMessage::Terminate
             )
         {
             // Auto-cancel the in-progress COPY so that the new message can proceed.
             // This mirrors PostgreSQL behaviour when a client abandons COPY without
             // sending CopyDone/CopyFail (e.g. when using the simple query protocol
-            // without a real COPY data stream).
+            // without a real COPY data stream). Sync is deliberately NOT a trigger:
+            // tokio-postgres (and other pipeline clients) emits Sync between the
+            // Execute that started COPY IN and the first CopyData as a harmless
+            // pipeline marker. Per PG protocol, Sync during COPY IN is ignored.
             self.copy_in_state = None;
         }
 
@@ -733,13 +742,28 @@ impl PostgresSession {
                 Ok(ControlFlow::Continue)
             }
             FrontendMessage::CopyDone => {
+                // Capture this before exec_copy_done consumes the state.
+                let simple = self
+                    .copy_in_state
+                    .as_ref()
+                    .is_some_and(|s| s.started_via_simple_query);
                 self.exec_copy_done(out).await?;
-                self.send_ready_for_query = true;
+                // Simple-query COPY expects RFQ bundled with the per-statement
+                // response. Extended-query COPY waits for the client's Sync.
+                if simple {
+                    self.send_ready_for_query = true;
+                }
                 Ok(ControlFlow::Continue)
             }
             FrontendMessage::CopyFail { message } => {
+                let simple = self
+                    .copy_in_state
+                    .as_ref()
+                    .is_some_and(|s| s.started_via_simple_query);
                 self.exec_copy_fail(message)?;
-                self.send_ready_for_query = true;
+                if simple {
+                    self.send_ready_for_query = true;
+                }
                 Ok(ControlFlow::Continue)
             }
             FrontendMessage::Flush => {
@@ -749,7 +773,13 @@ impl PostgresSession {
             FrontendMessage::Sync => {
                 self.ignore_till_sync = false;
                 self.finish_xact_command();
-                self.send_ready_for_query = true;
+                // Per PG protocol: Sync during COPY IN mode does NOT emit
+                // ReadyForQuery — the backend stays in copy-in state until
+                // CopyDone / CopyFail arrives. Only arm the RFQ when we're
+                // out of COPY IN mode.
+                if self.copy_in_state.is_none() {
+                    self.send_ready_for_query = true;
+                }
                 Ok(ControlFlow::Continue)
             }
             FrontendMessage::Terminate => Ok(ControlFlow::Break),
@@ -1121,6 +1151,10 @@ impl PostgresSession {
                             header: command.header,
                             column_type_oids,
                             payload: Vec::new(),
+                            // `doing_extended_query_message` is true while
+                            // dispatching Parse/Bind/Execute/etc. and false
+                            // for simple Query.
+                            started_via_simple_query: !self.doing_extended_query_message,
                         });
                         Ok(ExecutionOutcome::CopyInStart {
                             overall_format,

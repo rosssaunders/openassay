@@ -456,7 +456,8 @@ fn parse_copy_text_field(
                 message: "COPY boolean field is invalid".to_string(),
             }),
         },
-        20 => field
+        // int2/int4/int8/oid/regproc all share the same text form
+        20 | 21 | 23 | 24 | 26 => field
             .value
             .trim()
             .parse::<i64>()
@@ -464,7 +465,7 @@ fn parse_copy_text_field(
             .map_err(|_| SessionError {
                 message: "COPY integer field is invalid".to_string(),
             }),
-        701 => field
+        700 | 701 => field
             .value
             .trim()
             .parse::<f64>()
@@ -472,7 +473,20 @@ fn parse_copy_text_field(
             .map_err(|_| SessionError {
                 message: "COPY float field is invalid".to_string(),
             }),
-        25 => Ok(ScalarValue::Text(field.value.clone())),
+        1700 => field
+            .value
+            .trim()
+            .parse::<rust_decimal::Decimal>()
+            .map(ScalarValue::Numeric)
+            .map_err(|_| SessionError {
+                message: "COPY numeric field is invalid".to_string(),
+            }),
+        // text / varchar / bpchar / name / json / bytea / uuid / jsonb —
+        // all surface as Text here; their PG text form is already the
+        // value we want to store.
+        25 | 1042 | 1043 | 19 | 114 | 17 | 2950 | 3802 => {
+            Ok(ScalarValue::Text(field.value.clone()))
+        }
         1082 => {
             let days = parse_pg_date_days(field.value.trim())?;
             Ok(ScalarValue::Text(format_pg_date_from_days(days)))
