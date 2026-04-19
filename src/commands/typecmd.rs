@@ -2,13 +2,54 @@ use crate::parser::ast::{
     CreateCastStatement, CreateDomainStatement, CreateTypeStatement, DropDomainStatement,
     DropTypeStatement,
 };
-use crate::tcop::engine::{EngineError, QueryResult, UserDomain, UserEnumType, with_ext_write};
+use crate::tcop::engine::{
+    EngineError, ExtensionState, QueryResult, UserCompositeType, UserDomain, UserEnumType,
+    with_ext_write,
+};
+
+fn name_exists(ext: &ExtensionState, name: &[String]) -> bool {
+    ext.user_types.iter().any(|t| t.name == name)
+        || ext.user_composite_types.iter().any(|t| t.name == name)
+}
 
 pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryResult, EngineError> {
     let normalized_name: Vec<String> = create.name.clone();
 
+    if !create.as_composite.is_empty() {
+        let attributes: Vec<(String, String)> = create
+            .as_composite
+            .iter()
+            .map(|attr| {
+                (
+                    attr.name.clone(),
+                    format!("{:?}", attr.data_type).to_ascii_lowercase(),
+                )
+            })
+            .collect();
+
+        with_ext_write(|ext| {
+            if name_exists(ext, &normalized_name) {
+                return Err(EngineError {
+                    message: format!("type \"{}\" already exists", create.name.join(".")),
+                });
+            }
+            ext.user_composite_types.push(UserCompositeType {
+                name: normalized_name,
+                attributes,
+            });
+            Ok(())
+        })?;
+
+        return Ok(QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            command_tag: "CREATE TYPE".to_string(),
+            rows_affected: 0,
+        });
+    }
+
     if create.as_enum.is_empty() {
-        // Non-enum CREATE TYPE is accepted but not stored (shell type or composite)
+        // Non-enum, non-composite CREATE TYPE is accepted but not stored (shell type)
         return Ok(QueryResult {
             columns: Vec::new(),
             rows: Vec::new(),
@@ -18,7 +59,7 @@ pub async fn execute_create_type(create: &CreateTypeStatement) -> Result<QueryRe
     }
 
     with_ext_write(|ext| {
-        if ext.user_types.iter().any(|t| t.name == normalized_name) {
+        if name_exists(ext, &normalized_name) {
             return Err(EngineError {
                 message: format!("type \"{}\" already exists", create.name.join(".")),
             });
@@ -54,6 +95,8 @@ pub async fn execute_drop_type(drop: &DropTypeStatement) -> Result<QueryResult, 
 
     with_ext_write(|ext| {
         ext.user_types.retain(|t| t.name != normalized_name);
+        ext.user_composite_types
+            .retain(|t| t.name != normalized_name);
     });
 
     Ok(QueryResult {
