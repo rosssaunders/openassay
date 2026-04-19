@@ -16,7 +16,10 @@ use crate::tcop::engine::EngineError;
 
 const PG_BOOL_OID: u32 = 16;
 const PG_INT8_OID: u32 = 20;
+const PG_INT2_OID: u32 = 21;
+const PG_INT4_OID: u32 = 23;
 const PG_TEXT_OID: u32 = 25;
+const PG_FLOAT4_OID: u32 = 700;
 const PG_FLOAT8_OID: u32 = 701;
 const PG_DATE_OID: u32 = 1082;
 const PG_TIMESTAMP_OID: u32 = 1114;
@@ -174,8 +177,31 @@ fn cast_type_name_to_oid(type_name: &str) -> u32 {
 }
 
 fn infer_numeric_result_oid(left: u32, right: u32) -> u32 {
+    // Max-width promotion within each family, matching PG's per-operator
+    // result types in `pg_operator.dat`:
+    //   int2+int2 → int2, int4+int4 → int4, int8+int8 → int8
+    //   mixed ints → the wider of the two
+    //   any float4 combined with int or float4 → float4
+    //   any float8 involvement → float8
+    // Unknown/text OIDs fall through to int8 (the prior behaviour), which
+    // keeps callers inferring a sensible numeric type when operand types
+    // aren't fully resolved.
     if left == PG_FLOAT8_OID || right == PG_FLOAT8_OID {
-        PG_FLOAT8_OID
+        return PG_FLOAT8_OID;
+    }
+    if left == PG_FLOAT4_OID || right == PG_FLOAT4_OID {
+        // float4 op int promotes to float4 in PG (no silent widen to float8).
+        return PG_FLOAT4_OID;
+    }
+    let is_int = |oid: u32| matches!(oid, PG_INT2_OID | PG_INT4_OID | PG_INT8_OID);
+    if is_int(left) && is_int(right) {
+        if left == PG_INT8_OID || right == PG_INT8_OID {
+            PG_INT8_OID
+        } else if left == PG_INT4_OID || right == PG_INT4_OID {
+            PG_INT4_OID
+        } else {
+            PG_INT2_OID
+        }
     } else {
         PG_INT8_OID
     }
