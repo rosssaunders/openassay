@@ -417,6 +417,8 @@ impl Parser {
                 | Keyword::Refresh
                 | Keyword::Window
                 | Keyword::Array
+                | Keyword::At
+                | Keyword::Zone
         )
     }
 

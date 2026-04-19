@@ -10,6 +10,33 @@ impl Parser {
         let mut lhs = self.parse_prefix_expr()?;
 
         loop {
+            // PG `expr AT TIME ZONE zone_expr`. Per PG grammar this has the
+            // same precedence as the `::` cast. Lower it to a function call
+            // `timezone(zone, expr)` so the executor handles it through the
+            // existing timezone() path — no new AST variant needed.
+            if self.peek_nth_kind(0) == Some(&TokenKind::Keyword(Keyword::At))
+                && self.peek_nth_kind(1) == Some(&TokenKind::Keyword(Keyword::Time))
+                && self.peek_nth_kind(2) == Some(&TokenKind::Keyword(Keyword::Zone))
+            {
+                let l_bp = 12;
+                if l_bp < min_bp {
+                    break;
+                }
+                self.advance(); // AT
+                self.advance(); // TIME
+                self.advance(); // ZONE
+                let zone = self.parse_expr_bp(l_bp)?;
+                lhs = Expr::FunctionCall {
+                    name: vec!["timezone".to_string()],
+                    args: vec![zone, lhs],
+                    distinct: false,
+                    order_by: Vec::new(),
+                    within_group: Vec::new(),
+                    filter: None,
+                    over: None,
+                };
+                continue;
+            }
             if self
                 .peek_nth_kind(0)
                 .is_some_and(|k| matches!(k, TokenKind::Typecast))

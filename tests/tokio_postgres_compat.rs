@@ -741,6 +741,28 @@ async fn aborted_transaction_rejects_until_rollback() {
     // why we intentionally don't DROP here.
 }
 
+/// Phase 5.2: `AT TIME ZONE` parses and evaluates. Lowered to
+/// `timezone(zone, expr)` in the expression parser. The engine's
+/// timezone conversion is currently a pass-through (timestamptz and
+/// timestamp share a text representation), so this test only asserts
+/// that the syntax parses and returns a non-empty string — not a
+/// specific TZ shift. When real TZ handling lands the test can tighten.
+#[tokio::test(flavor = "multi_thread")]
+async fn at_time_zone_parses_and_evaluates() {
+    let port = spawn_server();
+    let client = connect(port).await;
+
+    let row = client
+        .query_one(
+            "SELECT CAST(TIMESTAMP '2024-01-15 12:00:00' AT TIME ZONE 'UTC' AS text)",
+            &[],
+        )
+        .await
+        .expect("query");
+    let value: String = row.get(0);
+    assert!(!value.is_empty(), "AT TIME ZONE result must not be empty");
+}
+
 /// Phase 5.1: PG date/time keyword literals — CURRENT_TIMESTAMP,
 /// CURRENT_DATE, CURRENT_TIME, LOCALTIMESTAMP, LOCALTIME parse as
 /// special keyword calls (not regular functions) and evaluate. Before
