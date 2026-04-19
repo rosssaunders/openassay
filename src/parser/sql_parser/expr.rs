@@ -635,6 +635,34 @@ impl Parser {
     pub(super) fn parse_identifier_expr(&mut self) -> Result<Expr, ParseError> {
         let mut name = vec![self.parse_expr_identifier()?];
 
+        // PG date/time keyword literals: CURRENT_TIMESTAMP, CURRENT_DATE,
+        // CURRENT_TIME, LOCALTIMESTAMP, LOCALTIME. These are parsed as
+        // zero-arg function calls when not followed by `(` so the executor
+        // can dispatch to `now()` / `current_date()` / `current_time()`.
+        // SQL lets the user write `CURRENT_TIMESTAMP(6)` too — that stays
+        // as a normal function call on the path below.
+        if name.len() == 1 && !matches!(self.peek_nth_kind(0), Some(TokenKind::LParen)) {
+            let keyword_fn = match name[0].as_str() {
+                "current_timestamp" => Some("current_timestamp"),
+                "current_date" => Some("current_date"),
+                "current_time" => Some("current_time"),
+                "localtimestamp" => Some("localtimestamp"),
+                "localtime" => Some("localtime"),
+                _ => None,
+            };
+            if let Some(fn_name) = keyword_fn {
+                return Ok(Expr::FunctionCall {
+                    name: vec![fn_name.to_string()],
+                    args: Vec::new(),
+                    distinct: false,
+                    order_by: Vec::new(),
+                    within_group: Vec::new(),
+                    filter: None,
+                    over: None,
+                });
+            }
+        }
+
         // Handle type-name 'literal' syntax for types like bool, int, etc.
         if name.len() == 1 {
             let type_lower = name[0].clone();

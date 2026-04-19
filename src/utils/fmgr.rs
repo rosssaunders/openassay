@@ -721,10 +721,23 @@ pub(crate) async fn eval_scalar_function(
         }
         "date" if args.len() == 1 => eval_date_function(&args[0]),
         "timestamp" if args.len() == 1 => eval_timestamp_function(&args[0]),
-        "now" | "current_timestamp" if args.is_empty() => {
+        "now" | "current_timestamp" | "statement_timestamp" | "transaction_timestamp"
+            if args.is_empty() =>
+        {
             Ok(ScalarValue::Text(current_timestamp_string()?))
         }
         "clock_timestamp" if args.is_empty() => Ok(ScalarValue::Text(current_timestamp_string()?)),
+        // `localtimestamp` and `localtime` return timestamps without a
+        // timezone. We don't track TZ distinctly, so they alias to the
+        // current timestamp / time in text form.
+        "localtimestamp" if args.is_empty() => Ok(ScalarValue::Text(current_timestamp_string()?)),
+        "current_time" | "localtime" if args.is_empty() => {
+            // HH:MM:SS[.ffffff] slice of the current timestamp. Strip the
+            // leading `YYYY-MM-DD ` prefix that current_timestamp emits.
+            let ts = current_timestamp_string()?;
+            let time_part = ts.split_once(' ').map(|(_, t)| t).unwrap_or(&ts);
+            Ok(ScalarValue::Text(time_part.to_string()))
+        }
         "pg_sleep" if args.len() == 1 => {
             if matches!(args[0], ScalarValue::Null) {
                 return Ok(ScalarValue::Null);
